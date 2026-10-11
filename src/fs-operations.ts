@@ -119,7 +119,11 @@ export interface WorkspaceWriteInput {
   /**
    * The mtime the draft was based on. A file that changed on disk since is
    * REFUSED with `fs-conflict` instead of silently clobbering whatever wrote
-   * it; `undefined` = no gate (a brand-new file has no baseline).
+   * it — and so is a file that is GONE: a numeric baseline proves it was read
+   * from a file that existed, so "no stat" is a change the user made rather
+   * than permission to re-create the path. `undefined` = no gate (a brand-new
+   * file has no baseline — creating one is a different intent with its own
+   * entry points, `fs.createFile` and the upload writer).
    */
   expectedMtimeMs?: number
 }
@@ -141,7 +145,8 @@ export interface WorkspaceWriteInput {
  * is removed on every failure path.
  *
  * @throws {SidebarError} fs-conflict (409) when `expectedMtimeMs` no longer
- *  matches the file, fs-error when the write itself fails.
+ *  matches the file OR the file is no longer there at all, fs-error when the
+ *  write itself fails.
  */
 export async function writeWorkspaceText(input: WorkspaceWriteInput): Promise<{ mtimeMs?: number }> {
   const { cwd, path, content, expectedMtimeMs } = input
@@ -151,12 +156,18 @@ export async function writeWorkspaceText(input: WorkspaceWriteInput): Promise<{ 
   const { encoding, eol } = await fileFormatOf(absolute)
   if (expectedMtimeMs !== undefined) {
     const current = await stat(absolute).then(info => info.mtimeMs).catch(() => undefined)
-    if (current !== undefined && current !== expectedMtimeMs) {
-      throw new SidebarError(
-        'fs-conflict',
-        `"${absolute}" changed on disk since it was loaded (expected mtime ${expectedMtimeMs}, found ${current})`,
-        409,
-      )
+    // A NUMERIC baseline can only come from a successful read of a file that
+    // existed, so "no stat" is not "nothing to compare" — it means the path was
+    // removed (or renamed away) while the draft was open. Reading that as "no
+    // gate" wrote the draft back over the user's own deletion and re-created
+    // the file (and its parent directory) with no prompt. Creating a file is a
+    // different intent with its own entry points (`fs.createFile`, the upload
+    // writer), so refusing here costs nothing.
+    if (current !== expectedMtimeMs) {
+      const why = current === undefined
+        ? `no longer exists on disk (expected mtime ${expectedMtimeMs})`
+        : `changed on disk since it was loaded (expected mtime ${expectedMtimeMs}, found ${current})`
+      throw new SidebarError('fs-conflict', `"${absolute}" ${why}`, 409)
     }
   }
   // Per-request temp name (same pattern as writeWorkspaceUpload): a

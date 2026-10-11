@@ -448,9 +448,11 @@ export const api = {
    *  request body — no JSON escaping, so nothing caps the saved size).
    *  `expectedMtimeMs` is the mtime the draft was based on: a file that
    *  changed on disk since refuses with code `fs-conflict` (the editor then
-   *  offers a reload) instead of clobbering those bytes. `null` (the file did
-   *  not exist yet) and omitted (older callers) both mean no gate. The
-   *  response carries the fresh baseline. */
+   *  offers a reload) instead of clobbering those bytes — and so does a file
+   *  that is no longer there at all, because a numeric baseline proves it was
+   *  read from an existing file. `null` (the file did not exist yet) and
+   *  omitted (older callers) both mean no gate. The response carries the
+   *  fresh baseline. */
   fsWrite: (scope: SessionScope, path: string, content: string, expectedMtimeMs?: number | null) =>
     fetchWrite(scope, path, content, expectedMtimeMs ?? undefined),
   /** Rename one tree row within its directory (single-segment name; the
