@@ -85,6 +85,16 @@ describe('Tasks page motion', () => {
     expect(graph).toContain('stopGlide()')
   })
 
+  it('gives every NESTED tree level its own FLIP host', () => {
+    // The library watches a container's direct children only: one host on the
+    // scroll container would animate the top level and let every nested fold
+    // blink. TreeLevel exists to own one per level.
+    const tree = code('src/client/TasksTree.tsx')
+    expect(tree).toContain('function TreeLevel')
+    expect(tree).toContain('useAutoAnimateRef')
+    expect(tree).toContain('<TreeLevel items=')
+  })
+
   it('parks the motion host behind a WAAPI guard so tests and old hosts stay inert', () => {
     const hook = source('src/client/use-auto-animate.ts')
     expect(hook).toContain("typeof Element.prototype.animate === 'function'")

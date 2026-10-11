@@ -107,12 +107,20 @@ export function CardTop(props: {
   name: string
   /** The mono meta line under the name. */
   meta?: string
+  /**
+   * The newest assistant text of the node's own session, set as a small tail
+   * under the name — the one thing a card could not say before (it lived in the
+   * detail window only). `lines` is the count the LAYOUT reserved for it, so the
+   * card clamps to exactly what its box was sized for and never overflows the
+   * row gutter (see textTailLines).
+   */
+  text?: { value: string; lines: number }
   /** Extra class for the name (the aggregate recedes one rung). */
   extraClass?: string
   /** Extra rows the caller appends (the team task line). */
   children?: ReactNode
 }): ReactNode {
-  const { kind, count, foldKind, depth, phase, chip } = props
+  const { kind, count, foldKind, depth, phase, chip, text } = props
   return (
     <span className={clsx(css.cardTop, depthClass(depth))}>
       <span className={css.cardBadges}>
@@ -132,6 +140,15 @@ export function CardTop(props: {
       <span className={clsx(css.cardName, props.extraClass)} title={props.name}>{props.name}</span>
       {props.meta !== undefined && props.meta !== '' && (
         <span className={css.cardMeta} title={props.meta}>{props.meta}</span>
+      )}
+      {text !== undefined && (
+        <span
+          className={css.cardText}
+          style={{ WebkitLineClamp: text.lines }}
+          title={text.value}
+        >
+          {text.value}
+        </span>
       )}
       {props.children}
     </span>

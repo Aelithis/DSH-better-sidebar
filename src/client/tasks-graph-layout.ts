@@ -56,6 +56,14 @@ const NODE_TITLE_LINES = 2
 const NODE_META_H = 14 + 2
 /** The state bar — `.cardBar`'s fixed height (its top border sits inside it). */
 const NODE_BAR_H = 22
+/** One line of the card's text tail — `.cardText`'s 10px/1.3 box. */
+const NODE_TEXT_LINE_H = 13
+/** The text tail's lead above the first line (`margin-top` in `.cardText`). */
+const NODE_TEXT_LEAD_H = 2
+/** Lines the text tail may show at most. */
+export const NODE_TEXT_MAX_LINES = 3
+/** The most a card's text tail can add to its height. */
+export const GRAPH_TEXT_MAX_H = NODE_TEXT_MAX_LINES * NODE_TEXT_LINE_H + NODE_TEXT_LEAD_H
 /** The shared-task row: its 10px/1.3 line plus the 3px lead, sized for the
  *  `+N` chip's own 1px outline (the tallest shape the row can take). */
 const NODE_TASK_H = 15 + 3
@@ -93,13 +101,16 @@ export const GRAPH_ROW_STRIDE = GRAPH_NODE_H + GRAPH_GAP_Y
 
 /**
  * The row pitch one model actually needs: the tallest card it draws plus the
- * gutter. A workflow run is the only node that keeps a meta line, so a tree
- * without runs never reserves that line.
+ * gutter. Card heights differ by kind and by content (a run keeps its meta line;
+ * an agent may add a task row and up to {@link NODE_TEXT_MAX_LINES} lines of text
+ * tail), so the pitch is measured from the model instead of hard-picked — a card
+ * taller than the pitch would overlap the row below it and its phase frame.
  *
  * @param nodes - the model's node list.
  */
 export function rowStrideFor(nodes: readonly TasksNode[]): number {
-  const tallest = nodes.some(node => node.kind === 'workflow') ? GRAPH_NODE_H : GRAPH_AGENT_NODE_H
+  let tallest = GRAPH_AGENT_NODE_H
+  for (const node of nodes) tallest = Math.max(tallest, nodeHeight(node))
   return tallest + GRAPH_GAP_Y
 }
 
@@ -126,14 +137,48 @@ export interface LayoutOptions {
 }
 
 /**
- * The display height of one node: the base card plus the shared-task row a
- * team member renders. Nothing else varies — the merged activity lives in the
- * state bar that every card renders, whatever its state.
+ * The display height of one node: the base card, plus the text-tail lines a
+ * running/settled child renders under its name, plus the shared-task row a team
+ * member renders. The merged activity lives in the state bar every card draws,
+ * so it costs no height.
+ *
+ * The tail's reservation is computed from the TEXT, not fixed at the maximum:
+ * a card that reserved three lines to show one would wear a 26px hole above its
+ * bar (the reader's own "空荡荡" report, in a different place), so the estimate
+ * is deliberately conservative — it floors the wrapped line count, which means
+ * a long tail is clamped one line short rather than overflowing the box.
  */
 function nodeHeight(node: TasksNode): number {
   if (node.kind !== 'agent') return GRAPH_NODE_H
   const base = GRAPH_AGENT_NODE_H
-  return (node.tasks?.length ?? 0) > 0 ? base + GRAPH_TASK_H : base
+  const lines = textTailLines(node.live?.text)
+  const text = lines * NODE_TEXT_LINE_H + (lines === 0 ? 0 : NODE_TEXT_LEAD_H)
+  return base + text + ((node.tasks?.length ?? 0) > 0 ? GRAPH_TASK_H : 0)
+}
+
+/**
+ * How many lines a card's text tail takes, 0 when the node has none.
+ *
+ * An ESTIMATE by character width, because the layout runs before the browser
+ * wraps anything: CJK reads at the font's full size and latin at a bit over
+ * half of it, over the card's inner width. Floored on purpose (see
+ * {@link nodeHeight}), and capped at {@link NODE_TEXT_MAX_LINES}.
+ *
+ * @param text - the child's newest assistant text (flattened by the caller).
+ * @param cardWidth - the card's outer width (defaults to the graph's).
+ */
+export function textTailLines(text: string | undefined, cardWidth: number = GRAPH_NODE_W): number {
+  if (text === undefined || text === '') return 0
+  // `.cardTop`'s 8px left + 10px right padding, minus the tail's own lead.
+  const usable = Math.max(40, cardWidth - 18)
+  // 10px font: a CJK glyph is ~10px wide, latin ~5.5px (measured against the
+  // page's own stack; the ×0.9 keeps the estimate from cutting a line short).
+  let units = 0
+  for (const char of text) {
+    units += /[\u3000-\u9fff\uff00-\uffef]/.test(char) ? 10 : 5.5
+  }
+  const lines = Math.ceil((units * 0.9) / usable)
+  return Math.max(1, Math.min(NODE_TEXT_MAX_LINES, lines))
 }
 
 /**

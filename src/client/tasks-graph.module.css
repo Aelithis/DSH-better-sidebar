@@ -314,6 +314,20 @@
   color: var(--dsw-alias-label-secondary);
 }
 
+/* The newest assistant text under the name: the card's smallest voice, clamped
+   to the line count the LAYOUT reserved for it (inline `-webkit-line-clamp`, so
+   the render can never be taller than the box the row gutter was sized for). */
+.cardText {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  margin-top: 2px;
+  font-size: 10px;
+  line-height: 1.3;
+  color: var(--dsw-alias-label-secondary);
+}
+
 .cardMeta {
   font: var(--dsw-font-xxxs-11);
   font-family: var(--ds-font-family-code, monospace);
@@ -755,11 +769,49 @@
   opacity: 0.62;
 }
 
-/* Children hang on a hairline thread, never a box. */
+/* Children hang on a hairline thread, never a box. The indent is what the
+   CHILD rows measure their elbow against (see .treeChild): the thread runs down
+   the parent's marker column (8px row padding + half the 6px dot), so the line
+   drops out of the row it belongs to instead of floating beside it. */
 .treeKids {
-  margin-left: 15px;
-  padding-left: 10px;
-  border-left: 1px solid var(--dsw-alias-border-l1);
+  margin-left: 11px;
+  padding-left: 14px;
+}
+
+/* One child wrapper: the elbow that ties it to its parent's thread. The segment
+   spans the whole subtree of a middle sibling (so the thread stays continuous)
+   and stops at the row's own marker for the LAST one, so a group's thread ends
+   at the group's last row instead of dangling past it. */
+.treeChild {
+  position: relative;
+}
+
+.treeChild::before {
+  content: '';
+  position: absolute;
+  left: -14px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--dsw-alias-border-l1);
+}
+
+.treeChildLast::before {
+  bottom: auto;
+  /* The 32px row rhythm's midline: the thread meets the marker it belongs to. */
+  height: 16px;
+}
+
+/* The mode chip on a tree row: same word, same place as a canvas card's chip
+   (next to the name), in the row's own stack. */
+.treeChip {
+  flex: none;
+  max-width: 46%;
+  font: var(--dsw-font-xxxs-11);
+  color: var(--dsw-alias-label-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .treeContent {
@@ -1135,13 +1187,15 @@
 }
 
 /* The streamed text tail under it keeps the card's smallest voice, clamped to
-   two lines: the tail is capped at 400 characters upstream, which would
-   otherwise push the state rows out of the card. */
+   three lines — the same budget the canvas card gives the same text, so the two
+   surfaces show the same amount of it. The tail is capped at 400 characters
+   upstream, which would otherwise push the state rows out of the card. */
 .popActivityBlock .popHint {
   display: -webkit-box;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 /* The card's smallest voice (the empty-description line, the drag hint, the

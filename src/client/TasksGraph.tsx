@@ -38,7 +38,7 @@ import type { TasksAgentNode, TasksFoldNode, TasksNode, TasksWorkflowNode } from
 import { tasksEdges } from './tasks-model.ts'
 import {
   GRAPH_FIT_MIN_SCALE, GRAPH_NODE_H, GRAPH_NODE_W, GRAPH_PAD, layoutTasksGraphForWidth,
-  type GraphBox,
+  textTailLines, type GraphBox,
 } from './tasks-graph-layout.ts'
 import { useTweenedLayout } from './tasks-layout-tween.ts'
 import { easeOut as glideEase } from './tasks-layout-tween.ts'
@@ -51,8 +51,8 @@ function prefersReducedMotion(): boolean {
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches
 }
 import {
-  activityLine, agentChip, agentMeta, foldErrorTally, foldPreviews, FoldGlyph, foldTally,
-  TaskLine, WorkflowGlyph, workflowMeta,
+  activityLine, agentChip, agentMeta, flatten, foldErrorTally, foldPreviews, FoldGlyph,
+  foldTally, TaskLine, WorkflowGlyph, workflowMeta,
 } from './tasks-shared.tsx'
 import { CardBar, CardTop, phaseClass, type CardKind } from './tasks-card.tsx'
 import { t } from './locales.ts'
@@ -664,6 +664,13 @@ function renderAgentNode(
   const activity = activityLine(node)
   /** The identity word beside the kind badge (one badge row, no meta line). */
   const chip = agentChip(node)
+  /**
+   * The newest assistant text, under the name: what the node is SAYING (a
+   * running child) or said last (a settled one). The bar keeps the merged
+   * activity — the two answer different questions — and the line count comes
+   * from the layout so the card never renders taller than its box.
+   */
+  const tail = node.live?.text === undefined ? undefined : flatten(node.live.text)
   return (
     <div
       key={node.id}
@@ -691,6 +698,7 @@ function renderAgentNode(
         depth={node.depth}
         {...(node.phase === undefined ? {} : { phase: node.phase })}
         {...(chip === undefined ? {} : { chip })}
+        {...(tail === undefined ? {} : { text: { value: tail, lines: textTailLines(tail) } })}
         name={node.label}
       >
         <TaskLine tasks={node.tasks} onOpenTask={onOpenTask} />

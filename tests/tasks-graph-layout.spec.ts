@@ -15,10 +15,12 @@ import {
   GRAPH_PAD,
   GRAPH_ROW_STRIDE,
   GRAPH_TASK_H,
+  GRAPH_TEXT_MAX_H,
   bandColsFor,
   layoutTasksGraph,
   layoutTasksGraphForWidth,
   rowStrideFor,
+  textTailLines,
 } from '../src/client/tasks-graph-layout.ts'
 import type { TasksAgentNode, TasksNode, TasksNodeTask } from '../src/client/tasks-model.ts'
 
@@ -83,17 +85,36 @@ describe('layout: card heights', () => {
     expect(layout.boxes.get('owner')?.h).toBe(GRAPH_AGENT_NODE_H + GRAPH_TASK_H)
   })
 
+  it('reserves the text tail from the TEXT, never the maximum', () => {
+    // A card that reserved three lines to show one would wear a hole above its
+    // bar — the reader's own "空荡荡" report, in a new place.
+    expect(textTailLines(undefined)).toBe(0)
+    expect(textTailLines('')).toBe(0)
+    expect(textTailLines('y')).toBe(1)
+    // 17 CJK glyphs fill one 172px line; the estimate caps at three.
+    expect(textTailLines('一'.repeat(17))).toBe(1)
+    expect(textTailLines('一'.repeat(30))).toBe(2)
+    expect(textTailLines('一'.repeat(400))).toBe(3)
+    expect(textTailLines('a'.repeat(200))).toBe(3)
+  })
+
   it('keeps every card shape inside one row stride', () => {
     // The stride is the row pitch: a card taller than it would overlap the
     // next row (and its phase frame).
-    const tallest = GRAPH_AGENT_NODE_H + GRAPH_TASK_H
+    const tallest = GRAPH_AGENT_NODE_H + GRAPH_TASK_H + GRAPH_TEXT_MAX_H
     expect(GRAPH_ROW_STRIDE).toBeGreaterThanOrEqual(tallest)
     const nodes: TasksNode[] = [
       agent('root'),
       agent('busiest', 'root', false, { live: { ...ACTIVITY, text: 'y' }, tasks: [task('t1')] }),
+      // The tallest card the layout can be asked for: a task row AND a tail
+      // that needs every line it may show.
+      agent('widest', 'root', false, { live: { ...ACTIVITY, text: '一'.repeat(400) }, tasks: [task('t1')] }),
     ]
     const layout = layoutTasksGraph(nodes)
-    expect(layout.boxes.get('busiest')?.h).toBe(tallest)
+    expect(layout.boxes.get('busiest')?.h).toBe(GRAPH_AGENT_NODE_H + GRAPH_TASK_H + 13 + 2)
+    expect(layout.boxes.get('widest')?.h).toBe(tallest)
+    // …and the pitch really covers it.
+    expect(rowStrideFor(nodes)).toBeGreaterThanOrEqual(tallest + GRAPH_GAP_Y - GRAPH_GAP_Y)
     // An agent-only model pitches its rows at the agent card; a model with a
     // workflow run (the only card that keeps a meta line) pitches at the
     // taller run card, so no card ever pokes into the row below.
@@ -107,8 +128,11 @@ describe('layout: card heights', () => {
         },
       },
     ]
-    expect(rowStrideFor(nodes)).toBe(GRAPH_AGENT_NODE_H + GRAPH_GAP_Y)
-    expect(rowStrideFor(withRun)).toBe(GRAPH_NODE_H + GRAPH_GAP_Y)
+    // Plain agent cards pitch at the base height; the model above carries a
+    // task row and a full tail, and the pitch follows THAT card.
+    expect(rowStrideFor([agent('root')])).toBe(GRAPH_AGENT_NODE_H + GRAPH_GAP_Y)
+    expect(rowStrideFor(nodes)).toBe(tallest + GRAPH_GAP_Y)
+    expect(rowStrideFor(withRun)).toBeGreaterThanOrEqual(GRAPH_NODE_H + GRAPH_GAP_Y)
     // …and the run card itself is the card that needs the meta line.
     expect(layoutTasksGraph(withRun).boxes.get('run:r')?.h).toBe(GRAPH_NODE_H)
   })

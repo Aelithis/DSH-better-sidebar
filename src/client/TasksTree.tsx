@@ -20,13 +20,25 @@ import clsx from 'clsx'
 import { IconLoadingOutlineRegular, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TasksAgentNode, TasksFoldNode, TasksNode, TasksWorkflowNode } from './tasks-model.ts'
 import {
-  AgentGlyph, agentMeta, FoldGlyph, foldPreviews, foldTally, LiveLine, nodeDotState,
-  TaskLine, WorkflowGlyph, workflowMeta,
+  AgentGlyph, agentChip, agentMeta, FoldGlyph, foldPreviews, foldTally, LiveLine, nodeDotState,
+  stateLabel, TaskLine, WorkflowGlyph, workflowMeta,
 } from './tasks-shared.tsx'
 import { FoldToggleButton, ViewModeToggle } from './TasksGraph.tsx'
 import { useAutoAnimateRef } from './use-auto-animate.ts'
 import { t } from './locales.ts'
 import css from './tasks-graph.module.css'
+
+/**
+ * One nesting level of the tree: it exists as a COMPONENT so every level can own
+ * a FLIP host of its own. The library watches a container's direct children
+ * only, so a single host on the scroll container would animate the top level and
+ * leave every nested fold to blink — the reader's "嵌套层级也要有动效".
+ */
+function TreeLevel(props: { items: readonly ReactNode[] }): ReactNode {
+  const ref = useRef<HTMLDivElement>(null)
+  useAutoAnimateRef(ref)
+  return <div className={css.treeKids} ref={ref}>{props.items}</div>
+}
 
 export interface TasksTreeProps {
   nodes: readonly TasksNode[]
@@ -51,10 +63,8 @@ export function TasksTree(props: TasksTreeProps): ReactNode {
     mode, onModeChange, loading,
   } = props
   const bodyRef = useRef<HTMLDivElement>(null)
-  // Rows fold and unfold here too: the same FLIP host the graph's cards use,
-  // scoped to the top level (a nested row is animated by its own parent level
-  // in the graph; the tree keeps one host, so its rows arrive in place rather
-  // than blinking).
+  // The scroll container's own host covers the top level; every nested level
+  // brings its own (see TreeLevel).
   useAutoAnimateRef(bodyRef)
 
   /** children by parent id (model order preserved). */
@@ -104,8 +114,24 @@ export function TasksTree(props: TasksTreeProps): ReactNode {
 
   /** One row plus its nested children (the connector line is drawn by
    *  `.treeKids` in tasks-graph.module.css). */
-  const renderNode = (node: TasksNode, depth: number): ReactNode => {
+  const renderNode = (node: TasksNode, depth: number, last: boolean): ReactNode => {
     const children = childrenOf.get(node.id) ?? []
+    /** The mode chip this row shows (also decides what the mono line holds). */
+    const chip = node.kind === 'agent' ? agentChip(node) : undefined
+    /**
+     * The row's own wrapper is the child of its parent's level: it draws the
+     * elbow that connects it to that level's thread, and the LAST sibling stops
+     * its segment at the row's marker so the thread never hangs past the group.
+     */
+    const wrap = (body: ReactNode): ReactNode => (
+      <div
+        key={node.id}
+        className={clsx(css.treeChild, last && css.treeChildLast)}
+      >
+        {body}
+        {children.length > 0 && <TreeLevel items={children.map(child => renderNode(child, depth + 1, child === children[children.length - 1]))} />}
+      </div>
+    )
     const row = node.kind === 'fold'
       ? (
         <div
@@ -181,22 +207,24 @@ export function TasksTree(props: TasksTreeProps): ReactNode {
             <StateDot className={css.treeDot} state={nodeDotState(node.state)} size={6} />
             <span className={css.treeGlyph} aria-hidden="true"><AgentGlyph node={node} /></span>
             <span className={css.treeContent}>
-              <span className={css.treeTitle} title={node.label}>{node.label}</span>
-              <span className={css.treeMeta}>{agentMeta(node)}</span>
+              <span className={css.treeTitle} title={node.label}>
+                {node.label}
+                {/*
+                  The mode word rides the title row, exactly as it rides the
+                  badge row on a canvas card — one word per kind of node, next to
+                  the name, instead of a mono line that repeated it on every row.
+                */}
+                {chip !== undefined && <span className={css.treeChip}>{chip}</span>}
+              </span>
+              {/* With the chip carrying the mode, the mono line holds what is
+                  left: the node's own state (and, for the root, its identity). */}
+              <span className={css.treeMeta}>{chip === undefined ? agentMeta(node) : stateLabel(node.state)}</span>
               {node.state === 'running' && <LiveLine live={node.live} />}
               <TaskLine tasks={node.tasks} onOpenTask={onOpenTask} />
             </span>
           </div>
         )
-    if (children.length === 0) return <div key={node.id}>{row}</div>
-    return (
-      <div key={node.id}>
-        {row}
-        <div className={css.treeKids}>
-          {children.map(child => renderNode(child, depth + 1))}
-        </div>
-      </div>
-    )
+    return wrap(row)
   }
 
   const roots = childrenOf.get('') ?? []
@@ -216,7 +244,7 @@ export function TasksTree(props: TasksTreeProps): ReactNode {
             {t('loading')}
           </div>
         )}
-        {roots.map(root => renderNode(root, 0))}
+        {roots.map(root => renderNode(root, 0, false))}
       </div>
       <div className={css.controls} data-graph-controls>
         <ViewModeToggle mode={mode} onModeChange={onModeChange} />

@@ -1518,3 +1518,65 @@ describe('Tasks page: node metrics and the sidebar transcript jump', () => {
     unmount()
   })
 })
+
+/**
+ * The card's text tail (the newest assistant text under the name) and the tree
+ * row's chip: both surfaces now say the same two things the same way.
+ */
+describe('Tasks page: the card text tail and the tree chip', () => {
+  it('sets the newest assistant text on the card, clamped to the reserved lines', async () => {
+    livePayload = {
+      'child-0': {
+        running: true,
+        text: '我把目录数了一遍：60 个条目，其中包含若干工作树与软链接。',
+        summary: { counts: [{ kind: 'commands', count: 1 }], running: 'commands', runningDetail: 'ls -la' },
+      },
+    }
+    const snapshot = snapshotWithChildren(2)
+    snapshot.byId['child-0']!.running = true
+    const store = makeStore(snapshot)
+    const { container, unmount } = renderRoot(
+      createElement(SubagentView, { sessionId: 'root', active: true, ctx: makeCtx(store) }),
+    )
+    await flushJobs()
+    await act(async () => {
+      (container.querySelector('button[aria-label="展开已完成的节点"]') as HTMLButtonElement).click()
+    })
+    const card = container.querySelector('[data-graph-node="child-0"]') as HTMLElement
+    // The class name is hashed by the CSS module, so the tail is addressed by
+    // its inline clamp (the line count the layout reserved for it).
+    const clamped = [...card.querySelectorAll('span')].find(span => span.style.webkitLineClamp !== '')
+    expect(clamped).toBeDefined()
+    expect(clamped?.textContent).toBe('我把目录数了一遍：60 个条目，其中包含若干工作树与软链接。')
+    expect(Number(clamped?.style.webkitLineClamp)).toBeGreaterThanOrEqual(1)
+    expect(Number(clamped?.style.webkitLineClamp)).toBeLessThanOrEqual(3)
+    // The bar still carries the merged activity: the two lines answer different
+    // questions and neither is dropped.
+    expect(card.querySelector('[data-card-bar]')?.textContent).toContain('ls -la')
+    unmount()
+  })
+
+  it('draws the mode chip on a tree row and stops repeating it in the mono line', async () => {
+    const store = makeStore(snapshotWithChildren(2))
+    const { container, unmount } = renderRoot(
+      createElement(SubagentView, { sessionId: 'root', active: true, ctx: makeCtx(store) }),
+    )
+    await flushJobs()
+    await act(async () => {
+      (container.querySelector('button[aria-label="切换为树状图"]') as HTMLButtonElement).click()
+    })
+    // The tree opens with the page-level fold ON: reveal the child rows first.
+    await act(async () => {
+      (container.querySelector('button[aria-label="展开已完成的节点"]') as HTMLButtonElement).click()
+    })
+    const row = container.querySelector('[data-tasks-row]') as HTMLElement
+    // The root row keeps its identity line (no chip for the root), and the child
+    // row carries the mode beside its name with the state alone underneath.
+    const childRow = [...container.querySelectorAll('[data-tasks-row]')]
+      .find(candidate => candidate.textContent?.includes('子代理 0')) as HTMLElement
+    expect(childRow.textContent).toContain('子代理 0一次性')
+    expect(childRow.textContent).toContain('已完成')
+    expect(row).not.toBeNull()
+    unmount()
+  })
+})
