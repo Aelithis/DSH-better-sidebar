@@ -467,6 +467,13 @@ export interface OpenTabSeed {
   path?: string
   /** A diff reference (the diff tab's content seed). */
   diff?: SidebarTab['diff']
+  /**
+   * The 1-based line a file reference named, for the `editor` kind (`#826`).
+   * Transient like the record's own `line`: it rides the open as a navigation
+   * the editor applies once (leaving preview, which renders no source lines)
+   * and the record forgets it right after.
+   */
+  line?: SidebarTab['line']
   /** Explicit tab id (defaults to the type). */
   id?: string
   /** A URL the tab navigates to on mount (the browser tab's seed). */
@@ -1079,6 +1086,7 @@ export function createBetterSidebarService(store: SidebarStore): BetterSidebarSe
         title,
         ...(componentPath === undefined ? {} : { path: componentPath }),
         ...(seed.diff === undefined ? {} : { diff: seed.diff }),
+        ...(seed.line === undefined ? {} : { line: seed.line }),
         ...(seed.meta === undefined && minted?.tab.meta === undefined ? {} : { meta: seed.meta ?? minted?.tab.meta }),
       }
       if (seed.type === 'editor') {
@@ -1094,6 +1102,9 @@ export function createBetterSidebarService(store: SidebarStore): BetterSidebarSe
             sessionId: targetSessionId,
             address: surface.fileAddress(targetSessionId, scope?.cwd, seed.path),
             revealIfOpened: reveal,
+            // The reference's landing line, when the open came from one
+            // (`a.c#L131` — #826). Transient: the record spends it on arrival.
+            ...(seed.line === undefined ? {} : { line: seed.line }),
             ...(side ? { preferNewPane: true } : {}),
           })
         } else {
@@ -1155,6 +1166,9 @@ export function createBetterSidebarService(store: SidebarStore): BetterSidebarSe
           title: seed.title ?? (typeof descriptor.title === 'function' ? descriptor.title() : descriptor.title),
           ...(seed.path !== undefined ? { path: seed.path } : {}),
           ...(seed.diff !== undefined ? { diff: seed.diff } : {}),
+          // The landing line, when this open came from a file reference
+          // (`a.c#L131` — #826); the editor spends it on arrival.
+          ...(seed.line !== undefined ? { line: seed.line } : {}),
           ...(seed.meta !== undefined ? { meta: seed.meta } : {}),
         }
         next = applyDedupe(state, tab, descriptor, land)
