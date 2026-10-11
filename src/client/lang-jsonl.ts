@@ -49,12 +49,17 @@ function readToken(stream: StringStream): JsonlToken {
     stream.next()
     let body = '"'
     for (;;) {
+      // `StringStream.next()` returns `undefined` — not null — once the line is
+      // exhausted, and does NOT advance past the end. Testing only for null
+      // here was an infinite loop that grew a string until V8 threw
+      // RangeError: Invalid string length, on the very first unterminated
+      // string a JSONL file contained.
       const next = stream.next()
-      if (next === null) return { text: body, kind: 'invalid' }
+      if (next === undefined || next === null) return { text: body, kind: 'invalid' }
       body += next
       if (next === '\\') {
         const escaped = stream.next()
-        if (escaped === null) return { text: body, kind: 'invalid' }
+        if (escaped === undefined || escaped === null) return { text: body, kind: 'invalid' }
         body += escaped
         continue
       }

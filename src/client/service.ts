@@ -361,7 +361,8 @@ export interface EditorToolbarState {
   editable: boolean
   /** Whether the viewer is showing the read-only paged preview for an
    *  over-limit file. Nothing can be edited or saved in that state, so the
-   *  header drops the save button and reports the size instead. */
+   *  header drops the save button and the viewer's own notice carries the
+   *  size and the download escape hatch. */
   largeFile?: boolean
   saveState: 'idle' | 'saving' | 'saved' | 'failed'
 }

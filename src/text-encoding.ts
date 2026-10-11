@@ -244,10 +244,26 @@ export function decodeTextBytes(bytes: Buffer, truncated = false): DecodedText |
  * whether that unit is little-endian. `1` covers every byte-oriented encoding
  * (UTF-8, GBK, GB18030), where a `\n` byte is unambiguous.
  */
-function unitWidth(encoding: TextEncoding): 1 | 2 | 4 {
+export function unitWidth(encoding: TextEncoding): 1 | 2 | 4 {
   if (encoding === 'utf16le' || encoding === 'utf16le-bom' || encoding === 'utf16be' || encoding === 'utf16be-bom') return 2
   if (encoding === 'utf32le-bom' || encoding === 'utf32be-bom') return 4
   return 1
+}
+
+/**
+ * Whether one byte is a whole character or part of one.
+ *
+ * The paged reader needs exactly this distinction and nothing finer: a
+ * byte-oriented encoding can be re-sniffed per window safely (a pure-ASCII
+ * window of a GBK document decodes identically either way), while a wide
+ * encoding is a property of the FILE and must not be re-litigated by a window
+ * that happens to contain no NUL bytes.
+ *
+ * @param encoding - an encoding a window detected.
+ * @returns true for UTF-16 / UTF-32 in either byte order.
+ */
+export function isWideEncoding(encoding: TextEncoding): boolean {
+  return unitWidth(encoding) !== 1
 }
 
 /** Whether a fixed-width encoding is little-endian. */

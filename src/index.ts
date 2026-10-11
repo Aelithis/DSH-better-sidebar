@@ -14,6 +14,7 @@
  */
 import { open, readFile, stat } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join, sep } from 'node:path'
+import type { Stats } from 'node:fs'
 import type { IncomingMessage } from 'node:http'
 import type { Duplex } from 'node:stream'
 import { WebSocket, WebSocketServer } from 'ws'
@@ -69,7 +70,7 @@ import {
 // row bound, so it lives in a dependency-free module both can import.
 import { FS_TREES_MAX_PATHS } from './fs-batch.ts'
 import { activeWorktreeRootOf } from './active-worktree.ts'
-import { decodeTextAs, decodeTextBytes, lastLineBreakEnd, type TextEncoding } from './text-encoding.ts'
+import { decodeTextAs, decodeTextBytes, isWideEncoding, lastLineBreakEnd, type TextEncoding } from './text-encoding.ts'
 import { MAX_EDITABLE_BYTES, PAGE_BYTES, WRITE_BODY_GUARD_BYTES } from './editor-limits.ts'
 
 export { Config }
@@ -397,6 +398,26 @@ async function resolveStatusPath(cwd: string, raw: string, selected?: string): P
 /** How many leading bytes a binary read returns for client-side detect sniffing. */
 const READ_HEAD_LIMIT = 4096
 
+/**
+ * `stat` one path for a raw byte route, turning an unreadable path into the
+ * route's own error shape.
+ *
+ * A bare `stat` rejection escaped as a 500 "internal", which reads as a plugin
+ * fault; a file the user asked for that does not exist (or cannot be read) is
+ * a 400 with a usable message. The streaming helper opens the file BEFORE
+ * committing the response for the same reason — the error has to stay
+ * deliverable.
+ */
+async function statFileForRoute(path: string): Promise<Stats> {
+  return await stat(path).catch((error: unknown) => {
+    throw new SidebarError(
+      'fs-error',
+      `cannot read "${path}": ${error instanceof Error ? error.message : String(error)}`,
+      400,
+    )
+  })
+}
+
 /** One file read, in the shape the client's viewer dispatch consumes. */
 export type SidebarReadResult =
   | { kind: 'text'; content: string; size: number; mtimeMs: number }
@@ -466,16 +487,22 @@ async function readText(path: string): Promise<SidebarReadResult> {
 }
 
 /**
- * The encoding last detected for one (path, size, mtime) triple.
+ * The WIDE encoding a file was found to use, per (path, size, mtime) triple.
  *
- * Page reads decode independently, and a page that happens to be pure ASCII
- * sniffs as UTF-8 while a later page of a GBK document sniffs as GBK — the two
- * would then be concatenated as one mojibake document. Caching the FIRST page's
- * verdict keeps a paged read internally consistent; the size+mtime in the key
- * drops the entry the moment the file changes on disk.
+ * Only wide encodings (UTF-16/UTF-32) are memoized, and that is the whole
+ * point: a page window that happens to contain no NUL bytes cannot tell wide
+ * text from byte-oriented text, so a later window of a UTF-16 document must
+ * not be allowed to re-decide. Byte-oriented encodings (UTF-8 / GBK / GB18030)
+ * are deliberately NOT memoized — a long ASCII prefix sniffs as UTF-8 while a
+ * later GBK window sniffs as GBK, and decoding each window on its own terms is
+ * what recovers the right text for both. (That is safe because pages are
+ * line-aligned: 0x0A can be neither a UTF-8 continuation byte nor a GBK trail
+ * byte, so a window boundary never splits a character.)
+ *
+ * The size+mtime in the key drops the entry the moment the file changes.
  */
-const pageEncodingCache = new Map<string, TextEncoding>()
-/** Bound on {@link pageEncodingCache} (a paged read is a handful of entries). */
+const wideEncodingCache = new Map<string, TextEncoding>()
+/** Bound on {@link wideEncodingCache} (a paged read is a handful of entries). */
 const PAGE_ENCODING_CACHE_MAX = 64
 
 /** One page of a large text file: whole lines, plus where to continue. */
@@ -533,33 +560,42 @@ async function readPage(path: string, offset: number): Promise<ReadPageResult> {
     let slice = buffer.subarray(0, bytesRead)
     let nextOffset = offset + bytesRead
     const cacheKey = `${path}\u0000${size}\u0000${info.mtimeMs}`
-    const cached = pageEncodingCache.get(cacheKey)
+    const locked = wideEncodingCache.get(cacheKey)
     if (nextOffset < size) {
       // Trim back to a line break so a page is a whole number of lines — and,
       // for JSONL, a whole number of records. Judged in the encoding's own
       // character width, because a naive byte search for 0x0A cuts UTF-16
       // characters in half (see lastLineBreakEnd). A window with no break at
       // all is returned untrimmed and stitched by the client.
-      const lastBreak = lastLineBreakEnd(slice, cached ?? 'utf8')
+      const lastBreak = lastLineBreakEnd(slice, locked ?? 'utf8')
       if (lastBreak >= 0) {
         slice = slice.subarray(0, lastBreak)
         nextOffset = offset + lastBreak
       }
     }
-    // Page 1 sniffs (and strips a BOM); every later page decodes under the
-    // verdict page 1 established, so the concatenation cannot mix encodings.
-    const decoded = cached === undefined ? decodeTextBytes(slice, true) : null
-    const encoding = cached ?? decoded?.encoding ?? 'utf8'
-    if (cached === undefined) {
-      if (pageEncodingCache.size >= PAGE_ENCODING_CACHE_MAX) {
-        const oldest = pageEncodingCache.keys().next()
-        if (!oldest.done) pageEncodingCache.delete(oldest.value)
+    const decoded = decodeTextBytes(slice, true)
+    let encoding: TextEncoding
+    let text: string
+    if (locked !== undefined) {
+      // A wide encoding the file already proved. Only offset 0 can carry a
+      // BOM, and decodeTextBytes is the one that strips it, so page 0 keeps its
+      // result while every later page decodes BOM-less under the locked verdict.
+      encoding = locked
+      text = offset === 0 && decoded !== null ? decoded.content : decodeTextAs(slice, locked)
+    } else {
+      encoding = decoded?.encoding ?? 'utf8'
+      text = decoded?.content ?? decodeTextAs(slice, 'utf8')
+      if (decoded !== null && isWideEncoding(decoded.encoding)) {
+        if (wideEncodingCache.size >= PAGE_ENCODING_CACHE_MAX) {
+          const oldest = wideEncodingCache.keys().next()
+          if (!oldest.done) wideEncodingCache.delete(oldest.value)
+        }
+        wideEncodingCache.set(cacheKey, decoded.encoding)
       }
-      pageEncodingCache.set(cacheKey, encoding)
     }
     return {
       kind: 'text',
-      text: decoded?.content ?? decodeTextAs(slice, encoding),
+      text,
       offset,
       nextOffset,
       eof: nextOffset >= size,
@@ -1606,7 +1642,7 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
         // remote-mirror namespaces project. Pre-joining here would paste a
         // `~` target after the cwd and hide it from the resolver.
         const path = await ensureWorkspacePath(cwd, raw)
-        const info = await stat(path)
+        const info = await statFileForRoute(path)
         if (!info.isFile()) {
           throw new SidebarError('fs-error', 'not a file', 400)
         }
@@ -1676,7 +1712,7 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
         // fallback.
         const cwd = await activeWorktreeRootOf(ctx, sessionId, await sessionCwdOf(ctx, sessionId))
         const absolute = await ensureWorkspacePath(cwd, path)
-        const info = await stat(absolute)
+        const info = await statFileForRoute(absolute)
         if (!info.isFile()) {
           throw new SidebarError('fs-error', 'not a file', 400)
         }

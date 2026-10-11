@@ -70,15 +70,25 @@ export function summarizeRecord(value: unknown): string {
   if (typeof value === 'object') {
     const entries = Object.entries(value as Record<string, unknown>)
     if (entries.length === 0) return '{}'
-    const parts: string[] = []
-    for (const [key, item] of entries) {
-      parts.push(`${key}: ${preview(item)}`)
-      if (parts.join(', ').length > SUMMARY_MAX) break
+    const rendered = entries.map(([key, item]) => `${key}: ${preview(item)}`)
+    const shown: string[] = []
+    for (const part of rendered) {
+      const candidate = shown.length === 0 ? part : `${shown.join(', ')}, ${part}`
+      // Room for the closing brace and, when properties were dropped, '…'.
+      if (candidate.length + 4 > SUMMARY_MAX) break
+      shown.push(part)
     }
-    const joined = parts.join(', ')
-    return truncate(`{${joined}${parts.length < entries.length ? ', …' : ''}}`)
+    if (shown.length === 0) {
+      // Even the FIRST property does not fit (one enormous string value): clamp
+      // it rather than returning a summary that names nothing at all.
+      return `{${rendered[0]!.slice(0, SUMMARY_MAX - 6)}…}`
+    }
+    return `{${shown.join(', ')}${shown.length < rendered.length ? ', …' : ''}}`
   }
-  return truncate(JSON.stringify(value) ?? String(value))
+  // A scalar has no structure to elide, so the JSON literal is already the
+  // best summary — clamped when the string itself is enormous.
+  const literal = JSON.stringify(value) ?? String(value)
+  return literal.length <= SUMMARY_MAX ? literal : `${literal.slice(0, SUMMARY_MAX - 1)}…`
 }
 
 /** The first-level preview of one property value. */
