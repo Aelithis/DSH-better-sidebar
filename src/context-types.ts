@@ -43,11 +43,23 @@ export interface SidebarHttpRequest {
 }
 
 /** The response face route handlers write to (structural subset of node's
- *  ServerResponse: the status/header/body writes the routes use). */
+ *  ServerResponse: the status/header/body writes the routes use).
+ *
+ *  `write` / `headersSent` / `destroy` exist for the raw byte routes
+ *  (`/sidebar/file`, `/sidebar/html`, `/sidebar/archive`), which stream a file
+ *  instead of buffering it. They stay plain structural members on purpose —
+ *  see the module header on why node types cannot appear here. */
 export interface SidebarHttpResponse {
   statusCode: number
+  /** True once a status line went out; a late failure can no longer become a
+   *  JSON envelope, so callers destroy the response instead. */
+  headersSent?: boolean
   writeHead(status: number, headers?: Record<string, string>): void
+  /** Append one body chunk; false means "wait for drain". */
+  write(chunk: string | Uint8Array): boolean
   end(body?: string | Uint8Array): void
+  /** Tear the connection down (mid-stream failure, client abort). */
+  destroy?(error?: Error): void
 }
 
 /** The upgrade socket face (structural subset: the destroy the fences use). */
