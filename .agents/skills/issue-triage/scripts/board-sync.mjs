@@ -174,7 +174,13 @@ for (const [key, want] of desired) {
   }
   const wantValues = { '优先级': want.prio, '批次': want.batch, 'Status': want.status };
   for (const [name, value] of Object.entries(wantValues)) {
-    if (!value || item.current[name] === value) continue;
+    if ((item.current[name] ?? undefined) === (value ?? undefined)) continue;
+    // A value that is no longer desired must be CLEARED, not left behind: a PR
+    // inherits its priority from the issues it cites, so when the last of those
+    // issues closes the inherited value has to go (otherwise verify() fails on
+    // exactly this mismatch). `value: null` is rejected — ProjectV2FieldValue!
+    // is non-null; the null option id is what clears a single-select.
+    if (!value) { mutations.push({ itemId: item.id, fieldId: fieldId[name], clear: true }); continue; }
     const oid = optionId[`${name}:${value}`];
     if (!oid) { console.log(`! ${key} no option ${name}:${value}`); continue; }
     mutations.push({ itemId: item.id, fieldId: fieldId[name], optionId: oid });
@@ -182,7 +188,7 @@ for (const [key, want] of desired) {
 }
 for (let i = 0; i < mutations.length; i += 16) {
   const chunk = mutations.slice(i, i + 16);
-  gql('mutation{' + chunk.map((m, k) => `m${k}:updateProjectV2ItemFieldValue(input:{projectId:"${PROJECT}",itemId:"${m.itemId}",fieldId:"${m.fieldId}",value:{singleSelectOptionId:"${m.optionId}"}}){projectV2Item{id}}`).join(' ') + '}');
+  gql('mutation{' + chunk.map((m, k) => `m${k}:updateProjectV2ItemFieldValue(input:{projectId:"${PROJECT}",itemId:"${m.itemId}",fieldId:"${m.fieldId}",value:${m.clear ? '{singleSelectOptionId:null}' : `{singleSelectOptionId:"${m.optionId}"}`}}){projectV2Item{id}}`).join(' ') + '}');
 }
 console.log(`items: ${items.size} on board | field writes: ${mutations.length}`);
 verify();
