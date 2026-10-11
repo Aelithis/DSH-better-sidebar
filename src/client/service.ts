@@ -313,6 +313,14 @@ export interface FileViewerProps {
    *  positions the reader there once, on arrival; every other viewer ignores
    *  it. Absent on an ordinary open. */
   line?: number
+  /** The viewer reports that it has APPLIED the `line` it was handed (or that
+   *  the line does not apply to it), and the host stops handing it out: the
+   *  line is one navigation, not a mode of the file. The host has to own that
+   *  memory — a reload remounts the viewer, so a viewer that only remembers
+   *  the line inside itself would receive it again after every refresh (for
+   *  markdown/html that means re-forcing the editor open, and the reader could
+   *  never return to preview). Optional: absent means "keep handing it out". */
+  onLineConsumed?: () => void
   /** fsRead text content (fetchStrategy='fsRead'). Absent when the file is
    *  above the editable threshold — see {@link largeFile}. */
   content?: string
@@ -473,6 +481,17 @@ export interface OpenTabSeed {
   path?: string
   /** A diff reference (the diff tab's content seed). */
   diff?: SidebarTab['diff']
+  /**
+   * The 1-based line a file reference named, for the `editor` kind (`#826`).
+   * Transient like the record's own `line`: it rides the open as a navigation
+   * the editor applies once (leaving preview, which renders no source lines)
+   * and the record forgets it right after.
+   *
+   * It is applied on a CREATE and on a native re-navigation; a store-branch
+   * FOCUS of an already-open tab (a host with no native surface) keeps the tab
+   * as it is — the same limitation the `diff` seed has.
+   */
+  line?: SidebarTab['line']
   /** Explicit tab id (defaults to the type). */
   id?: string
   /** A URL the tab navigates to on mount (the browser tab's seed). */
@@ -683,6 +702,13 @@ export interface BetterSidebarService {
    * ids restart per session and several sessions' tabs stay mounted at once,
    * so a component that knows its scope should pass it; omitted, a native id
    * resolves against the mounted seat.
+   */
+  /**
+   * Update the display fields of one open tab (title / path / meta) without
+   * re-opening it. A **path change is a new open**: the transient landing line
+   * a reference carried (#826) is dropped with it, because that line belongs to
+   * the navigation that delivered the file — an in-place switch or a rename
+   * that kept it would send the next file to the previous file's line.
    */
   updateTab(tabId: string, patch: { title?: string; path?: string; meta?: unknown }, sessionId?: string): void
   /**
@@ -1085,6 +1111,7 @@ export function createBetterSidebarService(store: SidebarStore): BetterSidebarSe
         title,
         ...(componentPath === undefined ? {} : { path: componentPath }),
         ...(seed.diff === undefined ? {} : { diff: seed.diff }),
+        ...(seed.line === undefined ? {} : { line: seed.line }),
         ...(seed.meta === undefined && minted?.tab.meta === undefined ? {} : { meta: seed.meta ?? minted?.tab.meta }),
       }
       if (seed.type === 'editor') {
@@ -1100,6 +1127,9 @@ export function createBetterSidebarService(store: SidebarStore): BetterSidebarSe
             sessionId: targetSessionId,
             address: surface.fileAddress(targetSessionId, scope?.cwd, seed.path),
             revealIfOpened: reveal,
+            // The reference's landing line, when the open came from one
+            // (`a.c#L131` — #826). Transient: the record spends it on arrival.
+            ...(seed.line === undefined ? {} : { line: seed.line }),
             ...(side ? { preferNewPane: true } : {}),
           })
         } else {
@@ -1161,6 +1191,9 @@ export function createBetterSidebarService(store: SidebarStore): BetterSidebarSe
           title: seed.title ?? (typeof descriptor.title === 'function' ? descriptor.title() : descriptor.title),
           ...(seed.path !== undefined ? { path: seed.path } : {}),
           ...(seed.diff !== undefined ? { diff: seed.diff } : {}),
+          // The landing line, when this open came from a file reference
+          // (`a.c#L131` — #826); the editor spends it on arrival.
+          ...(seed.line !== undefined ? { line: seed.line } : {}),
           ...(seed.meta !== undefined ? { meta: seed.meta } : {}),
         }
         next = applyDedupe(state, tab, descriptor, land)

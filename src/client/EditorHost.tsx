@@ -140,6 +140,25 @@ export function EditorHost(props: {
   // with the same path/scope — the only reload entry besides open/close.
   const [reloadSeq, setReloadSeq] = useState(0)
 
+  // The reference's landing line, SPENT once per open (#826).
+  //
+  // `tab.line` is one navigation, but the record keeps it for as long as the
+  // tab is open (the host re-delivers its navigation on every notification).
+  // The viewer cannot own that memory: a reload REMOUNTS it — this host swaps
+  // in the loading row — and a fresh instance starts at preview mode with an
+  // empty journal, so it would apply the same line again. For markdown/html
+  // that means re-forcing the file into the editor, and since the preview
+  // button reloads by design (#167 part B), the reader could never get back to
+  // preview. This host survives every reload, so the spent line is remembered
+  // here; the key carries the line, so a NEW reference re-arms it, and a file
+  // switch drops it (coming back to a file is a fresh open).
+  const [spentLine, setSpentLine] = useState<string | null>(null)
+  const lineKey = tab.line === undefined ? null : `${path}#${tab.line}`
+  const onLineConsumed = useCallback(() => {
+    if (lineKey !== null) setSpentLine(lineKey)
+  }, [lineKey])
+  useEffect(() => { setSpentLine(null) }, [path])
+
   // Manual refresh (issue #167 + PR #228): a dirty draft is dropped by the
   // reload (the editor instance remounts), so confirm before discarding it.
   const refreshFile = (): void => {
@@ -610,10 +629,11 @@ export function EditorHost(props: {
           {!showEmpty && load.status === 'ready' && createElement(load.viewer.component, {
             ctx, store, scope, path, title,
             viewerId: load.viewer.id,
-            // The reference's landing line, if the address carried one (#826).
-            // Only the text viewer acts on it; a markdown/html/image viewer
-            // gets the field and ignores it.
-            line: tab.line,
+            // The reference's landing line, if the address carried one (#826)
+            // AND this open has not spent it yet. Only the text viewer acts on
+            // it; a markdown/html/image viewer gets the field and ignores it.
+            line: lineKey !== null && lineKey !== spentLine ? tab.line : undefined,
+            onLineConsumed,
             content: load.content,
             size: load.size,
             largeFile: load.largeFile,
