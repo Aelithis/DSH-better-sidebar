@@ -829,8 +829,7 @@ export function GitLens(props: GitLensProps) {
       stagedEntries: staged,
       unstagedEntries: unstaged,
       // Each band's rows carry THAT band's reading: a path changed on both
-      // sides ('MM') sits in both trees, and the two diffs have different
-      // bases, so there is no single number to hand to either.
+      // sides sits in both trees, and neither may see the other's number.
       stagedTree: buildChangeTree(staged, 'staged'),
       unstagedTree: buildChangeTree(unstaged, 'unstaged'),
     }

@@ -28,10 +28,10 @@ export interface ChangeFile {
   path: string
   status: GitFileStatus
   /** THIS GROUP's line counts for the path (#131) — the index side inside the
-   *  staged group, the worktree side inside the unstaged one. A path changed on
-   *  both sides ('MM') lands in both groups with a different reading each, and
-   *  the sum of the two is nobody's number. Absent when git has no numstat row
-   *  for the path on this side — untracked files never have one. */
+   *  staged group, the worktree side inside the unstaged one, so a path changed
+   *  on both sides lands in both groups with a reading of its own each. Absent
+   *  when git has no numstat row for the path on this side — untracked files
+   *  never have one. */
   counts?: GitLineCounts
 }
 

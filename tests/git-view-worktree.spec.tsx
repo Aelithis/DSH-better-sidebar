@@ -455,7 +455,7 @@ describe('GitLens (changes tab, git lens) change tree', () => {
   async function mountTree(
     container: HTMLElement,
     root: Root,
-    entries: Array<{ path: string; xy: string; staged?: GitStatusEntry['staged']; unstaged?: GitStatusEntry['unstaged'] }>,
+    entries: GitStatusEntry[],
   ): Promise<void> {
     const changes = entries.filter(row => row.xy !== '  ').length
     vi.spyOn(api, 'gitWorktrees').mockResolvedValue([{ path: MAIN, branch: 'main', current: true, changes }])
@@ -802,11 +802,9 @@ describe('GitLens (changes tab, git lens) change tree', () => {
     it('gives each band its OWN side of a file changed on both sides, never the sum (#131 regression)', async () => {
       const { container, root } = makeRoot()
       try {
-        // One file, changed on both sides ('MM'): a one-line rewrite staged,
-        // then five lines appended in the worktree. The two diffs have
-        // different bases, so the path is listed once per band with its own
-        // reading — and the bands' totals are those readings. Summing them
-        // printed `+6 −1` on the staged band AND on the unstaged one.
+        // One file changed on both sides ('MM'): a one-line rewrite staged,
+        // then five lines appended in the worktree. Each band must show its own
+        // reading — summing them printed `+6 −1` on BOTH bands.
         await mountTree(container, root, [
           {
             path: 'a.txt',

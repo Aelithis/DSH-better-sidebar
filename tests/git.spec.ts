@@ -361,21 +361,28 @@ describe('numstat line counts (#131)', () => {
     expect(parseNumstat('not a numstat record\nanother one\n')).toEqual(new Map())
   })
 
-  it('carries each side\'s counts, the binary marker and the untracked absence through status()', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'dsh-git-counts-'))
-    try {
-      execFileSync('git', ['init', '-q'], { cwd: root })
-      execFileSync('git', ['config', 'user.email', 't@t'], { cwd: root })
-      execFileSync('git', ['config', 'user.name', 't'], { cwd: root })
-      // Rename detection is a user config (diff.renames / status.renames);
-      // pin it so this fixture means the same thing on every machine.
-      execFileSync('git', ['config', 'diff.renames', 'true'], { cwd: root })
-      execFileSync('git', ['config', 'status.renames', 'true'], { cwd: root })
-      writeFileSync(join(root, 'tracked.txt'), 'one\ntwo\n')
-      writeFileSync(join(root, 'renamed.txt'), 'same\n')
-      execFileSync('git', ['add', '-A'], { cwd: root })
-      execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: root })
+  /** A fresh repo whose `files` (path → content) are committed as the baseline.
+   *  `config` entries are applied before that first commit. */
+  function mkRepo(files: Record<string, string | Buffer>, config: Record<string, string> = {}): string {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-git-repo-'))
+    execFileSync('git', ['init', '-q'], { cwd: root })
+    execFileSync('git', ['config', 'user.email', 't@t'], { cwd: root })
+    execFileSync('git', ['config', 'user.name', 't'], { cwd: root })
+    for (const [key, value] of Object.entries(config)) execFileSync('git', ['config', key, value], { cwd: root })
+    for (const [name, content] of Object.entries(files)) writeFileSync(join(root, name), content)
+    execFileSync('git', ['add', '-A'], { cwd: root })
+    execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: root })
+    return root
+  }
 
+  it('carries each side\'s counts, the binary marker and the untracked absence through status()', async () => {
+    // Rename detection is a user config (diff.renames / status.renames); pin it
+    // so this fixture means the same thing on every machine.
+    const root = mkRepo(
+      { 'tracked.txt': 'one\ntwo\n', 'renamed.txt': 'same\n' },
+      { 'diff.renames': 'true', 'status.renames': 'true' },
+    )
+    try {
       // ONE path changed on BOTH sides (porcelain 'MM'): one line staged, then
       // one more in the worktree. The two diffs have different bases, so the
       // entry carries two readings — never one number that adds them up.
@@ -415,17 +422,9 @@ describe('numstat line counts (#131)', () => {
   it('never adds the two sides up: a line both diffs see is counted once per side', async () => {
     // The double-count regression. Editing the SAME line twice — staged once,
     // then edited again in the worktree — makes both numstat sides report the
-    // same single line. Summing them reported a 2-line change on the staged row
-    // AND on the unstaged one, while `git diff HEAD --numstat` says 1.
-    const root = mkdtempSync(join(tmpdir(), 'dsh-git-both-sides-'))
+    // same single line; summing them reported a 2-line change on BOTH rows.
+    const root = mkRepo({ 'a.txt': 'one\ntwo\nthree\n' })
     try {
-      execFileSync('git', ['init', '-q'], { cwd: root })
-      execFileSync('git', ['config', 'user.email', 't@t'], { cwd: root })
-      execFileSync('git', ['config', 'user.name', 't'], { cwd: root })
-      writeFileSync(join(root, 'a.txt'), 'one\ntwo\nthree\n')
-      execFileSync('git', ['add', '-A'], { cwd: root })
-      execFileSync('git', ['commit', '-q', '-m', 'init'], { cwd: root })
-
       writeFileSync(join(root, 'a.txt'), 'one\nTWO\nthree\n')
       execFileSync('git', ['add', 'a.txt'], { cwd: root })
       writeFileSync(join(root, 'a.txt'), 'one\nTwo\nthree\n')

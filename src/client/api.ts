@@ -67,9 +67,8 @@ export interface GitStatusEntry {
    *  no numstat row for the path on that side — an untracked file has none — so
    *  the row must not read that absence as `0`. */
   staged?: GitLineCounts
-  /** Lines gained/lost on the WORKTREE side (worktree vs index). The two sides
-   *  are separate readings, never one summed number: a path changed on both
-   *  sides ('MM') is rendered once per band, each with its own. */
+  /** Lines gained/lost on the WORKTREE side (worktree vs index) — a separate
+   *  reading, never one summed number. */
   unstaged?: GitLineCounts
 }
 

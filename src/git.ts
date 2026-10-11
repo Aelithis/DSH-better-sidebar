@@ -514,11 +514,8 @@ const GIT_STATUS_LIMIT = 2_000
  * costs only the counts (the rows fall back to their count-less rendering) —
  * the status answer itself must never fail because of it.
  *
- * Each side keeps its own reading ({@link GitStatusEntry.staged} /
- * {@link GitStatusEntry.unstaged}); they are never folded into one number. The
- * two diffs have different bases (index vs HEAD, worktree vs index), so a path
- * changed on both sides has two honest answers and no sum of them equals
- * either.
+ * Each side's reading lands on its own field of the entry
+ * ({@link GitStatusEntry} documents why the two are never summed).
  */
 export async function status(cwd: string, selected?: string): Promise<GitStatusResult> {
   const repositories = await repoRoots(cwd)
