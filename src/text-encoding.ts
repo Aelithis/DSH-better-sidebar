@@ -239,8 +239,122 @@ export function decodeTextBytes(bytes: Buffer, truncated = false): DecodedText |
   return { content: bytes.toString('utf8'), encoding: 'utf8' }
 }
 
-let gbkEncodeMap: Map<string, number> | undefined
+/**
+ * Whether an encoding stores one character as a fixed-width code unit, and
+ * whether that unit is little-endian. `1` covers every byte-oriented encoding
+ * (UTF-8, GBK, GB18030), where a `\n` byte is unambiguous.
+ */
+export function unitWidth(encoding: TextEncoding): 1 | 2 | 4 {
+  if (encoding === 'utf16le' || encoding === 'utf16le-bom' || encoding === 'utf16be' || encoding === 'utf16be-bom') return 2
+  if (encoding === 'utf32le-bom' || encoding === 'utf32be-bom') return 4
+  return 1
+}
 
+/**
+ * Whether one byte is a whole character or part of one.
+ *
+ * The paged reader needs exactly this distinction and nothing finer: a
+ * byte-oriented encoding can be re-sniffed per window safely (a pure-ASCII
+ * window of a GBK document decodes identically either way), while a wide
+ * encoding is a property of the FILE and must not be re-litigated by a window
+ * that happens to contain no NUL bytes.
+ *
+ * @param encoding - an encoding a window detected.
+ * @returns true for UTF-16 / UTF-32 in either byte order.
+ */
+export function isWideEncoding(encoding: TextEncoding): boolean {
+  return unitWidth(encoding) !== 1
+}
+
+/** Whether a fixed-width encoding is little-endian. */
+function unitLittleEndian(encoding: TextEncoding): boolean {
+  return encoding === 'utf16le' || encoding === 'utf16le-bom' || encoding === 'utf32le-bom'
+}
+
+/**
+ * The byte offset just past the LAST complete line break in `bytes`, or `-1`
+ * when the window holds none.
+ *
+ * A byte-oriented search would be wrong for the wide encodings: in UTF-16LE the
+ * low byte of U+0A41 is `0x0A`, so a naive `lastIndexOf(0x0A)` cuts a character
+ * in half. The search therefore only accepts a `0x0A` sitting in the unit
+ * position a U+000A code point would occupy — the first byte of a little-endian
+ * unit, the last byte of a big-endian one — and reports the end of that unit.
+ *
+ * @param bytes - the window just read.
+ * @param encoding - the encoding {@link decodeTextAs} will use for it.
+ * @returns an offset into `bytes`, or `-1` when the window has no line break.
+ */
+export function lastLineBreakEnd(bytes: Buffer, encoding: TextEncoding): number {
+  const width = unitWidth(encoding)
+  const littleEndian = unitLittleEndian(encoding)
+  for (let index = bytes.length - 1; index >= 0; index -= 1) {
+    if (bytes[index] !== 0x0A) continue
+    if (width === 1) return index + 1
+    const within = littleEndian ? index % width : width - 1 - (index % width)
+    if (within !== 0) continue
+    return littleEndian ? index + width : index + 1
+  }
+  return -1
+}
+
+/**
+ * Decode a buffer UNDER A KNOWN ENCODING, without sniffing.
+ *
+ * {@link decodeTextBytes} answers "what is this file?" from the bytes alone,
+ * which is the wrong question for the second page of a paged read: a page that
+ * happens to be pure ASCII sniffs as UTF-8 while a GBK page of the same
+ * document sniffs as GBK, and concatenating the two yields mojibake. The paged
+ * reader sniffs once and decodes every later window with this.
+ *
+ * BOM handling stays with the caller: `*-bom` encodings describe the file's
+ * first bytes, so a caller reading from a non-zero offset should pass the
+ * BOM-less spelling (see `bomlessEncoding`).
+ *
+ * @param bytes - the window to decode (already known to be text).
+ * @param encoding - the encoding the first window established.
+ * @returns the decoded text; undecodable bytes fall back to UTF-8, matching
+ *  {@link decodeTextBytes}'s replacement-character behavior.
+ */
+export function decodeTextAs(bytes: Buffer, encoding: TextEncoding): string {
+  switch (encoding) {
+    case 'utf8':
+    case 'utf8-bom':
+      return tryDecode(UTF8_DECODER, bytes) ?? bytes.toString('utf8')
+    case 'utf16le':
+    case 'utf16le-bom':
+      return decodeUtf16(bytes, true)
+    case 'utf16be':
+    case 'utf16be-bom':
+      return decodeUtf16(bytes, false)
+    case 'utf32le-bom':
+      return decodeUtf32(bytes, true)
+    case 'utf32be-bom':
+      return decodeUtf32(bytes, false)
+    case 'gbk':
+      return tryDecode(GBK_DECODER, bytes) ?? bytes.toString('utf8')
+    case 'gb18030':
+      return tryDecode(GB18030_DECODER, bytes) ?? bytes.toString('utf8')
+  }
+}
+
+/**
+ * The same encoding minus its BOM marker, for windows that do not start at the
+ * beginning of the file (only offset 0 can carry a BOM).
+ *
+ * @param encoding - an encoding an earlier window detected.
+ * @returns the BOM-less spelling (unchanged for encodings that have none).
+ */
+export function bomlessEncoding(encoding: TextEncoding): TextEncoding {
+  switch (encoding) {
+    case 'utf8-bom': return 'utf8'
+    case 'utf16le-bom': return 'utf16le'
+    case 'utf16be-bom': return 'utf16be'
+    default: return encoding
+  }
+}
+
+let gbkEncodeMap: Map<string, number> | undefined
 function getGbkEncodeMap(): Map<string, number> {
   if (gbkEncodeMap !== undefined) return gbkEncodeMap
   const map = new Map<string, number>()

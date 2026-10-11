@@ -135,12 +135,12 @@ dsh plugin --profile web add dsh-better-sidebar@latest
 1. git clone https://github.com/omdsh-dev/DSH-better-sidebar.git ~/Code/DSH-better-sidebar
    cd ~/Code/DSH-better-sidebar && pnpm install && pnpm build
 2. ~/.dsh/profiles/web/package.json 的 dependencies 写 "dsh-better-sidebar": "link:<克隆目录绝对路径>"
-3. ~/.dsh/profiles/web/cordis.patch.yml 追加挂载行（这一行的 `config` 就是本插件的设置表单：部署限额 `readLimit` / `mediaLimit` / `uploadLimit` / `listLimit` 加用户偏好字段，设置页写的就是它；不写则全部用 schema 默认值）：
+3. ~/.dsh/profiles/web/cordis.patch.yml 追加挂载行（这一行的 `config` 就是本插件的设置表单：部署限额 `listLimit` 加用户偏好字段，设置页写的就是它；不写则全部用 schema 默认值。**`readLimit` / `mediaLimit` / `uploadLimit` 三个键已在 v0.26.0 删除**——上传、下载、HTML 预览与打包全部改为流式，不再有大小限制；旧 profile 里残留的这三个键会被当作未知键静默忽略，不会报错）：
    - insert:
        - id: better-sidebar
          name: 'dsh-better-sidebar'
          config:
-           readLimit: 524288
+           listLimit: 1000
 4. 在 ~/.dsh/profiles/web 执行 pnpm install
 5. 硬刷新浏览器（Cmd/Ctrl+Shift+R）即可看到效果（client 改动无需重启 DSH；host 半改动才需重启）
 ```

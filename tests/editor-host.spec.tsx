@@ -37,7 +37,11 @@ vi.mock('../src/client/api.ts', () => ({
     // The shared git-status store polls this; a non-repo answer keeps rows plain.
     gitStatus: async () => ({ isRepo: false, entries: [] }),
     archiveBuild: async () => ({ id: 'ar-1', entries: 1 }),
-    archiveStatus: async () => ({ state: 'ready', done: 1, total: 1, bytes: 1 }),
+    archiveStatus: async () => ({ state: 'ready', bytes: 1 }),
+    // The host's fs.read route (a viewer with `fetchStrategy: 'fsRead'`). No
+    // built-in viewer is registered in these scenarios — `setup()` registers
+    // the editor tab type only — so only the case that drives it below reads.
+    fsRead: (...args: unknown[]) => fsRead(...args),
     // A `vi.fn` so the external-open cases can drive a refusal: the host route
     // reports a real failure since #412 instead of a silent `{ started: true }`.
     openExternal: vi.fn(async () => ({ started: true })),
@@ -48,6 +52,9 @@ vi.mock('../src/client/api.ts', () => ({
   archiveUrl: () => '/sidebar/archive',
   isOutsideWorkspaceMessage: () => false,
 }))
+
+/** The `fs.read` answers of the load-path cases (queued per test). */
+const fsRead = vi.fn()
 
 // The act() environment flag (React 18.2 reads it before flushing effects).
 import { setupReactAct } from './test-utils.ts'
@@ -460,19 +467,20 @@ describe('EditorHost (files window)', () => {
     }
   })
 
-  it('the header hides the save button for a truncated load (#732)', () => {
+  it('the header hides the save button for a file above the editable threshold (#732)', () => {
     const { store, ctx } = setup()
     const service = ctx.betterSidebar
-    // The TextEditor contract reports `truncated` alongside `editable`; the
-    // host's merged header must not offer save while only partial content
-    // is loaded (fs.write would replace the whole file with the prefix).
-    let report: ((truncated: boolean) => void) | undefined
+    // The TextEditor contract reports `largeFile` alongside `editable`; the
+    // host's merged header must not offer save while there is no document to
+    // save — the viewer is the read-only paged preview and fs.write would
+    // replace the file with a page.
+    let report: ((largeFile: boolean) => void) | undefined
     const FakeViewer = (viewerProps: FileViewerProps): ReactNode => {
       useEffect(() => {
         viewerProps.onToolbarControls?.({ setMode: () => {}, save: () => {} })
-        viewerProps.onToolbarState?.({ modes: true, mode: 'preview', dirty: false, editable: true, truncated: true, saveState: 'idle' })
-        report = (truncated) => {
-          viewerProps.onToolbarState?.({ modes: true, mode: 'preview', dirty: false, editable: true, truncated, saveState: 'idle' })
+        viewerProps.onToolbarState?.({ modes: true, mode: 'preview', dirty: false, editable: true, largeFile: true, saveState: 'idle' })
+        report = (largeFile) => {
+          viewerProps.onToolbarState?.({ modes: true, mode: 'preview', dirty: false, editable: true, largeFile, saveState: 'idle' })
         }
         return () => { viewerProps.onToolbarControls?.(null) }
         // Mount-only: re-running would re-fire the toolbar registration.
@@ -494,9 +502,44 @@ describe('EditorHost (files window)', () => {
     try {
       const header = container.querySelector('input')!.parentElement!
       expect(header.querySelector('button[aria-label="Save"]')).toBeNull()
-      // A full read replacing the content re-enables saving.
+      // A read that hands the document over re-enables saving.
       act(() => { report!(false) })
       expect(header.querySelector('button[aria-label="Save"]')).not.toBeNull()
+    } finally {
+      unmount()
+    }
+  })
+
+  it('a too-large read reaches the viewer as largeFile, with no document', async () => {
+    const { store, ctx } = setup()
+    const service = ctx.betterSidebar
+    // End to end through the host's load path: the host's fs.read answer is
+    // `too-large`, so the matched fsRead viewer is rendered with the size and
+    // `largeFile` — never with content (see editor-load.ts; the viewer side is
+    // pinned in editor-large-file.spec.tsx).
+    const size = 6 * 1024 * 1024
+    let seen: FileViewerProps | undefined
+    const FakeViewer = (viewerProps: FileViewerProps): ReactNode => {
+      seen = viewerProps
+      return createElement('div', null, 'paged-preview')
+    }
+    service.registerFileViewer({ id: 'test:big', exts: ['big'], fetchStrategy: 'fsRead', component: FakeViewer })
+    fsRead.mockResolvedValueOnce({ kind: 'too-large', size, head: 'e30=' })
+    service.openTab({ type: 'editor', title: 'big.big', path: '/tmp/big.big', id: 'editor:/tmp/big.big' })
+    const fileTab = (): SidebarTab =>
+      allLeaves(store.getSnapshot().state!.bottomSplits).flatMap(leaf => leaf.tabs)
+        .find(tab => tab.path === '/tmp/big.big')!
+    const { container, unmount } = mountHost(ctx, store, fileTab)
+    try {
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(container.textContent).toContain('paged-preview')
+      expect(fsRead).toHaveBeenCalledWith(expect.anything(), '/tmp/big.big')
+      expect(seen?.largeFile).toEqual({ size })
+      expect(seen?.size).toBe(size)
+      expect(seen?.content, 'the document is not handed over').toBeUndefined()
     } finally {
       unmount()
     }

@@ -4,6 +4,35 @@
 
 ### Unreleased
 
+- 📜 **超大文件的预览改成 VS Code 那种追加式滚动**：第一版做的是「上一页/下一页」的显式翻页（新页替换当前页），现在改为**滚到底自动取下一页并拼接**——读者读过的内容不会被抽走，行号跨页连续，「加载全部」就是一路追加到 EOF（必须串行：每一页的 `offset` 就是上一页响应的 `nextOffset`）。超限提示条最右侧新增「加载全部」按钮，加载中显示已读字节进度，到 EOF 后自动置灰。
+
+  配套的**行数上限**（`MAX_PREVIEW_ROWS = 50_000`）是这里唯一 VS Code 不需要、而本插件必须有的东西：它的 `TextModel` 与视图都做了虚拟化，所以模型里塞进一个 GB、DOM 仍然很小；本插件渲染的是真实元素。到顶后停止追加并明确提示改用下载——看得见的天花板胜过卡死的标签页，且这个数远高于任何人在侧栏里真会读的日志（6 MB 参考日志约 3.5 万条记录）。上限由读取 hook 持有而不是视图按**已渲染**行数判断：`loadAll` 在 `await` 循环里推进时 React 尚未重渲染，读渲染态的数字会滞后好几页把上限冲过去（新 spec 直接抓到：worker 十秒内 OOM）。
+
+
+> 📦 **上传、下载、HTML 预览与打包全部改为流式传输，不再有大小限制。** 三个部署限额键 `readLimit` / `mediaLimit` / `uploadLimit` 随之删除（旧 profile 里残留的值会被当作未知键静默忽略，无需迁移）；`listLimit` 保留。
+
+- ⚡ **下载不再有 20 MB 上限，宿主内存不再随文件增长**：`/sidebar/file` 与 `/sidebar/html` 从「整份 `readFile` → `res.end(buffer)`」改为 `createReadStream` + `pipeline`。关键在**写响应头的时机**——先等流的 `open` 事件再 `writeHead`，所以文件读不到（ENOENT/EACCES/目录）仍然回插件的 JSON 错误信封，而不是一个 200 加空体；提交之后再失败（文件被换掉、客户端断开）就 `destroy()` 掉连接，并给 `writeJson` 加了 `headersSent` 早退守卫，避免路由的 catch 块在已提交的响应上抛 `ERR_HTTP_HEADERS_SENT` 把「下载被截断」升级成「请求崩溃」。判别性用例见 `tests/file-stream-route.spec.ts`（21 MiB 真 `node:http` 下发、中途断开存活、不可读路径仍是 4xx 信封）。
+
+- ⚡ **上传的两道 128 MB 闸门删除**：上传本就已经端到端流式（`for await (chunk of req)` → 临时文件 → 原子 rename），挡路的只是客户端的 `MAX_UPLOAD_BYTES` 预检与宿主的逐块 `limit` 检查，两者一并去掉；流式核心、失败清理、不留残file的保证一字未改。
+
+- ⚡ **打包改由系统命令完成，不再自己写 ZIP**：删除手写的 300 行 ZIP writer（`src/zip.ts`，连同 `ZIP_MAX_BYTES` / `ZIP_MAX_ENTRIES` 两道上限），改为探测并调用系统的 `zip`（恒带 `-y`，否则会**跟随**符号链接、一个 `a -> .` 的自指环会一直递归）或 `tar`（Windows 10 1803+ 自带 `bsdtar` 而没有 `zip`）。压缩包的 stdout 直接写进 OS 临时目录，**从不整包进内存**，下载时流式下发、流结束后删除。`archive.status` 的 `done/total` 逐条目进度随之消失（子进程不报），状态收缩为 `{ state, bytes }`；工具都不存在时 `archive.build` 立刻回新的 wire 错误码 **`unavailable`**，界面显示一句可操作的提示。客户端的下载也从 `fetch → blob` 改回普通 `<a download>` 直链——Blob 会把整包放进标签页内存，正好抵消宿主侧的改造。
+
+- ⚡ **编辑器保存拆掉 1 MiB 的墙**：`fs.write` 原走 JSON，而 `/sidebar/api` 的请求体上限是 1 MiB，所以「能打开的文件存不回去」。保存改为 `POST /sidebar/write` 的 raw 路由（**文档即请求体**），编码与行尾还原逻辑（#523 / #871 的两条保证）原样保留并由 `tests/fs-write-route.spec.ts` 继续钉住，另加一条「远超旧上限的一次保存」。
+
+- 🧾 **超大文件从「截断成只读」改为「只读分页预览」**：`fs.read` 从「全读或截断」变成三态（`text` / `binary` / **`too-large`**）。超过编辑上限（5 MiB）的文本文件不再回半份文档，而是只带 4 KiB 嗅探头的 `too-large`，客户端据此渲染**分页只读预览**（等宽行列表，日志查看器形态）并提供下载出口；超过该大小的**二进制**走原来的 media 路径，行为完全不变。`FileViewerProps.truncated` 与 `truncation` 文案键一并删除——「拿到半份文档但看起来能编辑」这个状态本身就是 #732 的成因。新 `fs.readPage` 按字节窗口分页，窗口回退到最后一个换行，所以一页是整数行；超长单行原样返回而不是空页（否则「下一页」会停在一个永不前进的偏移上）。
+
+- 🆕 **`.jsonl` / `.ndjson` 有原生支持了**：此前它们既没有语法高亮（`lang.ts` 无映射 → 纯白文本），也不能简单地映射到 `json()`——`@lezer/json` 的文法只接受一个顶层值，实测 400 条记录的文件会解析出 **402 个错误节点**。现在有一个手写的逐行 JSON 词法分析器（一行一次、不携带跨行状态、未闭合字符串直接标错），新增第 4 个内置 viewer `jsonl`：**预览**是每条记录一张可折叠卡片（默认折叠成一行摘要，点开用宿主的 `JsonTree`），**编辑**是原样可保存的 CodeMirror，由预览/编辑开关切换。行引用（`a.jsonl#L131`）仍会先切到编辑档再落行。
+
+- 🎨 **修掉「错误标记看不见」**：`tags.invalid` 在深浅两种配色下都是 `#ffffff` —— 在浅色主题里就是白底白字。它是 JSON/JSONL 语法错误落到的 token，读者本该能看出哪段没解析；现改为红色波浪下划线。
+
+- 🔧 **`stat` 失败从 500 变 400**：两条字节路由原先让 `stat` 的原始 rejection 逃成「internal」500，读起来像插件故障；不可读的用户路径是 400。
+
+- 🔧 **分页读取的编码一致性（一处只有真机才会发现的回归）**：第一版锁死了第一页嗅探到的编码，于是「长 ASCII 前缀 + GBK 正文」的文件第一页判成 UTF-8 后，后半段 GBK 字节被按 UTF-8 解成乱码——而一次性全读是能正确解出来的。现在**只锁宽字符编码**（UTF-16/UTF-32 是文件属性，一页恰好没有 NUL 不能重新裁决），字节序编码逐页各自嗅探（纯 ASCII 页在两种编码下解出来是同一个字符串）。这在分页按行对齐的前提下是安全的：`0x0A` 既不能是 UTF-8 的续字节，也不能是 GBK 的尾字节。双向用例见 `tests/fs-read-page.spec.ts`。
+
+- 🧪 新守护：`tests/file-stream-route.spec.ts`、`tests/fs-read-page.spec.ts`、`tests/jsonl.spec.ts`、`tests/jsonl-language.spec.ts`、`tests/archive-tools.spec.ts`、`tests/archive.spec.ts`、`tests/editor-large-file.spec.tsx`（超限只读预览 + 可编辑反证）。`tests/zip.spec.ts` 随 writer 一起重写为 `tests/archive.spec.ts`；唯一一条真二进制用例自探测、缺席即跳过（CI 上没有 `zip` 的 Windows runner 不会红）。
+
+- 📖 设计过程、与 VS Code Web 的对照（含「VS Code 并不分页，它的模型是阈值 + 确认 + 关闭 tokenization」这一条纠错）以及实施偏差记录见 [docs/plans/2026-10-11-streaming-transfer-jsonl-preview.md](docs/plans/2026-10-11-streaming-transfer-jsonl-preview.md)。
+
 - 🃏 **任务卡小条只说原生状态**（首轮）：运行中不再是「● 运行中 正在读取文件」这样把状态念两遍，而是**活动行取代状态词**——`正在分析请求` / `正在读取文件 · main.ts` / `正在准备读取文件` / `正在运行命令 · npm run build` 等措辞来自宿主 `chat` 命名空间，与主对话逐字一致；已结算小条同理（只留 `已读取文件、执行了命令`）。**`空闲` 与 `出错` 保留状态词**（不被任何活动措辞蕴含），完全没有活动数据时回退状态词，小条永不空着。状态点、执行扫光与折叠 chevron、22px 高度都不变。
 - 🧩 **主代理卡片接上自己的实时数据**：`subagents.live` 路由一直把拓扑根的 fold 结果放在 `live[rootSessionId]`，而模型从未把它挂到根节点上——于是主代理卡片的状态文本**恒为 thinking 兜底**，与主会话在做什么无关。现在根卡显示真实状态，树模式根行的实时行也从恒定的「思考中…」变成真实活动。
 - 🔎 **节点详情浮窗的活动行移到标题下方**：原来在键值格里（`最近活动 ｜ 值`），右对齐的值列在 280px 被省略、标签又占掉三分之一宽；现在是标题下的一行 10px 小字（宿主措辞）+ 夹两行的实时文本尾行，**没有活动数据就不渲染**（此前每个浮窗都会显示「最近活动：正在分析请求」，已结算节点也一样）。词条 `tasksNodeActivity` 随这一行从 20 份词典删除。
@@ -27,6 +56,7 @@
 - 🔢 **聚合卡不再两处写计数**：待命组的徽标此前印的是**字面量字母 N**（`tasksFoldIdleGroup` 在 20 份词典里都是 `'N waiting' / 'N 个待命'`，没有 `{count}` 插值）——现在插值出真实计数，小条只保留`出错 N` 尾注与展开箭头；完整 tally 仍是卡片的 `aria-label` 与 tooltip。
 - 🎨 **树模式实时行的图标按活动类别取**：`tool-icons.tsx`（工具名映射，只有一处写死的调用）换成 `activity-icons.tsx` 的 `activityGlyph(kind)`——读文件 / 搜索 / 编辑 / 命令 / 网页 / 子代理 / 计划 / 提问 / 通用工具各用自己的宿主图标，尚未派发时是思考图标；`Record<ProcessActivity, …>` 让上游新增类别编译失败而不是静默兜底。
 - 🧪 测试：`tests/tasks-page.spec.tsx` 新增一个 `FakeChatLocale`（挂宿主 `chat` 命名空间，否则只能断言到 fallback 的 detail）并补 5 条（原生状态取代状态词、无数据回退、根卡真实状态、浮窗活动块位置与「无数据不渲染」、一次只开一组＋全局收起折回、徽标真实计数）；`tests/tasks-model.spec.ts` 补 4 条（按组展开的双向隔离、组 id、`expandedGroups` 盖过残留手工折叠、根节点带 live）；新增 `tests/activity-icons.spec.ts`（类别全覆盖 + 读/命令/搜索/网页互不同型 + `undefined` 走思考图标）。[设计文档](docs/plans/2026-10-11-tasks-status-and-group-fold.md)。
+
 
 ### v0.25.0
 
