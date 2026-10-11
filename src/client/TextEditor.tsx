@@ -416,6 +416,11 @@ export function TextEditor(props: FileViewerProps) {
       return
     }
     landedAtRef.current = key
+    // The reference asked for a LINE, so it wins over the preview's remembered
+    // reading position: the flip's own "enter edit where the reader was" effect
+    // is declared AFTER this one and would otherwise re-dispatch (and re-scroll
+    // to) the preview position in the same commit, silently undoing the jump.
+    previewSyncRef.current = { text: null, ratio: 0 }
     // Out-of-range references clamp to the last line rather than throwing —
     // the file can have changed since the link was written.
     const doc = view.state.doc
@@ -428,6 +433,13 @@ export function TextEditor(props: FileViewerProps) {
     // on the editor scroller can never touch anything outside the editor.
     view.requestMeasure()
     view.dispatch({ selection: { anchor: target } })
+    // Show the caret. A selection alone is invisible here: CodeMirror draws the
+    // cursor only in a FOCUSED editor, and a zero-length selection paints
+    // nothing — so an unfocused landing read as "the file just opened
+    // somewhere" (reported from the first manual test of this feature). Only a
+    // line reference focuses; an ordinary open leaves the reader's focus where
+    // it was (e.g. in the chat composer they clicked the link from).
+    view.focus()
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         const block = view.lineBlockAt(target)
