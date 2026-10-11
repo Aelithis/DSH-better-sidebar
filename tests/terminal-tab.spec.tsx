@@ -313,7 +313,11 @@ describe('terminal-bottom: carrier surface', () => {
     const state = store.getSnapshot().state!
     expect(state.bottomOpen).toBe(true)
     const tabs = state.bottomSplits.kind === 'leaf' ? state.bottomSplits.tabs : []
-    expect(tabs.map(tab => tab.id)).toEqual(['terminal-bottom'])
+    // Multi-instance since the #774 follow-up: the id is minted per open,
+    // so pin the TYPE and that exactly one tab landed.
+    expect(tabs).toHaveLength(1)
+    expect(tabs[0]?.type).toBe('terminal-bottom')
+    expect(tabs[0]?.id.startsWith('terminal-bottom:')).toBe(true)
   })
 })
 
