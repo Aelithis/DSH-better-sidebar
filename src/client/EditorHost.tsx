@@ -398,10 +398,10 @@ export function EditorHost(props: {
     // dirty mark (and with it the close guard) of a draft that was still
     // unsaved.
     const previousPath = loadedPathRef.current
-    const movedPath = previousPath !== path
+    const pathChanged = previousPath !== path
     loadedPathRef.current = path
-    if (movedPath && consumeRetargetedPath(retargetKey, previousPath, path)) return
-    if (!movedPath) clearRetargetedPath(retargetKey)
+    if (pathChanged && consumeRetargetedPath(retargetKey, previousPath, path)) return
+    if (!pathChanged) clearRetargetedPath(retargetKey)
     // A (re)load or a path-less tab clears any hoisted toolbar state — the
     // fresh viewer re-registers its own.
     setToolbar(null)

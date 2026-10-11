@@ -3,11 +3,11 @@
  *
  * The tree owns the rows; the TABS live in TWO spaces: the bottom workbench's
  * split tree (the sidebar state) and — where files actually open by default —
- * DSH's native right Sidebar, whose records only the native surface can
- * enumerate ({@link installedNativeSurface}). Both are walked here: skipping
- * the native one left every right-column editor bound to the OLD path, so its
- * next save wrote a name the user had just renamed away (recreating it) and a
- * deleted file came back with no prompt.
+ * DSH's native right Sidebar, whose records the store cannot see (they are
+ * reported by {@link SidebarSurface.pathTabs}, read through the service). Both
+ * are walked here: skipping the native one left every right-column editor bound
+ * to the OLD path, so its next save wrote a name the user had just renamed away
+ * (recreating it) and a deleted file came back with no prompt.
  *
  * A rename must retarget every tab at the renamed path — files, and anything
  * under a renamed directory (the same subtree rule the delete path already
@@ -17,9 +17,9 @@
  * the registered lifecycle callbacks fire like any other tab mutation.
  */
 import type { Context } from '../context-types.ts'
+import type { NativePathTab } from './service.ts'
 import { baseName, isWithinWorkspace, relativeTo, resolveSidebarPath } from './paths.ts'
 import { confirmDiscardDraft } from './editor-dirty.ts'
-import { installedNativeSurface } from './native/surface.ts'
 import { allLeaves, type SidebarSnapshot, type SidebarStore } from './state.ts'
 
 /** One open tab that carries a file path, and the space it lives in. */
@@ -105,7 +105,7 @@ export function clearRetargetedPath(key: string): void {
 }
 
 /** Every open tab that carries a file path, from BOTH tab spaces. */
-function pathTabsOf(snapshot: SidebarSnapshot): PathTab[] {
+function pathTabsOf(snapshot: SidebarSnapshot, native: readonly NativePathTab[]): PathTab[] {
   const tabs: PathTab[] = []
   const state = snapshot.state
   if (state !== undefined) {
@@ -120,7 +120,7 @@ function pathTabsOf(snapshot: SidebarSnapshot): PathTab[] {
       }
     }
   }
-  for (const tab of installedNativeSurface()?.fileTabs() ?? []) {
+  for (const tab of native) {
     tabs.push({
       key: pathTabKey(tab.scopeSessionId, tab.id),
       id: tab.id,
@@ -163,7 +163,7 @@ export function retargetPathTabs(ctx: Context, store: SidebarStore, oldPath: str
   if (service === undefined) return
   // The tabs live in the snapshot's session: native ids restart per session.
   const snapshot = store.getSnapshot()
-  for (const tab of pathTabsOf(snapshot)) {
+  for (const tab of pathTabsOf(snapshot, service.nativePathTabs())) {
     const moved = movedPath(tab.absolute, oldPath, newPath)
     if (moved === undefined) continue
     // The announcement has to match what the editor will see: it compares the
@@ -181,8 +181,10 @@ export function retargetPathTabs(ctx: Context, store: SidebarStore, oldPath: str
 export function closePathTabs(ctx: Context, store: SidebarStore, target: string, unsavedMessage: string): void {
   const service = ctx.get('betterSidebar')
   if (service === undefined) return
-  for (const tab of pathTabsOf(store.getSnapshot())) {
-    if (tab.absolute !== target && !isWithinWorkspace(target, tab.absolute)) continue
+  for (const tab of pathTabsOf(store.getSnapshot(), service.nativePathTabs())) {
+    // `isWithinWorkspace` is true for the target itself too, so one test covers
+    // both "this exact file" and "anything under this directory".
+    if (!isWithinWorkspace(target, tab.absolute)) continue
     if (!confirmDiscardDraft(tab.id, unsavedMessage)) continue
     // The tab is going away: a move announced for it can never be claimed.
     clearRetargetedPath(tab.key)

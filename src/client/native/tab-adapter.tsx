@@ -31,7 +31,7 @@ import { RenderBoundary } from '../RenderBoundary.tsx'
 import { OrphanedTab } from '../OrphanedTab.tsx'
 import { referenceInChat } from '../reference-in-chat.ts'
 import { useSessionRoot } from '../use-session-root.ts'
-import type { BetterSidebarService } from '../service.ts'
+import type { BetterSidebarService, NativePathTab } from '../service.ts'
 import { t } from '../locales.ts'
 import { isUnread, toggleExpanded } from '../state.ts'
 import type { SidebarStore, SidebarTab, TabType } from '../state.ts'
@@ -117,26 +117,6 @@ interface View {
  */
 function viewKey(sessionId: string, id: string): string {
   return `${sessionId}::${id}`
-}
-
-/** One native tab that carries a file path (the file tree's reconciliation
- *  handle: the right column's tabs live only in these records). */
-export interface NativePathTab {
-  /** The SEAT session the tab is drawn in (native tab ids restart per session,
-   *  so this is what tells two same-numbered tabs apart). */
-  sessionId: string
-  /** The session the tab's CONTENT belongs to — the `scope.sessionId` its
-   *  editor runs with, and the half of the reconciliation's marker key the
-   *  editor itself can reproduce. */
-  scopeSessionId: string
-  /** That session's workspace root, for resolving `path` when the address
-   *  stored it workspace-relative (a chat link does). */
-  cwd: string | undefined
-  /** The native tab id. */
-  id: string
-  /** The path the tab is bound to — a file path, or a browser tab's address
-   *  (a url seed is stored on the same field). */
-  path: string
 }
 
 /** The plugin-side record registry for native tabs. */
@@ -323,9 +303,12 @@ export function createNativeTabRecords(): NativeTabRecords {
       // have a plugin-side writer, so only a navigation this record has not
       // adopted yet may seed them (see {@link navigationRevisions}).
       const patch: Partial<SidebarTab> = {}
-      const adopted = revision !== undefined && navigationRevisions.get(key) !== revision ? revision : undefined
-      if (adopted !== undefined) {
-        navigationRevisions.set(key, adopted)
+      // Whether the host is addressing this record with a navigation it has not
+      // delivered yet. A revision-less caller (the plugin's own layout, an
+      // older caller) counts as new: it has no ledger to be compared against.
+      const newNavigation = revision === undefined || navigationRevisions.get(key) !== revision
+      if (revision !== undefined && newNavigation) {
+        navigationRevisions.set(key, revision)
         if (params?.meta !== undefined) patch.meta = params.meta
       }
       // `path` rides the same gate as `meta`: the file tree retargets an open
@@ -335,7 +318,7 @@ export function createNativeTabRecords(): NativeTabRecords {
       // away, recreating it. Only a real navigation (a new revision) may move
       // the record back onto its address.
       const nextPath = params?.path ?? params?.url
-      if (nextPath !== undefined && nextPath !== existing.tab.path && (revision === undefined || adopted !== undefined)) {
+      if (nextPath !== undefined && nextPath !== existing.tab.path && newNavigation) {
         patch.path = nextPath
       }
       // The landing line clears as well as sets: an in-place switch from

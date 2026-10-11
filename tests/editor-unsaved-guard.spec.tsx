@@ -242,13 +242,15 @@ describe('tree close-on-delete', () => {
 
 describe('tree rename/delete reconciliation', () => {
   /**
-   * A real native surface over a real record registry, installed on the
-   * service like the client half does. Native tabs are the DEFAULT place a file
-   * opens (with a native surface installed, `openTab` never touches the bottom
-   * splits), so a reconciliation that only walked `bottomSplits` skipped the
-   * tabs the user actually has open.
+   * A session with the editor type registered and a real native surface
+   * installed on the service, exactly like the client half does. Native tabs are
+   * the DEFAULT place a file opens (with a native surface installed, `openTab`
+   * never touches the bottom splits), so a reconciliation that only walked
+   * `bottomSplits` skipped the tabs the user actually has open.
    */
-  function mountNative(service: BetterSidebarService): {
+  function mountNativeSession(): {
+    store: ReturnType<typeof createSidebarStore>
+    service: BetterSidebarService
     records: ReturnType<typeof createNativeTabRecords>
     close: ReturnType<typeof vi.fn>
     context: Context
@@ -264,10 +266,13 @@ describe('tree rename/delete reconciliation', () => {
       get: (name: string) => (name === 'sidebarRight' ? controller : undefined),
       sessions: { list: { subscribe: () => () => {}, getSnapshot: () => ({}) } },
     }
-    const surface = createNativeSurface(surfaceCtx as never, records)
-    service.setSurface(surface)
+    const store = createSidebarStore()
+    const service = createBetterSidebarService(store)
+    service.registerTab({ id: 'editor', title: 'Files', dedupeKey: (tab) => tab.path, component: () => null })
+    service.setSurface(createNativeSurface(surfaceCtx as never, records))
+    store.setSession('native-scope')
     const context = { betterSidebar: service, get: (name: string) => name === 'betterSidebar' ? service : undefined } as unknown as Context
-    return { records, close, context }
+    return { store, service, records, close, context }
   }
 
   /** One editor record bound to a file, as a native open would mint it. */
@@ -275,14 +280,16 @@ describe('tree rename/delete reconciliation', () => {
     records: ReturnType<typeof createNativeTabRecords>,
     id: string,
     path: string,
+    seat: { sessionId?: string; cwd?: string } = {},
   ): void => {
+    const sessionId = seat.sessionId ?? 'native-scope'
     records.ensure({
-      sessionId: 'native-scope',
+      sessionId,
       id,
       kind: 'editor',
       title: 'a.ts',
       params: { path },
-      scope: { sessionId: 'native-scope' },
+      scope: seat.cwd === undefined ? { sessionId } : { sessionId, cwd: seat.cwd },
     })
   }
 
@@ -291,25 +298,17 @@ describe('tree rename/delete reconciliation', () => {
   // a later test's load.
   const TEST_IDS = ['tab1', 'tab2', 'tab3', 'tab4', 'tab5']
   const TEST_SEATS = ['native-scope', 'other-scope']
-  beforeEach(() => {
+  const resetModuleRegistries = (): void => {
     for (const id of TEST_IDS) {
       clearEditorDirty(id)
       for (const seat of TEST_SEATS) clearRetargetedPath(pathTabKey(seat, id))
     }
-  })
-  afterEach(() => {
-    for (const id of TEST_IDS) {
-      clearEditorDirty(id)
-      for (const seat of TEST_SEATS) clearRetargetedPath(pathTabKey(seat, id))
-    }
-  })
+  }
+  beforeEach(resetModuleRegistries)
+  afterEach(resetModuleRegistries)
 
   it('retargets a native tab when the FILE it shows is renamed', () => {
-    const store = createSidebarStore()
-    const service = createBetterSidebarService(store)
-    service.registerTab({ id: 'editor', title: 'Files', dedupeKey: (tab) => tab.path, component: () => null })
-    store.setSession('native-scope')
-    const { records, context } = mountNative(service)
+    const { store, records, context } = mountNativeSession()
     openNativeFile(records, 'tab1', '/ws/dir/a.ts')
 
     retargetPathTabs(context, store, '/ws/dir/a.ts', '/ws/dir/b.ts')
@@ -331,19 +330,8 @@ describe('tree rename/delete reconciliation', () => {
     // Comparing the two raw skipped exactly those tabs — the default way a file
     // reaches this column — and left them bound to the name the user had just
     // renamed away.
-    const store = createSidebarStore()
-    const service = createBetterSidebarService(store)
-    service.registerTab({ id: 'editor', title: 'Files', dedupeKey: (tab) => tab.path, component: () => null })
-    store.setSession('native-scope')
-    const { records, context } = mountNative(service)
-    records.ensure({
-      sessionId: 'native-scope',
-      id: 'tab2',
-      kind: 'editor',
-      title: 'a.ts',
-      params: { path: 'src/a.ts' },
-      scope: { sessionId: 'native-scope', cwd: '/ws' },
-    })
+    const { store, records, context } = mountNativeSession()
+    openNativeFile(records, 'tab2', 'src/a.ts', { cwd: '/ws' })
 
     retargetPathTabs(context, store, '/ws/src/a.ts', '/ws/src/b.ts')
 
@@ -362,20 +350,9 @@ describe('tree rename/delete reconciliation', () => {
     // its effect first (even one whose own path did not move — it clears what it
     // finds) wiped the other's pending move, and that editor reloaded the
     // renamed file with the draft this mechanism exists to protect.
-    const store = createSidebarStore()
-    const service = createBetterSidebarService(store)
-    service.registerTab({ id: 'editor', title: 'Files', dedupeKey: (tab) => tab.path, component: () => null })
-    store.setSession('native-scope')
-    const { records, context } = mountNative(service)
+    const { store, records, context } = mountNativeSession()
     openNativeFile(records, 'tab1', '/ws/a.ts')
-    records.ensure({
-      sessionId: 'other-scope',
-      id: 'tab1',
-      kind: 'editor',
-      title: 'a.ts',
-      params: { path: '/ws/a.ts' },
-      scope: { sessionId: 'other-scope' },
-    })
+    openNativeFile(records, 'tab1', '/ws/a.ts', { sessionId: 'other-scope' })
 
     retargetPathTabs(context, store, '/ws/a.ts', '/ws/b.ts')
 
@@ -416,11 +393,7 @@ describe('tree rename/delete reconciliation', () => {
   })
 
   it('retargets the SUBTREE when a directory is renamed (both tab spaces)', () => {
-    const store = createSidebarStore()
-    const service = createBetterSidebarService(store)
-    service.registerTab({ id: 'editor', title: 'Files', dedupeKey: (tab) => tab.path, component: () => null })
-    store.setSession('native-scope')
-    const { records, context } = mountNative(service)
+    const { store, service, records, context } = mountNativeSession()
     openNativeFile(records, 'tab2', '/ws/dir/deep/a.ts')
     // …and one in the bottom workbench (`target: 'bottom'` is the one open that
     // stays in the plugin's own layout), which the old code DID walk but only
@@ -440,11 +413,7 @@ describe('tree rename/delete reconciliation', () => {
   it('closes a native tab when its FILE is deleted, asking first when dirty', () => {
     const confirmSpy = vi.fn().mockReturnValue(false)
     vi.stubGlobal('confirm', confirmSpy)
-    const store = createSidebarStore()
-    const service = createBetterSidebarService(store)
-    service.registerTab({ id: 'editor', title: 'Files', dedupeKey: (tab) => tab.path, component: () => null })
-    store.setSession('native-scope')
-    const { records, close, context } = mountNative(service)
+    const { store, records, close, context } = mountNativeSession()
     openNativeFile(records, 'tab3', '/ws/a.ts')
     // The editor host registers the draft under the NATIVE tab id.
     setEditorDirty('tab3', true, 'native-scope', '/ws/a.ts')
@@ -463,11 +432,7 @@ describe('tree rename/delete reconciliation', () => {
   })
 
   it('closes native tabs under a deleted DIRECTORY', () => {
-    const store = createSidebarStore()
-    const service = createBetterSidebarService(store)
-    service.registerTab({ id: 'editor', title: 'Files', dedupeKey: (tab) => tab.path, component: () => null })
-    store.setSession('native-scope')
-    const { records, context } = mountNative(service)
+    const { store, records, context } = mountNativeSession()
     openNativeFile(records, 'tab4', '/ws/dir/deep/a.ts')
     openNativeFile(records, 'tab5', '/ws/other.ts')
 
