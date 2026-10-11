@@ -71,14 +71,18 @@ describe('Tasks page motion', () => {
     expect(source('src/client/TasksGraph.tsx')).toContain('animationDelay')
   })
 
-  it('stops the auto-fit once the reader drives the fold state', () => {
-    const graph = source('src/client/TasksGraph.tsx')
-    // Pan/zoom already claim the view; folding claims it too, so the canvas
-    // never re-frames itself under the cards the reader is watching.
-    expect(graph).toContain('markTouched')
-    expect(graph).toContain('expandGroupTouched')
-    expect(graph).toContain('foldNodeTouched')
-    expect(graph).toContain('toggleFoldTouched')
+  it('keeps the frame auto-fitted across a fold, by GLIDING rather than jumping', () => {
+    const graph = code('src/client/TasksGraph.tsx')
+    // Folding must not claim the view: while the reader has not taken over, a
+    // layout change glides the frame to the new fit, so an expanded group stays
+    // centred and inside the panel without yanking the view.
+    expect(graph).not.toContain('markTouched')
+    // The untouched-view path GLIDES to the new framing; a fresh session snaps
+    // (the content changes wholesale), and the reader's own gestures cancel a
+    // glide in flight.
+    expect(graph).toContain('if (!touchedRef.current) fitRef.current(true)')
+    expect(graph).toContain('fitRef.current(false)')
+    expect(graph).toContain('stopGlide()')
   })
 
   it('parks the motion host behind a WAAPI guard so tests and old hosts stay inert', () => {

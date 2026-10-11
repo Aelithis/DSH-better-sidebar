@@ -137,8 +137,11 @@ state === 'running'              → liveActivityLabel(summary)   // 宿主 mess
      目标盒子渲染（否则会有「先消失一帧再出现」的闪烁，首版实测就踩到了）。
    - **入场用 CSS 关键帧**：300ms 上浮 + `scale(0.88→1)` + 淡入（轻微过冲），按节点页序**错峰 26ms**，`fill-mode: backwards`
      让等待中的卡片先隐形。`prefers-reduced-motion` 下补间与入场都关闭。
-   - **读者碰折叠即接管视图**：`markTouched` 挂在三个折叠入口上（聚合卡、卡片 chevron、控制条开关），此后不再随布局自动重框；
-     切会话重置并重新适配（顺带修掉「拖过一次后换会话不再适配」）。
+   - **自动适配改为滑行**（维护者第三轮反馈：「最开始在 fit 档位，展开后也要是自适应的位置，避免节点溢出屏幕 / 不在中间」）。
+     上一版让折叠「接管视图」，代价正是这一条。收口方式：**视图变换本身也补间**（`tasks-view-glide.ts`：把 fit 的算术抽成
+     纯函数并单测，`applyFit(animate)` 用 rAF 把 `x/y/k` 从当前位置滑到新目标，220ms 与卡片同一条缓动）。于是
+     「保持自适应」与「不许瞬跳」不再二选一：布局一变就滑到新取景，展开后画面仍是居中、内容仍完整；只有读者拖过 / 缩放过
+     （`touchedRef`）才不再自动重框，任何读者手势（pointerdown / 滚轮 / 缩放按钮）都会立刻取消滑行。切会话仍旧直接落位（内容整体换掉）。
    - **FLIP 库保留在流式布局**（树视图、任务抽屉）；`tests/tasks-motion.spec.ts` 把「画布不得 import 它」写进守护，
      `tests/tasks-layout-tween.spec.tsx` 钉住插值 / 缓动 / 中途位置 / 画布尺寸不中途变化 / 入场盒子不缺席。
 2. **真机只跑通到「插件挂载 + 零 pageerror」**：新构建已装进 `sidebar-test` profile 并在 http://127.0.0.1:3080 提供服务（`[data-dsh-better-sidebar]` 挂载、`/sidebar/api/*` 200、无 pageerror / console error）。但**动效与观感的逐帧复核没做成**：宿主右栏在无头上下文里以 `transform` 平移到视口外，我的合成点击无法稳定地把任务页调出来（多次尝试后放弃）。这一条由维护者自己在实例上看。

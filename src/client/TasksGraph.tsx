@@ -41,6 +41,15 @@ import {
   type GraphBox,
 } from './tasks-graph-layout.ts'
 import { useTweenedLayout } from './tasks-layout-tween.ts'
+import { easeOut as glideEase } from './tasks-layout-tween.ts'
+import { fitTransform, GLIDE_MS, lerpTransform, type ViewTransform } from './tasks-view-glide.ts'
+
+/** Whether the reader asked the platform for less motion. */
+function prefersReducedMotion(): boolean {
+  return typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
 import {
   activityLine, agentChip, agentMeta, foldErrorTally, foldPreviews, FoldGlyph, foldTally,
   TaskLine, WorkflowGlyph, workflowMeta,
@@ -223,34 +232,68 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
   const edges = useMemo(() => tasksEdges(nodes), [nodes])
   const nodeById = useMemo(() => new Map(nodes.map(node => [node.id, node])), [nodes])
 
+  /** A running view glide (see fit): cancelled by any reader gesture. */
+  const glideRef = useRef(0)
+
+  /** Stop a glide where it is (the reader took the wheel). */
+  const stopGlide = useCallback((): void => {
+    if (glideRef.current !== 0) {
+      cancelAnimationFrame(glideRef.current)
+      glideRef.current = 0
+    }
+  }, [])
+
   /**
-   * Center the canvas and scale it to fill. The fit measures the CONTENT box
-   * (the layout's padding is breathing room, not content): centering the padded
-   * box leaves the graph visibly off-center in a narrow panel, which is exactly
-   * how "the graph looks small and sits in a corner" happens.
+   * The frame the auto-fit wants right now, or undefined before the container
+   * has been measured (the sidebar mounts hidden at zero size). The arithmetic
+   * lives in tasks-view-glide.ts, where a test can reach it.
    */
-  const fit = useCallback((): void => {
+  const fitTarget = useCallback((): ViewTransform | undefined => {
     const container = containerRef.current
-    if (container === null) return
-    const cw = container.clientWidth
-    const ch = container.clientHeight
-    if (cw === 0 || ch === 0) return
-    const contentW = Math.max(GRAPH_NODE_W, layout.width - GRAPH_PAD * 2)
-    const contentH = Math.max(GRAPH_NODE_H, layout.height - GRAPH_PAD * 2)
-    const k = Math.max(
-      GRAPH_FIT_MIN_SCALE,
-      Math.min(
-        (cw - FIT_MARGIN * 2) / contentW,
-        (ch - FIT_MARGIN * 2) / contentH,
-        FIT_MAX_SCALE,
-      ),
-    )
-    setTf({
-      x: (cw - contentW * k) / 2 - GRAPH_PAD * k,
-      y: Math.max(FIT_MARGIN / 2, (ch - contentH * k) / 2) - GRAPH_PAD * k,
-      k,
+    if (container === null) return undefined
+    return fitTransform({
+      containerW: container.clientWidth,
+      containerH: container.clientHeight,
+      layoutW: layout.width,
+      layoutH: layout.height,
+      pad: GRAPH_PAD,
+      minContentW: GRAPH_NODE_W,
+      minContentH: GRAPH_NODE_H,
+      margin: FIT_MARGIN,
+      minScale: GRAPH_FIT_MIN_SCALE,
+      maxScale: FIT_MAX_SCALE,
     })
   }, [layout.width, layout.height])
+
+  /**
+   * Put the frame where the fit wants it, either at once (a resize while the
+   * reader drags the panel edge, a fresh session) or as a GLIDE — the layout
+   * tween moves the cards, and the frame has to travel with them instead of
+   * jumping to the new framing a frame later. That glide is what makes "stay
+   * auto-fitted" and "never yank the view" the same behavior.
+   *
+   * @param animate - glide instead of snapping.
+   */
+  const applyFit = useCallback((animate: boolean): void => {
+    const target = fitTarget()
+    if (target === undefined) return
+    stopGlide()
+    if (!animate || prefersReducedMotion()) {
+      setTf(target)
+      return
+    }
+    const from = tfRef.current
+    const started = performance.now()
+    const step = (): void => {
+      const progress = glideEase((performance.now() - started) / GLIDE_MS)
+      setTf(lerpTransform(from, target, progress))
+      glideRef.current = progress < 1 ? requestAnimationFrame(step) : 0
+    }
+    glideRef.current = requestAnimationFrame(step)
+  }, [fitTarget, stopGlide])
+
+  /** The reader's own re-fit (the ⌂ button and a background double-click). */
+  const fit = useCallback((): void => { applyFit(true) }, [applyFit])
 
   /**
    * Keep the canvas reachable: a pan or a zoom-out may never push the whole
@@ -281,22 +324,24 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
     fit()
   }, [fit])
 
-  /** The newest `fit`, so the effects below can depend on WHAT changed. */
-  const fitRef = useRef(fit)
-  fitRef.current = fit
+  /** The newest `applyFit`, so the effects below can depend on WHAT changed. */
+  const fitRef = useRef(applyFit)
+  fitRef.current = applyFit
 
   // A different tree is a different canvas: re-fit AND hand the view back to the
-  // auto-fit, whatever the reader did to the previous one.
+  // auto-fit, whatever the reader did to the previous one. Snapped, because the
+  // content changes wholesale.
   useEffect(() => {
     touchedRef.current = false
-    fitRef.current()
+    fitRef.current(false)
   }, [rootId])
 
-  // Auto-fit on layout growth — but never over a view the reader has taken over
-  // (a pan, a zoom, or a fold: see markTouched). The container's own resize
-  // path below fits under the same rule.
+  // Layout growth while the reader has left the view alone: glide to the new
+  // framing, so expanding a group KEEPS the graph centred and inside the panel
+  // without the frame jumping out from under the cards travelling to it. A
+  // reader who panned or zoomed owns the view, and nothing moves it.
   useEffect(() => {
-    if (!touchedRef.current) fitRef.current()
+    if (!touchedRef.current) fitRef.current(true)
   }, [layout.width, layout.height])
 
   useEffect(() => {
@@ -328,6 +373,7 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
       const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, k * Math.exp(-event.deltaY * unit * 0.0014)))
       if (next === k) return
       touchedRef.current = true
+      stopGlide()
       setTf(clampTf({
         x: mx - (mx - x) * (next / k),
         y: my - (my - y) * (next / k),
@@ -336,7 +382,7 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
     }
     container.addEventListener('wheel', onWheel, { passive: false })
     return () => { container.removeEventListener('wheel', onWheel) }
-  }, [clampTf])
+  }, [clampTf, stopGlide])
 
   const zoomBy = useCallback((factor: number): void => {
     const container = containerRef.current
@@ -344,10 +390,11 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
     const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, k * factor))
     if (next === k || container === null) return
     touchedRef.current = true
+    stopGlide()
     const mx = container.clientWidth / 2
     const my = container.clientHeight / 2
     setTf(clampTf({ x: mx - (mx - x) * (next / k), y: my - (my - y) * (next / k), k: next }))
-  }, [clampTf])
+  }, [clampTf, stopGlide])
 
   /**
    * Drag-pan. The gesture only ever starts on the BACKGROUND: a pointerdown
@@ -370,6 +417,7 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
 
   const onPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>): void => {
     if (event.button !== 0) return
+    stopGlide()
     const target = event.target as HTMLElement
     if (target.closest('[data-graph-node]') !== null) return
     if (target.closest('[data-graph-controls]') !== null) return
@@ -395,36 +443,17 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
     window.addEventListener('pointercancel', onUp)
-  }, [clampTf])
+  }, [clampTf, stopGlide])
 
   /** Suppress node clicks that ended a drag gesture. */
   const clickAllowed = useCallback((): boolean => travelRef.current <= CLICK_TOLERANCE_PX, [])
 
-  /**
-   * The reader driving the FOLD state takes the view over, exactly like a pan
-   * or a zoom does: from then on the canvas stops re-framing itself when the
-   * layout changes, so folding a group never yanks the tree out from under the
-   * cards the reader is watching. The ⌂ button hands the view back.
+  /*
+   * Folding does NOT claim the view. The frame stays auto-fitted for as long as
+   * the reader has not panned or zoomed, and the fit GLIDES (applyFit), so a
+   * group that expands larger than the panel stays centred and inside it
+   * without the jump that claiming the view used to trade for.
    */
-  const markTouched = useCallback((): void => { touchedRef.current = true }, [])
-
-  /** The aggregate's click: reveal its group, with the view under the reader. */
-  const expandGroupTouched = useCallback((node: TasksFoldNode): void => {
-    markTouched()
-    onExpandGroup(node)
-  }, [markTouched, onExpandGroup])
-
-  /** The card's own chevron: fold that node, with the view under the reader. */
-  const foldNodeTouched = useCallback((node: TasksAgentNode): void => {
-    markTouched()
-    onFoldNode?.(node)
-  }, [markTouched, onFoldNode])
-
-  /** The cluster's page-level switch: the same claim on the view. */
-  const toggleFoldTouched = useCallback((): void => {
-    markTouched()
-    onToggleFold()
-  }, [markTouched, onToggleFold])
 
   // Phase frames: group each run's members by phase and box them.
   const phaseFrames = useMemo((): PhaseFrame[] => {
@@ -561,16 +590,16 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
                */
               animationDelay: `${Math.min(index, 9) * 26}ms`,
             }
-            if (node.kind === 'fold') return renderFoldNode(node, style, expandGroupTouched, clickAllowed)
+            if (node.kind === 'fold') return renderFoldNode(node, style, onExpandGroup, clickAllowed)
             if (node.kind === 'workflow') {
               return renderWorkflowNode(node, style, onWorkflowInfo, clickAllowed)
             }
-            return renderAgentNode(node, style, onNodeInfo, onOpenTask, clickAllowed, foldNodeTouched)
+            return renderAgentNode(node, style, onNodeInfo, onOpenTask, clickAllowed, onFoldNode)
           })}
         </div>
         <div className={css.controls} data-graph-controls>
           <ViewModeToggle mode={mode} onModeChange={onModeChange} />
-          <FoldToggleButton folded={folded} onToggleFold={toggleFoldTouched} />
+          <FoldToggleButton folded={folded} onToggleFold={onToggleFold} />
           <Button
             variant="ghost"
             size="sm"
