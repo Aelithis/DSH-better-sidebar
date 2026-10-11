@@ -438,10 +438,15 @@ export function TextEditor(props: FileViewerProps) {
         view.requestMeasure()
       })
     })
+    // The navigation is SPENT now: tell the host, which owns that memory (a
+    // reload remounts this component, and a fresh instance handed the same line
+    // again would re-force a markdown/html file into the editor — the reader
+    // could never click their way back to preview).
+    props.onLineConsumed?.()
     // The reveal reads the live view ref; `markdown`/`html` are derived from
     // `viewerId`, which the view-creation effect already keys on.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [content, path, line, mode])
+  }, [content, path, line, mode, props.onLineConsumed])
 
   // Scheme flip: re-theme in place (the compartment holds only the
   // scheme-dependent extensions; everything else is untouched).

@@ -313,6 +313,14 @@ export interface FileViewerProps {
    *  positions the reader there once, on arrival; every other viewer ignores
    *  it. Absent on an ordinary open. */
   line?: number
+  /** The viewer reports that it has APPLIED the `line` it was handed (or that
+   *  the line does not apply to it), and the host stops handing it out: the
+   *  line is one navigation, not a mode of the file. The host has to own that
+   *  memory — a reload remounts the viewer, so a viewer that only remembers
+   *  the line inside itself would receive it again after every refresh (for
+   *  markdown/html that means re-forcing the editor open, and the reader could
+   *  never return to preview). Optional: absent means "keep handing it out". */
+  onLineConsumed?: () => void
   /** fsRead text content (fetchStrategy='fsRead'). */
   content?: string
   truncated?: boolean

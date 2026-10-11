@@ -126,4 +126,20 @@ const render = (overrides: Partial<FileViewerProps> = {}): HTMLDivElement => {
     expect(anchors.length).toBe(after)
     expect(el.querySelector('.cm-content')).not.toBeNull()
   })
+
+  it('reports the navigation spent once, and only after the jump', () => {
+    // The host has to know when to stop handing the line out: it owns that
+    // memory, because a reload REMOUNTS this component (see
+    // tests/editor-line-nav-mode.spec.tsx). Reporting on the forced flip would
+    // spend it before the line ever landed.
+    const consumed = vi.fn()
+    render({ viewerId: 'markdown', path: '/workspace/readme.md', line: 2, onLineConsumed: consumed })
+    expect(consumed).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports nothing on an ordinary open', () => {
+    const consumed = vi.fn()
+    render({ onLineConsumed: consumed })
+    expect(consumed).not.toHaveBeenCalled()
+  })
 })
