@@ -92,7 +92,7 @@ describe('Tasks page motion', () => {
     const tree = code('src/client/TasksTree.tsx')
     expect(tree).toContain('function TreeLevel')
     expect(tree).toContain('useAutoAnimateRef')
-    expect(tree).toContain('<TreeLevel items=')
+    expect(tree).toContain('<TreeLevel')
   })
 
   it('parks the motion host behind a WAAPI guard so tests and old hosts stay inert', () => {

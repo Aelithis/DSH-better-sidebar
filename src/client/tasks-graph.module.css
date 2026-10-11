@@ -696,6 +696,29 @@
   color: var(--dsw-alias-state-business-primary);
 }
 
+/* A WORDED cell of the cluster (the tree's collapse/expand-all pair): the same
+   28px control shape as the glyph cells, sized by its label. Words rather than
+   more chevrons, because the settled-leaf switch beside them already wears that
+   vocabulary. */
+.controlText {
+  box-sizing: border-box;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px;
+  border: none;
+  background: none;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxxs-11);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.controlText:hover {
+  color: var(--dsw-alias-label-primary);
+}
+
 /* The zoom readout is the cluster's one non-button cell: same 28px height,
    micro type, tabular figures so the row of numbers does not jitter. */
 .controlZoomLevel {
@@ -776,6 +799,31 @@
 .treeKids {
   margin-left: 11px;
   padding-left: 14px;
+}
+
+/* The row's own disclosure control: at the row's END, the same 16px cell and
+   the same chevron the canvas card's bar wears — one tree, one place to look for
+   "open / close this node's children". A leaf renders none. */
+.treeDisclosure {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: flex-start;
+  width: 16px;
+  height: 16px;
+  margin: 8px 0 0 auto;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+
+.treeDisclosure:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-primary);
 }
 
 /* One child wrapper: the elbow that ties it to its parent's thread. The segment

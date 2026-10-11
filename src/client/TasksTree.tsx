@@ -17,7 +17,10 @@
  */
 import { useCallback, useMemo, useRef, type KeyboardEvent, type ReactNode } from 'react'
 import clsx from 'clsx'
-import { IconLoadingOutlineRegular, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
+import {
+  Button, IconChevronDownOutlineRegular, IconChevronRightOutlineRegular,
+  IconLoadingOutlineRegular, StateDot,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import type { TasksAgentNode, TasksFoldNode, TasksNode, TasksWorkflowNode } from './tasks-model.ts'
 import {
   AgentGlyph, agentChip, agentMeta, FoldGlyph, foldPreviews, foldTally, LiveLine, nodeDotState,
@@ -34,6 +37,13 @@ import css from './tasks-graph.module.css'
  * only, so a single host on the scroll container would animate the top level and
  * leave every nested fold to blink — the reader's "嵌套层级也要有动效".
  */
+/** The human name of a row, whatever kind it is (the disclosure names it). */
+function nodeLabel(node: TasksNode): string {
+  if (node.kind === 'agent') return node.label
+  if (node.kind === 'workflow') return node.run.name
+  return foldTally(node)
+}
+
 function TreeLevel(props: { items: readonly ReactNode[] }): ReactNode {
   const ref = useRef<HTMLDivElement>(null)
   useAutoAnimateRef(ref)
@@ -43,6 +53,18 @@ function TreeLevel(props: { items: readonly ReactNode[] }): ReactNode {
 export interface TasksTreeProps {
   nodes: readonly TasksNode[]
   folded: boolean
+  /**
+   * Nodes whose SUBTREE the reader folded away (the tree's own disclosure, one
+   * axis beside the page's settled-leaf rule). A parent not listed here shows
+   * its children.
+   */
+  collapsedIds: ReadonlySet<string>
+  /** One row's disclosure control. */
+  onToggleCollapse(nodeId: string): void
+  /** 全部收起: hide every subtree. */
+  onCollapseAll(): void
+  /** 全部展开: show every subtree again. */
+  onExpandAll(): void
   onNodeInfo(node: TasksAgentNode, anchor: HTMLElement): void
   onWorkflowInfo(node: TasksWorkflowNode, anchor: HTMLElement): void
   /** Open the shared task window for one task id. */
@@ -59,7 +81,8 @@ export interface TasksTreeProps {
 
 export function TasksTree(props: TasksTreeProps): ReactNode {
   const {
-    nodes, folded, onNodeInfo, onWorkflowInfo, onOpenTask, onToggleFold, onExpandGroup,
+    nodes, folded, collapsedIds, onToggleCollapse, onCollapseAll, onExpandAll,
+    onNodeInfo, onWorkflowInfo, onOpenTask, onToggleFold, onExpandGroup,
     mode, onModeChange, loading,
   } = props
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -89,6 +112,28 @@ export function TasksTree(props: TasksTreeProps): ReactNode {
   const onTreeKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>): void => {
     const items = bodyRef.current?.querySelectorAll<HTMLElement>('[data-tasks-row]') ?? []
     const index = Array.prototype.indexOf.call(items, document.activeElement)
+    if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
+      // The standard disclosure bindings: Right opens a folded row (and then
+      // walks into it with the next press), Left closes an open one (and then
+      // walks back out to its parent). Rows that offer neither just move.
+      const row = items[index]
+      const nodeId = row?.getAttribute('data-tree-node') ?? undefined
+      const expandable = row?.getAttribute('data-tree-expandable') === 'true'
+      const collapsed = row?.getAttribute('aria-expanded') === 'false'
+      event.preventDefault()
+      if (event.key === 'ArrowRight') {
+        if (nodeId !== undefined && expandable && collapsed) { onToggleCollapse(nodeId); return }
+        focusAt(index + 1)
+        return
+      }
+      if (nodeId !== undefined && expandable && !collapsed) { onToggleCollapse(nodeId); return }
+      // Walk out: the nearest row above with a SHALLOWER aria-level.
+      const level = Number(row?.getAttribute('aria-level') ?? '1')
+      for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+        if (Number(items[cursor]?.getAttribute('aria-level') ?? '0') < level) { focusAt(cursor); return }
+      }
+      return
+    }
     if (event.key === 'ArrowDown') {
       event.preventDefault()
       focusAt(index + 1)
@@ -102,7 +147,7 @@ export function TasksTree(props: TasksTreeProps): ReactNode {
       event.preventDefault()
       focusAt(items.length - 1)
     }
-  }, [focusAt])
+  }, [focusAt, onToggleCollapse])
 
   const activateOnKey = (event: KeyboardEvent, action: () => void): void => {
     if (event.key === 'Enter' || event.key === ' ') {
@@ -123,14 +168,45 @@ export function TasksTree(props: TasksTreeProps): ReactNode {
      * elbow that connects it to that level's thread, and the LAST sibling stops
      * its segment at the row's marker so the thread never hangs past the group.
      */
+    /** Whether this row's subtree is folded away right now. */
+    const collapsed = children.length > 0 && collapsedIds.has(node.id)
     const wrap = (body: ReactNode): ReactNode => (
       <div
         key={node.id}
         className={clsx(css.treeChild, last && css.treeChildLast)}
       >
         {body}
-        {children.length > 0 && <TreeLevel items={children.map(child => renderNode(child, depth + 1, child === children[children.length - 1]))} />}
+        {children.length > 0 && !collapsed && (
+          <TreeLevel
+            items={children.map(child => renderNode(child, depth + 1, child === children[children.length - 1]))}
+          />
+        )}
       </div>
+    )
+
+    /**
+     * The row's own disclosure control, placed at the row's END like the canvas
+     * card's own chevron (and measured the same 16px). Rendered only for a row
+     * that has children: a leaf gets no dead control, and the reader can read
+     * the row's shape from the chevron's direction alone.
+     */
+    const disclosure = children.length === 0 ? null : (
+      <button
+        type="button"
+        className={css.treeDisclosure}
+        aria-label={`${t(collapsed ? 'tasksTreeExpandRow' : 'tasksTreeCollapseRow')} ${nodeLabel(node)}`}
+        title={t(collapsed ? 'tasksTreeExpandRow' : 'tasksTreeCollapseRow')}
+        onClick={(event) => {
+          // The row's own click opens the detail window: the disclosure must
+          // never do both.
+          event.stopPropagation()
+          onToggleCollapse(node.id)
+        }}
+      >
+        {collapsed
+          ? <IconChevronRightOutlineRegular size={12} />
+          : <IconChevronDownOutlineRegular size={12} />}
+      </button>
     )
     const row = node.kind === 'fold'
       ? (
@@ -142,6 +218,9 @@ export function TasksTree(props: TasksTreeProps): ReactNode {
           aria-level={depth + 1}
           aria-label={`${foldTally(node)} · ${t('tasksFoldExpand')}`}
           className={clsx(css.treeRow, css.treeFoldRow)}
+          data-tree-node={node.id}
+          data-tree-expandable={children.length > 0 ? 'true' : undefined}
+          aria-expanded={children.length === 0 ? undefined : !collapsed}
           onClick={() => { onExpandGroup(node) }}
           onKeyDown={(event) => { activateOnKey(event, () => { onExpandGroup(node) }) }}
         >
@@ -159,6 +238,7 @@ export function TasksTree(props: TasksTreeProps): ReactNode {
               {foldPreviews(node.previews, node.count)}
             </span>
           </span>
+          {disclosure}
         </div>
       )
       : node.kind === 'workflow'
@@ -169,8 +249,10 @@ export function TasksTree(props: TasksTreeProps): ReactNode {
             role="treeitem"
             tabIndex={0}
             aria-level={depth + 1}
-            aria-expanded="true"
             aria-label={`${node.run.name} ${workflowMeta(node)}`}
+            data-tree-node={node.id}
+            data-tree-expandable={children.length > 0 ? 'true' : undefined}
+            aria-expanded={children.length === 0 ? undefined : !collapsed}
             className={clsx(css.treeRow, node.run.status !== 'running' && css.treeRowSettled)}
             onClick={(event) => { onWorkflowInfo(node, event.currentTarget) }}
             onKeyDown={(event) => {
@@ -183,6 +265,7 @@ export function TasksTree(props: TasksTreeProps): ReactNode {
               <span className={css.treeTitle} title={node.run.name}>{node.run.name}</span>
               <span className={css.treeMeta}>{workflowMeta(node)}</span>
             </span>
+            {disclosure}
           </div>
         )
         : (
@@ -193,6 +276,9 @@ export function TasksTree(props: TasksTreeProps): ReactNode {
             tabIndex={0}
             aria-level={depth + 1}
             aria-label={`${node.label} ${agentMeta(node)}`}
+            data-tree-node={node.id}
+            data-tree-expandable={children.length > 0 ? 'true' : undefined}
+            aria-expanded={children.length === 0 ? undefined : !collapsed}
             aria-current={node.current ? 'true' : undefined}
             className={clsx(
               css.treeRow,
@@ -222,6 +308,7 @@ export function TasksTree(props: TasksTreeProps): ReactNode {
               {node.state === 'running' && <LiveLine live={node.live} />}
               <TaskLine tasks={node.tasks} onOpenTask={onOpenTask} />
             </span>
+            {disclosure}
           </div>
         )
     return wrap(row)
@@ -249,6 +336,32 @@ export function TasksTree(props: TasksTreeProps): ReactNode {
       <div className={css.controls} data-graph-controls>
         <ViewModeToggle mode={mode} onModeChange={onModeChange} />
         <FoldToggleButton folded={folded} onToggleFold={onToggleFold} />
+        {/*
+          The tree's OWN disclosure axis, beside the settled-leaf rule: every
+          subtree out, or every subtree back in. Words rather than glyphs — the
+          two axes would otherwise wear the same chevron vocabulary and the
+          reader could not tell 折叠已完成的节点 from 收起所有子级.
+        */}
+        <Button
+          variant="ghost"
+          size="sm"
+          className={css.controlText}
+          aria-label={t('tasksTreeCollapseAll')}
+          title={t('tasksTreeCollapseAll')}
+          onClick={onCollapseAll}
+        >
+          {t('tasksTreeCollapseAll')}
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className={css.controlText}
+          aria-label={t('tasksTreeExpandAll')}
+          title={t('tasksTreeExpandAll')}
+          onClick={onExpandAll}
+        >
+          {t('tasksTreeExpandAll')}
+        </Button>
       </div>
     </div>
   )

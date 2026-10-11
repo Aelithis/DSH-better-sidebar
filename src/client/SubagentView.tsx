@@ -260,6 +260,12 @@ export function SubagentView(props: {
    */
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(() => new Set())
   const [teamBoardCollapsed, setTeamBoardCollapsed] = useState(false)
+  /**
+   * Tree-mode SUBTREE disclosure: rows whose children the reader folded away.
+   * Kept here (not inside TasksTree) so switching modes and coming back keeps
+   * the shape the reader left, and cleared by 全部展开.
+   */
+  const [collapsedIds, setCollapsedIds] = useState<ReadonlySet<string>>(() => new Set())
   const [popover, setPopover] = useState<PagePopover | null>(null)
 
   const model = useMemo(
@@ -358,6 +364,29 @@ export function SubagentView(props: {
    * drives whether the detail window offers the choice at all.
    */
   const asideAvailable = useMemo(() => hasTranscriptAside(ctx), [ctx])
+
+  /** One tree row's disclosure: show or hide that node's own subtree. */
+  const toggleCollapse = useCallback((nodeId: string): void => {
+    setCollapsedIds(current => {
+      const next = new Set(current)
+      if (!next.delete(nodeId)) next.add(nodeId)
+      return next
+    })
+  }, [])
+
+  /** 全部收起: every node that HAS children, so only the roots stay visible. */
+  const collapseAllTree = useCallback((): void => {
+    const parents = new Set<string>()
+    for (const node of model) if (node.parentId !== undefined) parents.add(node.parentId)
+    setCollapsedIds(current => (current.size === parents.size && [...parents].every(id => current.has(id))
+      ? current
+      : parents))
+  }, [model])
+
+  /** 全部展开: forget every subtree fold. */
+  const expandAllTree = useCallback((): void => {
+    setCollapsedIds(current => (current.size === 0 ? current : new Set()))
+  }, [])
 
   /** Fold one settled node into its parent's aggregate (its card's chevron). */
   const foldNode = useCallback((node: TasksAgentNode): void => {
@@ -627,6 +656,10 @@ export function SubagentView(props: {
             <TasksTree
               nodes={model}
               folded={folded}
+              collapsedIds={collapsedIds}
+              onToggleCollapse={toggleCollapse}
+              onCollapseAll={collapseAllTree}
+              onExpandAll={expandAllTree}
               loading={summaryBackedLoading}
               onNodeInfo={(node, anchor) => { setPopover({ kind: 'node', nodeId: node.id, anchor }) }}
               onWorkflowInfo={(node, anchor) => { setPopover({ kind: 'workflow', nodeId: node.id, anchor }) }}

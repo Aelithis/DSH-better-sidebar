@@ -1580,3 +1580,107 @@ describe('Tasks page: the card text tail and the tree chip', () => {
     unmount()
   })
 })
+
+/**
+ * The tree's own disclosure axis: one row's children, every row's children, and
+ * back again. It sits BESIDE the settled-leaf fold rule, so a reader can shrink
+ * a big topology without folding work away.
+ */
+describe('Tasks page: the tree disclosure', () => {
+  /** A snapshot with a nested child: root → child-0 → grandchild. */
+  function snapshotWithGrandchild(): SidebarSessionList {
+    const list = snapshotWithChildren(2)
+    const projections = list.projectionsBySession as Record<string, SidebarProjectionSnapshot>
+    const rootEntries = projections.root!.values.subagentCatalog as SidebarSubagentCatalogEntry[]
+    const grandchild: SidebarSubagentCatalogEntry = {
+      id: 'grand-0', createdAt: 9, mode: 'one-shot', label: '孙代理 0',
+    }
+    // `subagentCatalog` is a frozen tuple in the host's shape, so the grandchild
+    // rides a FRESH array rather than a push into the fixture's.
+    projections.root = {
+      values: { subagentCatalog: [...rootEntries, grandchild] },
+      state: 'ready',
+      error: null,
+    }
+    list.byId['grand-0'] = {
+      id: 'grand-0', displayTitle: 'grand-0', origin: 'subagent', parentId: 'child-0', running: false,
+    }
+    projections['child-0'] = {
+      values: { subagentCatalog: [grandchild] },
+      state: 'ready',
+      error: null,
+    }
+    projections['grand-0'] = { values: { subagentCatalog: [] }, state: 'ready', error: null }
+    return list
+  }
+
+  /** Render the page in TREE mode with the page-level fold unfolded. */
+  async function renderTree(snapshot: SidebarSessionList): Promise<{ container: HTMLElement, unmount(): void }> {
+    const rendered = renderRoot(createElement(SubagentView, {
+      sessionId: 'root', active: true, ctx: makeCtx(makeStore(snapshot)),
+    }))
+    await flushJobs()
+    await act(async () => {
+      (rendered.container.querySelector('button[aria-label="切换为树状图"]') as HTMLButtonElement).click()
+    })
+    await act(async () => {
+      (rendered.container.querySelector('button[aria-label="展开已完成的节点"]') as HTMLButtonElement).click()
+    })
+    return rendered
+  }
+
+  it('folds ONE row\'s subtree from its own control, and unfolds it again', async () => {
+    const { container, unmount } = await renderTree(snapshotWithGrandchild())
+    expect(container.textContent).toContain('孙代理 0')
+    const row = [...container.querySelectorAll('[data-tasks-row]')]
+      .find(candidate => candidate.textContent?.includes('子代理 0')) as HTMLElement
+    expect(row.getAttribute('aria-expanded')).toBe('true')
+    const control = row.querySelector('button[aria-label^="收起子级"]') as HTMLButtonElement
+    expect(control).not.toBeNull()
+    await act(async () => { control.click() })
+    expect(container.textContent).not.toContain('孙代理 0')
+    expect(row.getAttribute('aria-expanded')).toBe('false')
+    const reopen = row.querySelector('button[aria-label^="展开子级"]') as HTMLButtonElement
+    await act(async () => { reopen.click() })
+    expect(container.textContent).toContain('孙代理 0')
+    unmount()
+  })
+
+  it('offers no disclosure on a leaf row', async () => {
+    const { container, unmount } = await renderTree(snapshotWithChildren(1))
+    const row = [...container.querySelectorAll('[data-tasks-row]')]
+      .find(candidate => candidate.textContent?.includes('子代理 0')) as HTMLElement
+    expect(row.querySelector('button[aria-label^="收起子级"]')).toBeNull()
+    expect(row.getAttribute('aria-expanded')).toBeNull()
+    unmount()
+  })
+
+  it('collapses and expands EVERY subtree from the cluster', async () => {
+    const { container, unmount } = await renderTree(snapshotWithGrandchild())
+    expect(container.textContent).toContain('孙代理 0')
+    await act(async () => {
+      (container.querySelector('button[aria-label="全部收起"]') as HTMLButtonElement).click()
+    })
+    // Only the topology root is left: every parent folded its children away.
+    const remaining = [...container.querySelectorAll('[data-tasks-row]')]
+    expect(remaining).toHaveLength(1)
+    expect(remaining[0]?.textContent).toContain('主会话')
+    await act(async () => {
+      (container.querySelector('button[aria-label="全部展开"]') as HTMLButtonElement).click()
+    })
+    expect(container.textContent).toContain('孙代理 0')
+    unmount()
+  })
+
+  it('opens a folded row with ArrowRight and closes it with ArrowLeft', async () => {
+    const { container, unmount } = await renderTree(snapshotWithGrandchild())
+    const rows = [...container.querySelectorAll('[data-tasks-row]')] as HTMLElement[]
+    const row = rows.find(candidate => candidate.textContent?.includes('子代理 0')) as HTMLElement
+    row.focus()
+    await act(async () => { row.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true })) })
+    expect(container.textContent).not.toContain('孙代理 0')
+    await act(async () => { row.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })) })
+    expect(container.textContent).toContain('孙代理 0')
+    unmount()
+  })
+})
