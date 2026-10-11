@@ -48,6 +48,8 @@ import {
   rootAncestor,
 } from './subagent-detect.ts'
 import { subagentCatalogs } from './subagent-catalog.ts'
+import { sessionMetrics } from './session-metrics.ts'
+import { hasTranscriptAside, openTranscriptAside } from './subagent-chat.ts'
 import { teamMembersOf, teamProjectionOf } from './team-projection.ts'
 import { treeSessionIds } from './subagent-lineage.ts'
 import { orderJobs, type TreeJob } from './subagent-jobs.ts'
@@ -205,6 +207,9 @@ export function SubagentView(props: {
   // The projected per-parent catalogs, already folded into the view shape the
   // topology consumes (see subagent-catalog.ts).
   const catalogs = useMemo(() => subagentCatalogs(list.projectionsBySession), [list.projectionsBySession])
+  // Token usage and turn timing ride the same snapshot: the popover's two
+  // extra facts are read here, not fetched (see ./session-metrics.ts).
+  const metrics = useMemo(() => sessionMetrics(list.projectionsBySession), [list.projectionsBySession])
 
   // The topology root: the main agent of the current session's tree.
   const rootId = useMemo(() => rootAncestor(byId, sessionId), [byId, sessionId])
@@ -266,6 +271,7 @@ export function SubagentView(props: {
         rootId,
         currentSessionId: sessionId,
         live,
+        metrics,
         runs,
         teamMembers,
         teamTasks: team?.tasks ?? [],
@@ -273,7 +279,7 @@ export function SubagentView(props: {
         foldedIds,
         expandedGroups,
       })),
-    [byId, catalogs, rootId, sessionId, live, runs, teamMembers, team, folded, foldedIds, expandedGroups],
+    [byId, catalogs, rootId, sessionId, live, metrics, runs, teamMembers, team, folded, foldedIds, expandedGroups],
   )
 
   /**
@@ -293,7 +299,16 @@ export function SubagentView(props: {
     else sessions.openSubagent?.(target)
   }, [ctx, sessions])
 
-  const openChild = useCallback((address: SidebarSubagentAddress): void => {
+  /**
+   * Show one child session. `'side'` (the default) hands the transcript to the
+   * host's OWN right-sidebar tab and leaves the main column alone — that is the
+   * native affordance the host's subagent list uses, and it is skipped when the
+   * deployment cannot host it (no `subagentchat` type, no right column, or no
+   * mounted seat). `'main'` is the old behavior: the shell re-roots the Tasks
+   * page on the child and the main view follows.
+   */
+  const openChild = useCallback((address: SidebarSubagentAddress, place: 'side' | 'main' = 'side'): void => {
+    if (place === 'side' && openTranscriptAside(ctx, address)) return
     // Notify the shell first: the jump switches the sidebar to the child
     // session's own layout, and the shell re-opens the Tasks page on top
     // of it (the topology stays rooted at the main agent with the child
@@ -304,7 +319,7 @@ export function SubagentView(props: {
     } catch (error) {
       console.error('[dsh-better-sidebar] open subagent failed:', error)
     }
-  }, [openConversation, onOpenChild])
+  }, [ctx, openConversation, onOpenChild])
 
   /** Jump back to the main agent (the topology root) from its node. */
   const openMain = useCallback((): void => {
@@ -325,9 +340,9 @@ export function SubagentView(props: {
   }, [sessions])
 
   /** Jump from the detail window into the node's transcript. */
-  const jumpToNode = useCallback((node: TasksAgentNode): void => {
+  const jumpToNode = useCallback((node: TasksAgentNode, place: 'side' | 'main' = 'side'): void => {
     if (node.childAddress !== undefined) {
-      openChild(node.childAddress)
+      openChild(node.childAddress, place)
       setPopover(null)
       return
     }
@@ -336,6 +351,13 @@ export function SubagentView(props: {
       setPopover(null)
     }
   }, [openChild, openMain])
+
+  /**
+   * Whether this deployment can host a child transcript in its right column.
+   * Read once per ctx (the services arrive with the profile, not later), and it
+   * drives whether the detail window offers the choice at all.
+   */
+  const asideAvailable = useMemo(() => hasTranscriptAside(ctx), [ctx])
 
   /** Fold one settled node into its parent's aggregate (its card's chevron). */
   const foldNode = useCallback((node: TasksAgentNode): void => {
@@ -503,6 +525,7 @@ export function SubagentView(props: {
       return (
         <AgentNodePopover
           node={node}
+          asideAvailable={asideAvailable}
           onJump={jumpToNode}
           onOpenTask={openTaskById}
         />

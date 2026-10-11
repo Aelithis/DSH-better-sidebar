@@ -85,8 +85,19 @@ function makeJobsService() {
 /** The jobs service the page reads (rebuilt per test in beforeEach). */
 let jobsFake: ReturnType<typeof makeJobsService>
 
+/**
+ * The host's native right column, as the page writes to it: the tab registry
+ * probe (`sidebarRightTabs.get`) plus the `openResource` write face. `undefined`
+ * models a deployment without `ui-subagent` — the transcript then has nowhere
+ * to open but the main window.
+ */
+interface AsideSpy {
+  opened: string[]
+  options: Array<{ kind?: string; preferNewPane?: boolean } | undefined>
+}
+
 /** The client context face SubagentView touches. */
-function makeCtx(store: Store, navigation?: NavigationSpy): Context {
+function makeCtx(store: Store, navigation?: NavigationSpy, aside?: AsideSpy): Context {
   return {
     sessions: {
       list: store,
@@ -96,6 +107,19 @@ function makeCtx(store: Store, navigation?: NavigationSpy): Context {
       if (name === 'jobs') return jobsFake.service
       if (name === 'uiWorkspace' && navigation !== undefined) {
         return { openSession: (target: SidebarSubagentAddress | string) => { navigation.opened.push(target) } }
+      }
+      if (name === 'sidebarRightTabs' && aside !== undefined) {
+        // The page probes for the host's own `subagentchat` tab type before it
+        // writes; a host without it must not be called.
+        return { get: (kind: string) => (kind === 'subagentchat' ? { kind } : undefined) }
+      }
+      if (name === 'sidebarRight' && aside !== undefined) {
+        return {
+          openResource: (address: string, options?: { kind?: string; preferNewPane?: boolean }) => {
+            aside.opened.push(address)
+            aside.options.push(options)
+          },
+        }
       }
       return undefined
     },
@@ -960,9 +984,9 @@ describe('Tasks page: the shared task window', () => {
     const aggregate = container.querySelector('[data-graph-node="fold:root:idle"]') as HTMLElement
     expect(aggregate).not.toBeNull()
     // The badge carries the REAL count (it used to print the literal copy "N"),
-    // and the bar does not print it a second time.
+    // and the bar carries the ACTION instead of repeating it.
     expect(aggregate.querySelector('[data-card-kind="fold"]')?.textContent).toBe('3 个待命')
-    expect(aggregate.querySelector('[data-card-bar]')?.textContent).toBe('')
+    expect(aggregate.querySelector('[data-card-bar]')?.textContent).toBe('展开')
     expect(aggregate.textContent).not.toContain('已完成')
     // The finished group is a DIFFERENT row (empty here: nothing is done).
     expect(container.querySelector('[data-graph-node="fold:root"]')).toBeNull()
@@ -1010,7 +1034,9 @@ describe('Tasks page: the shared task window', () => {
     // same expand glyph the aggregate card's bar does.
     const expandGlyph = glyph('button[aria-label="展开已完成的节点"]')
     expect(expandGlyph).not.toBe('')
-    expect(glyph('[data-graph-node^="fold:"] [data-card-bar]')).toBe(expandGlyph)
+    // The aggregate's bar now opens with the GROUP glyph and closes with the
+    // expand chevron: the chevron is the cell that must match the cluster.
+    expect(glyph('[data-graph-node^="fold:"] [data-card-bar] > span:last-child')).toBe(expandGlyph)
 
     // Unfold: the cards' own control COLLAPSES one node, and it must not share
     // the expand glyph (the reader's report was that both looked identical).
@@ -1337,6 +1363,158 @@ describe('Tasks page: the node status line and per-group expansion', () => {
     const aggregate = container.querySelector('[data-graph-node="fold:root"]') as HTMLElement
     expect(aggregate).not.toBeNull()
     expect(aggregate.textContent).toContain('✓ 3 已完成')
+    unmount()
+  })
+
+  it('folds one member back from inside an open group (the card chevron stays live)', async () => {
+    // The reader's report: after opening an aggregate, clicking a card's own
+    // chevron did nothing. The manual fold is the newest intent and must beat
+    // the group's expansion, so the node returns to a NEW aggregate holding it
+    // while its siblings stay visible.
+    const store = makeStore(snapshotWithChildren(3))
+    const { container, unmount } = renderRoot(
+      createElement(SubagentView, { sessionId: 'root', active: true, ctx: makeCtx(store) }),
+    )
+    await flushJobs()
+    await act(async () => {
+      (container.querySelector('[data-graph-node="fold:root"]') as HTMLElement).click()
+    })
+    expect(container.querySelector('[data-graph-node="child-0"]')).not.toBeNull()
+    expect(container.querySelector('[data-graph-node="fold:root"]')).toBeNull()
+
+    await act(async () => {
+      (container.querySelector(
+        '[data-graph-node="child-0"] button[aria-label="收进已完成聚合"]',
+      ) as HTMLButtonElement).click()
+    })
+    expect(container.querySelector('[data-graph-node="child-0"]')).toBeNull()
+    expect(container.querySelector('[data-graph-node="child-1"]')).not.toBeNull()
+    const aggregate = container.querySelector('[data-graph-node="fold:root"]') as HTMLElement
+    expect(aggregate).not.toBeNull()
+    expect(aggregate.textContent).toContain('✓ 1 已完成')
+    unmount()
+  })
+})
+
+/**
+ * The detail window's two extra facts (token usage + turn timing) and the
+ * transcript jump: the child opens in the host's OWN right-sidebar tab by
+ * default, and the caret beside it offers the main window.
+ */
+describe('Tasks page: node metrics and the sidebar transcript jump', () => {
+  /** A snapshot whose child carries the host's metric projections. */
+  function snapshotWithMetrics(): SidebarSessionList {
+    const list = snapshotWithChildren(1)
+    Object.assign(list.projectionsBySession ?? {}, {
+      'child-0': {
+        values: {
+          subagentCatalog: [],
+          tokenUsage: {
+            uncachedInputTokens: 1_000, outputTokens: 4_000, cacheReadTokens: 20_000, cacheWriteTokens: 500,
+          },
+          subagentTiming: { settledMs: 162_000 },
+        },
+        state: 'ready',
+        error: null,
+      },
+    })
+    return list
+  }
+
+  /** Render, unfold the page and open the first child's detail window. */
+  async function openDetail(ctx: Context): Promise<{ unmount(): void, dialog: HTMLElement }> {
+    const { container, unmount } = renderRoot(
+      createElement(SubagentView, { sessionId: 'root', active: true, ctx }),
+    )
+    await flushJobs()
+    await act(async () => {
+      (container.querySelector('button[aria-label="展开已完成的节点"]') as HTMLButtonElement).click()
+    })
+    await act(async () => {
+      (container.querySelector('[data-graph-node="child-0"]') as HTMLElement).click()
+    })
+    return { unmount, dialog: document.querySelector('[role="dialog"]') as HTMLElement }
+  }
+
+  it('shows what the node spent and how long it worked', async () => {
+    const { unmount, dialog } = await openDetail(makeCtx(makeStore(snapshotWithMetrics())))
+    // 25.5K total, formatted the page's own way (517 / 12.2K / 1.2M).
+    expect(dialog.textContent).toContain('Token 用量')
+    expect(dialog.textContent).toContain('25.5K')
+    // 162s = 2 分 42 秒, in the same shape (and copy) the job rows use.
+    expect(dialog.textContent).toContain('耗时')
+    expect(dialog.textContent).toContain('2 分 42 秒')
+    unmount()
+  })
+
+  it('hides both rows when the host published no measurements', async () => {
+    const { unmount, dialog } = await openDetail(makeCtx(makeStore(snapshotWithChildren(1))))
+    expect(dialog.textContent).not.toContain('Token 用量')
+    expect(dialog.textContent).not.toContain('耗时')
+    unmount()
+  })
+
+  it('opens the child transcript in the native sidebar, and the main window from the caret', async () => {
+    const navigation: NavigationSpy = { opened: [] }
+    const aside: AsideSpy = { opened: [], options: [] }
+    const { unmount, dialog } = await openDetail(makeCtx(makeStore(snapshotWithChildren(1)), navigation, aside))
+
+    // The primary action hands the child to the host's `subagentchat` tab: the
+    // address carries parent + mode, and the main column is left alone.
+    await act(async () => {
+      ([...dialog.querySelectorAll('button')].find(button => button.textContent?.includes('查看转录')) as HTMLButtonElement).click()
+    })
+    expect(aside.opened).toEqual([
+      'dsh-resource://subagentchat/session/child-0?parent=root&mode=one-shot',
+    ])
+    expect(aside.options[0]).toEqual({ kind: 'subagentchat', preferNewPane: true })
+    expect(navigation.opened).toEqual([])
+
+    // The caret opens the alternative: the main view, through the workspace
+    // face the shell owns (the old behavior).
+    const { dialog: second } = await openDetail(makeCtx(makeStore(snapshotWithChildren(1)), navigation, aside))
+    const caret = [...second.querySelectorAll('button')]
+      .find(button => button.getAttribute('aria-label') === '在主窗口中打开') as HTMLButtonElement
+    expect(caret).toBeDefined()
+    await act(async () => { caret.click() })
+    const item = [...document.querySelectorAll('[role="menuitem"]')]
+      .find(node => node.textContent?.includes('在主窗口中打开')) as HTMLButtonElement
+    expect(item).toBeDefined()
+    await act(async () => { item.click() })
+    expect(navigation.opened).toEqual([
+      { parentSessionId: 'root', childSessionId: 'child-0', mode: 'one-shot' },
+    ])
+    unmount()
+  })
+
+  it('offers no sidebar alternative on a host without the subagent-chat tab', async () => {
+    const navigation: NavigationSpy = { opened: [] }
+    const { unmount, dialog } = await openDetail(makeCtx(makeStore(snapshotWithChildren(1)), navigation))
+    expect(dialog.querySelector('[aria-label="在主窗口中打开"]')).toBeNull()
+    await act(async () => {
+      ([...dialog.querySelectorAll('button')].find(button => button.textContent?.includes('查看转录')) as HTMLButtonElement).click()
+    })
+    expect(navigation.opened).toEqual([
+      { parentSessionId: 'root', childSessionId: 'child-0', mode: 'one-shot' },
+    ])
+    unmount()
+  })
+
+  it('rides the node mode on the badge row instead of a mono meta line', async () => {
+    const { unmount, container } = (() => {
+      const rendered = renderRoot(createElement(SubagentView, {
+        sessionId: 'root', active: true, ctx: makeCtx(makeStore(snapshotWithChildren(1))),
+      }))
+      return rendered
+    })()
+    await flushJobs()
+    await act(async () => {
+      (container.querySelector('button[aria-label="展开已完成的节点"]') as HTMLButtonElement).click()
+    })
+    const card = container.querySelector('[data-graph-node="child-0"]') as HTMLElement
+    // The chip is a child of the badge row, not a row of its own.
+    const badges = card.querySelector('[data-card-kind="subagent"]')?.parentElement as HTMLElement
+    expect(badges.textContent).toBe('子代理一次性')
     unmount()
   })
 })

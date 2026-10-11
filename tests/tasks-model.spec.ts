@@ -390,18 +390,21 @@ describe('buildTasksModel', () => {
       .toEqual(['fold:root', 'fold:root:idle'])
   })
 
-  it('keeps a member released while its group is open, even with a stale manual fold', () => {
-    // `foldedIds` is a per-node request; the aggregate's click means "show me
-    // these now", so an open group wins over a hand-folded member the page has
-    // not finished dropping.
-    const model = buildTasksModel(input({
-      catalogs: { root: catalog([child('done-1')]) },
-      byId: { root: summary('root'), 'done-1': summary('done-1') },
-      folded: true,
-      foldedIds: new Set(['done-1']),
+  it('lets a hand-folded member fold back INSIDE an open group', () => {
+    // The card's own chevron is the newest explicit intent: with the group open
+    // it must still fold that one node back (the reader's "cannot collapse it
+    // again" report), and the aggregate then reappears holding it.
+    const base = input({
+      catalogs: { root: catalog([child('done-1'), child('done-2')]) },
+      byId: { root: summary('root'), 'done-1': summary('done-1'), 'done-2': summary('done-2') },
       expandedGroups: new Set(['fold:root']),
-    }))
-    expect(model.map(node => node.id)).toEqual(['root', 'done-1'])
+    })
+    expect(buildTasksModel(base).map(node => node.id)).toEqual(['root', 'done-1', 'done-2'])
+    expect(buildTasksModel({ ...base, foldedIds: new Set(['done-1']) }).map(node => node.id))
+      .toEqual(['root', 'done-2', 'fold:root'])
+    expect(buildTasksModel({ ...base, foldedIds: new Set(['done-1']) })
+      .find(node => node.kind === 'fold'))
+      .toMatchObject({ id: 'fold:root', memberIds: ['done-1'] })
   })
 
   it('expands a RUN member group by its own aggregate id', () => {

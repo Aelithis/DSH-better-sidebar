@@ -112,14 +112,36 @@ state === 'running'              → liveActivityLabel(summary)   // 宿主 mess
    已补 `tests/tasks-page.spec.tsx` 的「drops the per-group openings when the CLUSTER collapses the page」
    用例；把判据翻回去即红（实测），这条用例是判别性的。
 
+## 第二轮（用户真机测试反馈，同日）
+
+用户在 3080 实例上实际测试后报回六条，逐条处置：
+
+| # | 反馈 | 处置 |
+|---|---|---|
+| 1 | 已完成的【聚合】卡下方空荡荡 | **是我上一轮的取舍造成的**：把计数收进徽标后，没有出错时那条只剩右侧一个 chevron。现在小条是**动作行**：组图标 + 「展开」+ 出错尾注 + 展开箭头（`tasksFoldExpandShort` 新词条，20 份词典） |
+| 2 | 展开后的子代理点不回去 | **真缺陷**：`expandedGroups` 压过了 `foldedIds`，导致展开组内卡片的 chevron 失效。改为**手动折叠优先**（手动 → 页级规则 → 组展开），并补两层判别性用例（模型 + 组件） |
+| 3 | 一次性子代理一直显示「一次性」 | 模式词**搬进徽标行**成 chip（用户口径：「和可续接等状态放到和子代理那个徽标一行上」）。智能体卡因此不再有 mono 元信息行，卡片高度预算拆成 `GRAPH_AGENT_NODE_H` / `GRAPH_NODE_H`（只有 workflow run 卡保留元信息行），`rowStrideFor(nodes)` 按模型里有没有 run 选行距 |
+| 4 | 动效，允许引入新库 | 用户选定 `@formkit/auto-animate`（~3KB，无依赖无安装脚本）。加 `useAutoAnimateRef` 包装（WAAPI 守卫 → jsdom 空转；尊重 `prefers-reduced-motion`），挂到画布卡片层 / 树视图 / 任务抽屉；详情卡另加 140ms 入场关键帧。核心 bundle 因此增大约 56KB（未压缩 CJS，含库源码 27KB） |
+| 5 | 弹窗多显示 token 与耗时 | 新增 **Token 用量** + **耗时** 两行。数据来自宿主投影（`tokenUsage` 四桶求和；`subagentTiming` 已结算 + 本次运行，按页面 3s 轮询刷新），`SidebarProjectionSnapshot.values` 镜像补两个键、模型新增 `metrics` 入参。**按存在性渲染**：没有测量就不显示这一行（0 是投影的初始态，与「没工作过」不可区分） |
+| 6 | 「查看转录」改为在侧边栏打开（原生能力），右侧加下拉按钮可在主窗打开 | 确认宿主确有该能力：`@deepseek-ai/dsh-client-ui-subagent` 注册 `subagentchat` tab 类型，宿主自己的子代理列表就是「点行 = 主窗、点 chevron = 侧栏」。插件照抄其地址公式（宿主不导出 builder/parser）并调 `openResource(addr, {kind:'subagentchat', preferNewPane:true})`，三级降级回主窗；页脚变为「主按钮 + caret 菜单（在主窗口中打开）」 |
+
+### 第二轮的实施偏差与未验证项
+
+1. **画布上的 FLIP 位移会被缩放比例影响**：auto-animate 用 `getBoundingClientRect` 量测、以未缩放的 `transform` 播放，而卡片层带着 fit 的 `scale(k)`——插入 / 移除的淡入淡出不受影响，**位置移动**的行程在 k≠1 时按 k 缩放（落点仍然正确）。选择接受并在 `use-auto-animate.ts` 里写明；若真机观感不够好，画布那一处可退化回 CSS 入场关键帧（库只保留树 / 抽屉）。
+2. **真机只跑通到「插件挂载 + 零 pageerror」**：新构建已装进 `sidebar-test` profile 并在 http://127.0.0.1:3080 提供服务（`[data-dsh-better-sidebar]` 挂载、`/sidebar/api/*` 200、无 pageerror / console error）。但**动效与观感的逐帧复核没做成**：宿主右栏在无头上下文里以 `transform` 平移到视口外，我的合成点击无法稳定地把任务页调出来（多次尝试后放弃）。这一条由维护者自己在实例上看。
+3. **实机数据的两个新行未在真机核验**：Token / 耗时两行通过夹具断言（25.5K / 2 分 42 秒）与 `session-metrics` 单测覆盖，但没有在真实子代理会话上截图确认数值口径（真实会话的 `tokenUsage` 是整段日志累计，包含 fork 继承前缀这一点已写进 `context-types.ts` 的注释）。
+4. **`uses` 依赖新增**：`@formkit/auto-animate@^0.10.0` 进 `dependencies`（无 `cordis`、无安装脚本，市场约束满足）。本 worktree 的 `node_modules` 因此从符号链接物化为独立副本（源仓库未被触碰，见仓库规则）。
+
+
 ## 验证证据
 
 | 项 | 结果 |
 |---|---|
 | `tsc --noEmit`（等价 `pnpm typecheck`） | ✅ 0 错误 |
 | `eslint .` | ✅ 0 错误 |
-| `vitest run`（全套） | ✅ **2227 passed / 17 skipped / 0 failed**（190 文件） |
-| `tsc -p tsconfig.build.json` + `tsdown` | ✅ 构建通过（核心 bundle 与三个 chunk 正常产出） |
+| `vitest run`（全套） | ✅ **2238 passed / 17 skipped / 0 failed**（191 文件，含第二轮新增的 3 个 spec 文件） |
+| `tsc -p tsconfig.build.json` + `tsdown` | ✅ 构建通过（核心 bundle 1,333,699 字节，较首轮 +56KB = auto-animate 及其包装） |
+| 真机挂载（`sidebar-test` profile，DSH 0.2.0-rc.2，:3080） | ✅ 装进独立 profile 后 `[data-dsh-better-sidebar]` 挂载、`/sidebar/api/*`（settings.get / session.phase / session.cwd）200、**0 pageerror / 0 console error**；动效观感未逐帧核验（见偏差 2） |
 
 本轮新增/改写的守护：
 

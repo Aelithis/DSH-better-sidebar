@@ -24,6 +24,7 @@ import {
   TaskLine, WorkflowGlyph, workflowMeta,
 } from './tasks-shared.tsx'
 import { FoldToggleButton, ViewModeToggle } from './TasksGraph.tsx'
+import { useAutoAnimateRef } from './use-auto-animate.ts'
 import { t } from './locales.ts'
 import css from './tasks-graph.module.css'
 
@@ -50,6 +51,11 @@ export function TasksTree(props: TasksTreeProps): ReactNode {
     mode, onModeChange, loading,
   } = props
   const bodyRef = useRef<HTMLDivElement>(null)
+  // Rows fold and unfold here too: the same FLIP host the graph's cards use,
+  // scoped to the top level (a nested row is animated by its own parent level
+  // in the graph; the tree keeps one host, so its rows arrive in place rather
+  // than blinking).
+  useAutoAnimateRef(bodyRef)
 
   /** children by parent id (model order preserved). */
   const childrenOf = useMemo(() => {

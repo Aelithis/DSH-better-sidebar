@@ -239,6 +239,19 @@
   color: var(--dsw-alias-label-secondary);
 }
 
+/* The identity chip (the node's mode word) rides the badge row: it is the same
+   word on every card of its kind, so a line of its own only repeated itself.
+   Plain ink, no border — the kind badge beside it owns the box. */
+.kindChip {
+  flex: none;
+  max-width: 46%;
+  font: var(--dsw-font-xxxs-11);
+  color: var(--dsw-alias-label-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* The workflow phase badge: the SECOND grouping axis. It takes the ink family
    (the level edge owns the accent family) so the two never read as one. */
 .phaseBadge {
@@ -388,6 +401,32 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* The aggregate's bar is the ACTION row: the group's glyph, the word naming
+   what a click does, and the chevron. The count lives on the badge above, so
+   the bar carries the action instead — a lone chevron in an empty strip read
+   as a broken card. The failure tail keeps the error ink, because it is the
+   one fact the ✓ badge cannot say. */
+.barFoldGlyph {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.barAction {
+  flex: 1;
+  min-width: 0;
+  color: var(--dsw-alias-state-business-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.barError {
+  flex: none;
+  color: var(--dsw-alias-state-error-primary);
 }
 
 .barFold {
@@ -758,6 +797,7 @@
    values and the body (secondary), the keys, group headers and hints
    (tertiary). A card never paints a fourth rung. */
 .popCard {
+  animation: dsh-pop-in 140ms cubic-bezier(0.2, 0.8, 0.3, 1);
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -770,6 +810,18 @@
   font: var(--dsw-font-xxs-12);
   color: var(--dsw-alias-label-primary);
   box-sizing: border-box;
+}
+
+@keyframes dsh-pop-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Motion is decoration: the card is fully usable without it. */
+@media (prefers-reduced-motion: reduce) {
+  .popCard {
+    animation: none;
+  }
 }
 
 /* The head band. It is exactly one control tall (28px, the host's `sm`), so a
@@ -1032,6 +1084,37 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* The jump split of the detail card: the primary action keeps the row and the
+   caret beside it opens the main-window alternative — the same split the host's
+   own subagent jump control wears. The menu is positioned from the caret (the
+   card is the portal's content root, so nothing clips it) and dismisses on an
+   outside pointerdown via the host's own hook. */
+.popFoot > .jumpMore {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  width: 28px;
+}
+
+.jumpMoreButton {
+  width: 100%;
+  padding: 0;
+}
+
+.jumpMenu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 4;
+  min-width: 152px;
+  padding: 4px;
+}
+
+.jumpMenuItem {
+  width: 100%;
+  justify-content: flex-start;
 }
 
 /* The streamed text tail under it keeps the card's smallest voice, clamped to

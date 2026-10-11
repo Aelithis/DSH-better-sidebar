@@ -60,12 +60,22 @@ const NODE_BAR_H = 22
  *  `+N` chip's own 1px outline (the tallest shape the row can take). */
 const NODE_TASK_H = 15 + 3
 
-/** Badges + TWO title lines + the mono meta line + the state bar: long agent
- *  names are clamped to two lines instead of ellipsizing to a couple of
- *  characters (see `.cardName` in tasks-graph.module.css), so the reserve
- *  covers that second line. */
-export const GRAPH_NODE_H = NODE_CHROME_H + NODE_PAD_TOP + NODE_BADGE_H
-  + NODE_TITLE_LINES * NODE_TITLE_LINE_H + NODE_META_H + NODE_PAD_BOTTOM + NODE_BAR_H
+/**
+ * An AGENT card: badges + TWO title lines + the state bar. Long agent names are
+ * clamped to two lines instead of ellipsizing to a couple of characters (see
+ * `.cardName` in tasks-graph.module.css), so the reserve covers that second
+ * line. The mode word moved into the badge row, so an agent card carries no
+ * mono meta line — reserving one left a visible 16px hole above the bar.
+ */
+export const GRAPH_AGENT_NODE_H = NODE_CHROME_H + NODE_PAD_TOP + NODE_BADGE_H
+  + NODE_TITLE_LINES * NODE_TITLE_LINE_H + NODE_PAD_BOTTOM + NODE_BAR_H
+/**
+ * The tallest card on the canvas: a workflow RUN keeps its mono meta line
+ * (status · member tally), which no badge can express. {@link rowStrideFor}
+ * narrows the row pitch back to {@link GRAPH_AGENT_NODE_H} for a model without
+ * runs, so agent-only trees do not grow 16px of empty gutter per row.
+ */
+export const GRAPH_NODE_H = GRAPH_AGENT_NODE_H + NODE_META_H
 /** Extra height of an agent node carrying a shared-task line (team members). */
 export const GRAPH_TASK_H = NODE_TASK_H
 
@@ -78,9 +88,20 @@ export const GRAPH_FIT_MIN_SCALE = 0.78
 export const GRAPH_GAP_X = 28
 export const GRAPH_GAP_Y = 53
 export const GRAPH_PAD = 16
-/** The row stride (one row of cards plus the vertical gutter). Every card
- *  shape must fit inside it — see {@link nodeHeight} for the tallest one. */
+/** The tallest row stride (the run card plus the vertical gutter). */
 export const GRAPH_ROW_STRIDE = GRAPH_NODE_H + GRAPH_GAP_Y
+
+/**
+ * The row pitch one model actually needs: the tallest card it draws plus the
+ * gutter. A workflow run is the only node that keeps a meta line, so a tree
+ * without runs never reserves that line.
+ *
+ * @param nodes - the model's node list.
+ */
+export function rowStrideFor(nodes: readonly TasksNode[]): number {
+  const tallest = nodes.some(node => node.kind === 'workflow') ? GRAPH_NODE_H : GRAPH_AGENT_NODE_H
+  return tallest + GRAPH_GAP_Y
+}
 
 /** One laid-out node. */
 export interface GraphBox {
@@ -111,7 +132,8 @@ export interface LayoutOptions {
  */
 function nodeHeight(node: TasksNode): number {
   if (node.kind !== 'agent') return GRAPH_NODE_H
-  return (node.tasks?.length ?? 0) > 0 ? GRAPH_NODE_H + GRAPH_TASK_H : GRAPH_NODE_H
+  const base = GRAPH_AGENT_NODE_H
+  return (node.tasks?.length ?? 0) > 0 ? base + GRAPH_TASK_H : base
 }
 
 /**
@@ -136,6 +158,7 @@ function bands(children: readonly TasksNode[], cols: number): TasksNode[][] {
  */
 export function layoutTasksGraph(nodes: readonly TasksNode[], options: LayoutOptions = {}): GraphLayout {
   const cols = Math.max(1, options.maxBandCols ?? 4)
+  const stride = rowStrideFor(nodes)
   const ids = new Set(nodes.map(node => node.id))
   const roots = nodes.filter(node => node.parentId === undefined || !ids.has(node.parentId))
   const childrenOf = new Map<string, TasksNode[]>()
@@ -171,7 +194,7 @@ export function layoutTasksGraph(nodes: readonly TasksNode[], options: LayoutOpt
     boxes.set(node.id, {
       id: node.id,
       x: Math.round(centerX - GRAPH_NODE_W / 2),
-      y: GRAPH_PAD + row * GRAPH_ROW_STRIDE,
+      y: GRAPH_PAD + row * stride,
       w: GRAPH_NODE_W,
       h: nodeHeight(node),
     })
@@ -206,7 +229,7 @@ export function layoutTasksGraph(nodes: readonly TasksNode[], options: LayoutOpt
 
   const allBoxes = [...boxes.values()]
   const width = Math.max(GRAPH_PAD * 2 + GRAPH_NODE_W, ...allBoxes.map(box => box.x + box.w + GRAPH_PAD))
-  const height = Math.max(GRAPH_PAD * 2 + GRAPH_NODE_H, ...allBoxes.map(box => box.y + box.h + GRAPH_PAD))
+  const height = Math.max(GRAPH_PAD * 2 + GRAPH_AGENT_NODE_H, ...allBoxes.map(box => box.y + box.h + GRAPH_PAD))
   return { boxes, width, height }
 }
 

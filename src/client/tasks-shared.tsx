@@ -188,20 +188,29 @@ export function agentMeta(node: TasksAgentNode): string {
 }
 
 /**
- * The CARD's mono meta line: WHO the node is, never its state.
+ * The identity CHIP of an agent card: the word that rides BESIDE the kind badge
+ * (一次性 / 可持续), or the one team state the badge cannot express (准备中 /
+ * 出错).
  *
- * The state belongs to the card's bottom bar (the state dot there, and the
- * state word whenever no activity line takes its place), so repeating it here
- * would print "已完成" twice inside one 190px card — the densest complaint the
- * readability pass had to fix. The accessible name keeps {@link agentMeta}
- * (state included), because a screen reader never sees the bar's dot.
+ * It is a chip and not a line of its own because the mode is the same word on
+ * every card of its kind: as a mono meta line it cost a 16px row to repeat
+ * itself, and the reader's report was exactly "模型一次性的子代理一直显示一次性".
+ * A plain teammate answers undefined — the badge already reads 成员 — and the
+ * root answers undefined too (its badge reads 主代理).
+ *
+ * The state stays out of it: the card's bottom bar carries it (its dot, and its
+ * word whenever no activity line takes that place), and the accessible name
+ * keeps {@link agentMeta} with the state included, because a screen reader
+ * never sees the bar's dot.
  */
-export function agentIdentity(node: TasksAgentNode): string {
-  // The root's badge already reads 主代理: an identity line would repeat it.
-  if (node.parentId === undefined) return ''
+export function agentChip(node: TasksAgentNode): string | undefined {
+  if (node.parentId === undefined) return undefined
   const mode = modeLabel(node.mode)
   if (mode !== undefined) return mode
-  return node.team === undefined ? '' : teamRoleLabel(node.team) ?? ''
+  if (node.team === undefined) return undefined
+  if (node.team.phase === 'provisioning') return t('tasksStateProvisioning')
+  if (node.team.phase === 'failed') return t('tasksStateError')
+  return undefined
 }
 
 /** The roster row's own identity word (the fallback for a modelless teammate). */

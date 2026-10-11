@@ -41,10 +41,11 @@ import {
   type GraphBox,
 } from './tasks-graph-layout.ts'
 import {
-  activityLine, agentIdentity, agentMeta, foldErrorTally, foldPreviews, foldTally,
+  activityLine, agentChip, agentMeta, foldErrorTally, foldPreviews, FoldGlyph, foldTally,
   TaskLine, WorkflowGlyph, workflowMeta,
 } from './tasks-shared.tsx'
 import { CardBar, CardTop, phaseClass, type CardKind } from './tasks-card.tsx'
+import { useAutoAnimateRef } from './use-auto-animate.ts'
 import { t } from './locales.ts'
 import css from './tasks-graph.module.css'
 import canvasCss from './tasks-canvas.module.css'
@@ -185,6 +186,14 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
     onFoldNode, mode, onModeChange, loading,
   } = props
   const containerRef = useRef<HTMLDivElement>(null)
+  /**
+   * The cards' own layer: FLIP-animated, so folding a group makes the cards
+   * leave (and the canvas re-slot) instead of blinking. The layer is the
+   * canvas's scaled child, so a move animation is scaled with the zoom — see
+   * use-auto-animate.ts.
+   */
+  const cardsRef = useRef<HTMLDivElement>(null)
+  useAutoAnimateRef(cardsRef)
   const [tf, setTf] = useState({ x: 0, y: 0, k: 1 })
   const [dragging, setDragging] = useState(false)
   /** Pointer travel of the in-flight gesture (click suppression). */
@@ -441,6 +450,7 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
           </div>
         )}
         <div
+          ref={cardsRef}
           className={css.canvasInner}
           style={{
             width: layout.width,
@@ -562,6 +572,8 @@ function renderAgentNode(
   const foldable = (settled || node.state === 'idle') && node.parentId !== undefined
   /** The merged process line the bar shows in place of the state word. */
   const activity = activityLine(node)
+  /** The identity word beside the kind badge (one badge row, no meta line). */
+  const chip = agentChip(node)
   return (
     <div
       key={node.id}
@@ -588,8 +600,8 @@ function renderAgentNode(
         kind={agentCardKind(node)}
         depth={node.depth}
         {...(node.phase === undefined ? {} : { phase: node.phase })}
+        {...(chip === undefined ? {} : { chip })}
         name={node.label}
-        meta={agentIdentity(node)}
       >
         <TaskLine tasks={node.tasks} onOpenTask={onOpenTask} />
       </CardTop>
@@ -646,12 +658,14 @@ function renderWorkflowNode(
 
 /**
  * One fold aggregate node: the finished or the waiting members of one parent,
- * collapsed. Its bar is the action row (expand THIS group), so the whole card
- * stays one click target.
+ * collapsed. Its bar is the action row — the group's own glyph, the word that
+ * names what a click does, and the expand chevron — so the whole card stays one
+ * click target.
  *
- * The count is printed ONCE: the badge names it, so the bar only carries what
- * the badge cannot say — a stray failure ("出错 N" would otherwise hide inside
- * the ✓) — beside the expand chevron. The full tally stays the card's
+ * The count is printed ONCE: the badge above names it, so the bar carries the
+ * ACTION instead (a bare chevron in an otherwise empty strip read as a broken
+ * card), plus the one fact the badge cannot say — a stray failure ("出错 N"
+ * would otherwise hide inside the ✓). The full tally stays the card's
  * accessible name and tooltip, which a screen reader reads instead of the
  * badge's inner text.
  */
@@ -686,8 +700,10 @@ function renderFoldNode(
         extraClass={css.cardNamePlain}
       />
       <CardBar state={node.foldKind === 'idle' ? 'idle' : 'done'} stateWord={false}>
+        <span className={css.barFoldGlyph} aria-hidden="true"><FoldGlyph size={10} /></span>
+        <span className={css.barAction} title={foldTally(node)}>{t('tasksFoldExpandShort')}</span>
         {errors !== undefined && (
-          <span className={css.barActivity} title={foldTally(node)}>{errors}</span>
+          <span className={css.barError}>{errors}</span>
         )}
         <span className={css.barFold} aria-hidden="true">
           <IconChevronDownOutlineRegular size={12} />

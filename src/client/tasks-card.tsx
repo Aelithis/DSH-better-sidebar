@@ -96,6 +96,13 @@ export function CardTop(props: {
   depth: number
   /** Workflow phase (a member's badge). */
   phase?: { index: number; title?: string }
+  /**
+   * The identity CHIP beside the kind badge — the node's own mode word
+   * (一次性 / 可持续) or the one team state the badge cannot express. It shares
+   * the badge row on purpose: as a mono line of its own it repeated the same
+   * word on every card and spent a 16px row saying it.
+   */
+  chip?: string
   /** The node's name (already resolved by the model). */
   name: string
   /** The mono meta line under the name. */
@@ -105,7 +112,7 @@ export function CardTop(props: {
   /** Extra rows the caller appends (the team task line). */
   children?: ReactNode
 }): ReactNode {
-  const { kind, count, foldKind, depth, phase } = props
+  const { kind, count, foldKind, depth, phase, chip } = props
   return (
     <span className={clsx(css.cardTop, depthClass(depth))}>
       <span className={css.cardBadges}>
@@ -120,6 +127,7 @@ export function CardTop(props: {
             {phase.title ?? t('workflowPhaseUnnamed')}
           </span>
         )}
+        {chip !== undefined && chip !== '' && <span className={css.kindChip}>{chip}</span>}
       </span>
       <span className={clsx(css.cardName, props.extraClass)} title={props.name}>{props.name}</span>
       {props.meta !== undefined && props.meta !== '' && (
