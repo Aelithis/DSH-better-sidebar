@@ -90,7 +90,11 @@ describe('host plugin smoke', () => {
       '/sidebar/file',
       '/sidebar/html',
     ])
-    expect(upgrades.map(route => route.path)).toEqual(['/sidebar/ws/agent-opens', '/sidebar/ws/fs-watch'])
+    expect(upgrades.map(route => route.path)).toEqual([
+      '/sidebar/ws/agent-opens',
+      '/sidebar/ws/fs-watch',
+      '/sidebar/ws/sidechat',
+    ])
     // Teardown runs without throwing.
     for (const cleanup of effects) cleanup()
   })
