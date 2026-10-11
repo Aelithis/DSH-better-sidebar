@@ -806,7 +806,7 @@ interface BetterSidebarService {
    *  改写记录。文件树的重命名 / 删除调解会一并处理原生承载面上的页签（跟着
    *  改址 / 按既有的未保存确认关闭；枚举由承载面内部交回服务，不是公开方法），
    *  消费插件不需要改任何代码。 */
-  updateTab(tabId: string, patch: { title?: string; path?: string; meta?: unknown }): void
+  updateTab(tabId: string, patch: { title?: string; path?: string; meta?: unknown }, sessionId?: string): void
   /** 激活一个已打开的 tab（tab 栏点击路径；触发 descriptor.onActivate；
    *  未知 id 严格 no-op）；scope（v0.12.0+）随回调传递，同 closeTab */
   activateTab(tabId: string, scope?: SessionScope): void

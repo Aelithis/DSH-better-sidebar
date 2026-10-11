@@ -726,18 +726,15 @@ export interface BetterSidebarService {
   /** Subscribe to snapshot changes (session switch, state changes, prefs changes). Returns the disposer. */
   subscribeState(listener: () => void): () => void
   /**
-   * Update an open tab's display fields (title / path / meta); a missing tab id
-   * is a no-op. `sessionId` names the seat session the tab lives in — native
-   * ids restart per session and several sessions' tabs stay mounted at once,
-   * so a component that knows its scope should pass it; omitted, a native id
-   * resolves against the mounted seat.
-   */
-  /**
    * Update the display fields of one open tab (title / path / meta) without
-   * re-opening it. A **path change is a new open**: the transient landing line
-   * a reference carried (#826) is dropped with it, because that line belongs to
-   * the navigation that delivered the file — an in-place switch or a rename
-   * that kept it would send the next file to the previous file's line.
+   * re-opening it; a missing tab id is a no-op. `sessionId` names the seat
+   * session the tab lives in — native ids restart per session and several
+   * sessions' tabs stay mounted at once, so a component that knows its scope
+   * should pass it; omitted, a native id resolves against the mounted seat.
+   * A **path change is a new open**: the transient landing line a reference
+   * carried (#826) is dropped with it, because that line belongs to the
+   * navigation that delivered the file — an in-place switch or a rename that
+   * kept it would send the next file to the previous file's line.
    */
   updateTab(tabId: string, patch: { title?: string; path?: string; meta?: unknown }, sessionId?: string): void
   /**
