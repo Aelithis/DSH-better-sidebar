@@ -98,8 +98,3 @@ function preview(value: unknown): string {
   if (typeof value === 'object') return '{…}'
   return JSON.stringify(value) ?? String(value)
 }
-
-/** Clamp a summary to one scannable line. */
-function truncate(text: string): string {
-  return text.length <= SUMMARY_MAX ? text : `${text.slice(0, SUMMARY_MAX - 1)}…`
-}

@@ -2,6 +2,32 @@
 
 > 本文档收录 dsh-better-sidebar 的完整发布历史（最新版摘要见 [README](README.md)；同步发布于 [GitHub Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases)）。
 
+### 未发布
+
+> 📦 **上传、下载、HTML 预览与打包全部改为流式传输，不再有大小限制。** 三个部署限额键 `readLimit` / `mediaLimit` / `uploadLimit` 随之删除（旧 profile 里残留的值会被当作未知键静默忽略，无需迁移）；`listLimit` 保留。
+
+- ⚡ **下载不再有 20 MB 上限，宿主内存不再随文件增长**：`/sidebar/file` 与 `/sidebar/html` 从「整份 `readFile` → `res.end(buffer)`」改为 `createReadStream` + `pipeline`。关键在**写响应头的时机**——先等流的 `open` 事件再 `writeHead`，所以文件读不到（ENOENT/EACCES/目录）仍然回插件的 JSON 错误信封，而不是一个 200 加空体；提交之后再失败（文件被换掉、客户端断开）就 `destroy()` 掉连接，并给 `writeJson` 加了 `headersSent` 早退守卫，避免路由的 catch 块在已提交的响应上抛 `ERR_HTTP_HEADERS_SENT` 把「下载被截断」升级成「请求崩溃」。判别性用例见 `tests/file-stream-route.spec.ts`（21 MiB 真 `node:http` 下发、中途断开存活、不可读路径仍是 4xx 信封）。
+
+- ⚡ **上传的两道 128 MB 闸门删除**：上传本就已经端到端流式（`for await (chunk of req)` → 临时文件 → 原子 rename），挡路的只是客户端的 `MAX_UPLOAD_BYTES` 预检与宿主的逐块 `limit` 检查，两者一并去掉；流式核心、失败清理、不留残file的保证一字未改。
+
+- ⚡ **打包改由系统命令完成，不再自己写 ZIP**：删除手写的 300 行 ZIP writer（`src/zip.ts`，连同 `ZIP_MAX_BYTES` / `ZIP_MAX_ENTRIES` 两道上限），改为探测并调用系统的 `zip`（恒带 `-y`，否则会**跟随**符号链接、一个 `a -> .` 的自指环会一直递归）或 `tar`（Windows 10 1803+ 自带 `bsdtar` 而没有 `zip`）。压缩包的 stdout 直接写进 OS 临时目录，**从不整包进内存**，下载时流式下发、流结束后删除。`archive.status` 的 `done/total` 逐条目进度随之消失（子进程不报），状态收缩为 `{ state, bytes }`；工具都不存在时 `archive.build` 立刻回新的 wire 错误码 **`unavailable`**，界面显示一句可操作的提示。客户端的下载也从 `fetch → blob` 改回普通 `<a download>` 直链——Blob 会把整包放进标签页内存，正好抵消宿主侧的改造。
+
+- ⚡ **编辑器保存拆掉 1 MiB 的墙**：`fs.write` 原走 JSON，而 `/sidebar/api` 的请求体上限是 1 MiB，所以「能打开的文件存不回去」。保存改为 `POST /sidebar/write` 的 raw 路由（**文档即请求体**），编码与行尾还原逻辑（#523 / #871 的两条保证）原样保留并由 `tests/fs-write-route.spec.ts` 继续钉住，另加一条「远超旧上限的一次保存」。
+
+- 🧾 **超大文件从「截断成只读」改为「只读分页预览」**：`fs.read` 从「全读或截断」变成三态（`text` / `binary` / **`too-large`**）。超过编辑上限（5 MiB）的文本文件不再回半份文档，而是只带 4 KiB 嗅探头的 `too-large`，客户端据此渲染**分页只读预览**（等宽行列表，日志查看器形态）并提供下载出口；超过该大小的**二进制**走原来的 media 路径，行为完全不变。`FileViewerProps.truncated` 与 `truncation` 文案键一并删除——「拿到半份文档但看起来能编辑」这个状态本身就是 #732 的成因。新 `fs.readPage` 按字节窗口分页，窗口回退到最后一个换行，所以一页是整数行；超长单行原样返回而不是空页（否则「下一页」会停在一个永不前进的偏移上）。
+
+- 🆕 **`.jsonl` / `.ndjson` 有原生支持了**：此前它们既没有语法高亮（`lang.ts` 无映射 → 纯白文本），也不能简单地映射到 `json()`——`@lezer/json` 的文法只接受一个顶层值，实测 400 条记录的文件会解析出 **402 个错误节点**。现在有一个手写的逐行 JSON 词法分析器（一行一次、不携带跨行状态、未闭合字符串直接标错），新增第 4 个内置 viewer `jsonl`：**预览**是每条记录一张可折叠卡片（默认折叠成一行摘要，点开用宿主的 `JsonTree`），**编辑**是原样可保存的 CodeMirror，由预览/编辑开关切换。行引用（`a.jsonl#L131`）仍会先切到编辑档再落行。
+
+- 🎨 **修掉「错误标记看不见」**：`tags.invalid` 在深浅两种配色下都是 `#ffffff` —— 在浅色主题里就是白底白字。它是 JSON/JSONL 语法错误落到的 token，读者本该能看出哪段没解析；现改为红色波浪下划线。
+
+- 🔧 **`stat` 失败从 500 变 400**：两条字节路由原先让 `stat` 的原始 rejection 逃成「internal」500，读起来像插件故障；不可读的用户路径是 400。
+
+- 🔧 **分页读取的编码一致性（一处只有真机才会发现的回归）**：第一版锁死了第一页嗅探到的编码，于是「长 ASCII 前缀 + GBK 正文」的文件第一页判成 UTF-8 后，后半段 GBK 字节被按 UTF-8 解成乱码——而一次性全读是能正确解出来的。现在**只锁宽字符编码**（UTF-16/UTF-32 是文件属性，一页恰好没有 NUL 不能重新裁决），字节序编码逐页各自嗅探（纯 ASCII 页在两种编码下解出来是同一个字符串）。这在分页按行对齐的前提下是安全的：`0x0A` 既不能是 UTF-8 的续字节，也不能是 GBK 的尾字节。双向用例见 `tests/fs-read-page.spec.ts`。
+
+- 🧪 新守护：`tests/file-stream-route.spec.ts`、`tests/fs-read-page.spec.ts`、`tests/jsonl.spec.ts`、`tests/jsonl-language.spec.ts`、`tests/archive-tools.spec.ts`、`tests/archive.spec.ts`、`tests/editor-large-file.spec.tsx`（超限只读预览 + 可编辑反证）。`tests/zip.spec.ts` 随 writer 一起重写为 `tests/archive.spec.ts`；唯一一条真二进制用例自探测、缺席即跳过（CI 上没有 `zip` 的 Windows runner 不会红）。
+
+- 📖 设计过程、与 VS Code Web 的对照（含「VS Code 并不分页，它的模型是阈值 + 确认 + 关闭 tokenization」这一条纠错）以及实施偏差记录见 [docs/plans/2026-10-11-streaming-transfer-jsonl-preview.md](docs/plans/2026-10-11-streaming-transfer-jsonl-preview.md)。
+
 ### v0.25.0
 
 > 📦 **支持线前移：仅适配 DSH `0.2.0-rc.2+`**（peer 下限 `^0.2.0-rc.2`，CI 与挂载 lane 钉 `@deepseek-ai/dsh@0.2.0-rc.2`）。DSH 的 npm `latest` 现在正是 **0.2.0-rc.2**（不再停在 0.1.7-rc.2），本版就钉在它上面。**0.2.0-rc.1 及更早（含 0.1.7 线）请固定 v0.24.1**——`^0.2.0-rc.2` 对 rc.1 判定为 false，会被宿主的启动兼容性预检整行静默禁用；0.1.7 线的最后支持版是 v0.22.1。本次前移是一次纯声明与钉版变更：0.2.0-rc.2 对本插件消费的宿主面仍是纯增量，运行时零改动。

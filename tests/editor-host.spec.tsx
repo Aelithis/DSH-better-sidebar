@@ -37,7 +37,7 @@ vi.mock('../src/client/api.ts', () => ({
     // The shared git-status store polls this; a non-repo answer keeps rows plain.
     gitStatus: async () => ({ isRepo: false, entries: [] }),
     archiveBuild: async () => ({ id: 'ar-1', entries: 1 }),
-    archiveStatus: async () => ({ state: 'ready', done: 1, total: 1, bytes: 1 }),
+    archiveStatus: async () => ({ state: 'ready', bytes: 1 }),
     // The host's fs.read route (a viewer with `fetchStrategy: 'fsRead'`). No
     // built-in viewer is registered in these scenarios — `setup()` registers
     // the editor tab type only — so only the case that drives it below reads.

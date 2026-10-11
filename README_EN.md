@@ -135,12 +135,12 @@ To debug local changes or track the dev branch, point the dependency at a local 
 1. git clone https://github.com/omdsh-dev/DSH-better-sidebar.git ~/Code/DSH-better-sidebar
    cd ~/Code/DSH-better-sidebar && pnpm install && pnpm build
 2. In ~/.dsh/profiles/web/package.json dependencies write "dsh-better-sidebar": "link:<absolute path of the clone>"
-3. Append this mount line to ~/.dsh/profiles/web/cordis.patch.yml (this row's `config` IS this plugin's settings form: the deployment limits `readLimit` / `mediaLimit` / `uploadLimit` / `listLimit` plus the user-preference fields — that is what the settings page writes; omit it and every field falls back to its schema default):
+3. Append this mount line to ~/.dsh/profiles/web/cordis.patch.yml (this row's `config` IS this plugin's settings form: the deployment limit `listLimit` plus the user-preference fields — that is what the settings page writes; omit it and every field falls back to its schema default. **`readLimit` / `mediaLimit` / `uploadLimit` were removed in v0.26.0**: upload, download, the HTML preview and archive packing all stream now, so there is no size limit left to configure. A retired key left in an old profile is silently ignored as an unknown field rather than rejected):
    - insert:
        - id: better-sidebar
          name: 'dsh-better-sidebar'
          config:
-           readLimit: 524288
+           listLimit: 1000
 4. Run pnpm install in ~/.dsh/profiles/web
 5. Restart DSH and hard-refresh
 ```

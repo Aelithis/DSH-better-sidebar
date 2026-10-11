@@ -90,9 +90,8 @@ export type {
   FileViewerProps,
   FileFetchStrategy,
 } from './client/service.ts'
-// The archive naming helper is exercised directly by the archive specs:
-// their bounds live inside the collector, so the suite needs them observable
-// without creating 10 000 rows first.
+// The archive disposition helper is exercised directly by the archive specs:
+// the RFC 5987 header shape is its own contract, testable without a mount.
 export { contentDispositionOf } from './archive-route.ts'
 /** Plugin identity for cordis.yml rows. */
 export const name = 'dsh-better-sidebar'
