@@ -22,9 +22,21 @@ function source(relative: string): string {
   return readFileSync(resolve(ROOT, relative), 'utf8')
 }
 
+/**
+ * A source file with its comments removed. The NEGATIVE assertions below are
+ * about what the code does, and these files deliberately DOCUMENT the library
+ * they avoid ("measures `getBoundingClientRect()`…"), so matching raw text
+ * would fail on the very explanation we want to keep.
+ */
+function code(relative: string): string {
+  return source(relative)
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^\s*\/\/.*$/gm, '')
+}
+
 describe('Tasks page motion', () => {
   it('keeps the FLIP library off the scaled canvas, and on the flow surfaces', () => {
-    expect(source('src/client/TasksGraph.tsx')).not.toContain('use-auto-animate')
+    expect(code('src/client/TasksGraph.tsx')).not.toContain('use-auto-animate')
     expect(source('src/client/TasksTree.tsx')).toContain('useAutoAnimateRef')
     expect(source('src/client/JobsDrawer.tsx')).toContain('useAutoAnimateRef')
   })
@@ -43,6 +55,30 @@ describe('Tasks page motion', () => {
       .map(match => match[1])
       .join('\n')
     expect(reduced).toContain('.node')
+  })
+
+  it('animates the canvas in LAYOUT coordinates, never with screen-space transforms', () => {
+    // The canvas's own tween: `left`/`top` are canvas units, so the fit's scale
+    // applies to the tween exactly as it applies to the final positions — and
+    // the connectors (pure functions of the boxes) travel with the cards.
+    expect(source('src/client/TasksGraph.tsx')).toContain('useTweenedLayout')
+    const tween = code('src/client/tasks-layout-tween.ts')
+    expect(tween).toContain('requestAnimationFrame')
+    // No rect measuring in the CODE: that is exactly what makes a scaled layer
+    // unrepresentable for a FLIP library.
+    expect(tween).not.toContain('getBoundingClientRect')
+    // The card entrance is staggered, so a revealed group cascades.
+    expect(source('src/client/TasksGraph.tsx')).toContain('animationDelay')
+  })
+
+  it('stops the auto-fit once the reader drives the fold state', () => {
+    const graph = source('src/client/TasksGraph.tsx')
+    // Pan/zoom already claim the view; folding claims it too, so the canvas
+    // never re-frames itself under the cards the reader is watching.
+    expect(graph).toContain('markTouched')
+    expect(graph).toContain('expandGroupTouched')
+    expect(graph).toContain('foldNodeTouched')
+    expect(graph).toContain('toggleFoldTouched')
   })
 
   it('parks the motion host behind a WAAPI guard so tests and old hosts stay inert', () => {

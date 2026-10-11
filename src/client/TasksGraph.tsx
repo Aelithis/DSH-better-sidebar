@@ -40,6 +40,7 @@ import {
   GRAPH_FIT_MIN_SCALE, GRAPH_NODE_H, GRAPH_NODE_W, GRAPH_PAD, layoutTasksGraphForWidth,
   type GraphBox,
 } from './tasks-graph-layout.ts'
+import { useTweenedLayout } from './tasks-layout-tween.ts'
 import {
   activityLine, agentChip, agentMeta, foldErrorTally, foldPreviews, FoldGlyph, foldTally,
   TaskLine, WorkflowGlyph, workflowMeta,
@@ -211,6 +212,14 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
     () => layoutTasksGraphForWidth(nodes, width, GRAPH_FIT_MIN_SCALE),
     [nodes, width],
   )
+  /**
+   * What is actually drawn: the layout tweened towards, frame by frame, in the
+   * canvas's OWN coordinates (see tasks-layout-tween.ts — a screen-space FLIP
+   * library cannot work under the fit's scale). Cards, connectors and phase
+   * frames all read it, so the lines travel WITH the cards instead of snapping
+   * to the new geometry.
+   */
+  const drawn = useTweenedLayout(layout)
   const edges = useMemo(() => tasksEdges(nodes), [nodes])
   const nodeById = useMemo(() => new Map(nodes.map(node => [node.id, node])), [nodes])
 
@@ -272,11 +281,23 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
     fit()
   }, [fit])
 
-  // Auto-fit on mount, on layout growth and on container resize — but never
-  // over a view the reader has panned/zoomed themselves.
+  /** The newest `fit`, so the effects below can depend on WHAT changed. */
+  const fitRef = useRef(fit)
+  fitRef.current = fit
+
+  // A different tree is a different canvas: re-fit AND hand the view back to the
+  // auto-fit, whatever the reader did to the previous one.
   useEffect(() => {
-    if (!touchedRef.current) fit()
-  }, [fit, rootId])
+    touchedRef.current = false
+    fitRef.current()
+  }, [rootId])
+
+  // Auto-fit on layout growth — but never over a view the reader has taken over
+  // (a pan, a zoom, or a fold: see markTouched). The container's own resize
+  // path below fits under the same rule.
+  useEffect(() => {
+    if (!touchedRef.current) fitRef.current()
+  }, [layout.width, layout.height])
 
   useEffect(() => {
     const container = containerRef.current
@@ -379,6 +400,32 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
   /** Suppress node clicks that ended a drag gesture. */
   const clickAllowed = useCallback((): boolean => travelRef.current <= CLICK_TOLERANCE_PX, [])
 
+  /**
+   * The reader driving the FOLD state takes the view over, exactly like a pan
+   * or a zoom does: from then on the canvas stops re-framing itself when the
+   * layout changes, so folding a group never yanks the tree out from under the
+   * cards the reader is watching. The ⌂ button hands the view back.
+   */
+  const markTouched = useCallback((): void => { touchedRef.current = true }, [])
+
+  /** The aggregate's click: reveal its group, with the view under the reader. */
+  const expandGroupTouched = useCallback((node: TasksFoldNode): void => {
+    markTouched()
+    onExpandGroup(node)
+  }, [markTouched, onExpandGroup])
+
+  /** The card's own chevron: fold that node, with the view under the reader. */
+  const foldNodeTouched = useCallback((node: TasksAgentNode): void => {
+    markTouched()
+    onFoldNode?.(node)
+  }, [markTouched, onFoldNode])
+
+  /** The cluster's page-level switch: the same claim on the view. */
+  const toggleFoldTouched = useCallback((): void => {
+    markTouched()
+    onToggleFold()
+  }, [markTouched, onToggleFold])
+
   // Phase frames: group each run's members by phase and box them.
   const phaseFrames = useMemo((): PhaseFrame[] => {
     const frames: PhaseFrame[] = []
@@ -389,7 +436,7 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
         const boxes: GraphBox[] = []
         for (const member of phase.members) {
           const id = member.childId !== '' ? member.childId : `wfmember:${runNode.run.runId}:${member.seq}`
-          const box = layout.boxes.get(id)
+          const box = drawn.boxes.get(id)
           if (box !== undefined) boxes.push(box)
         }
         if (boxes.length === 0) return
@@ -409,7 +456,7 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
       })
     }
     return frames
-  }, [nodes, layout])
+  }, [nodes, drawn])
 
   /**
    * The connector between two boxes: a straight PERPENDICULAR stub out of the
@@ -461,8 +508,8 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
         >
           <svg className={css.edges} width={layout.width} height={layout.height} aria-hidden="true">
             {edges.map((edge) => {
-              const from = layout.boxes.get(edge.from)
-              const to = layout.boxes.get(edge.to)
+              const from = drawn.boxes.get(edge.from)
+              const to = drawn.boxes.get(edge.to)
               if (from === undefined || to === undefined) return null
               const target = nodeById.get(edge.to)
               return (
@@ -497,20 +544,33 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
               activatable), and tree mode provides the full Arrow/Home/End/Enter
               navigation over the same nodes (see TasksTree). Do NOT "fix" the
               nodes' tabIndex without fixing the tab-stop flood. */}
-          {nodes.map((node) => {
-            const box = layout.boxes.get(node.id)
+          {nodes.map((node, index) => {
+            const box = drawn.boxes.get(node.id)
             if (box === undefined) return null
-            const style = { left: box.x, top: box.y, width: GRAPH_NODE_W, minHeight: box.h }
-            if (node.kind === 'fold') return renderFoldNode(node, style, onExpandGroup, clickAllowed)
+            const style = {
+              left: box.x,
+              top: box.y,
+              width: GRAPH_NODE_W,
+              minHeight: box.h,
+              /*
+               * The entrance is STAGGERED by the node's page order: a group that
+               * reveals several cards at once (or a page that loads a tree)
+               * cascades instead of popping in one frame. Capped, so a big tree
+               * settles quickly, and inert for cards that were already mounted
+               * (their entrance ran when they arrived).
+               */
+              animationDelay: `${Math.min(index, 9) * 26}ms`,
+            }
+            if (node.kind === 'fold') return renderFoldNode(node, style, expandGroupTouched, clickAllowed)
             if (node.kind === 'workflow') {
               return renderWorkflowNode(node, style, onWorkflowInfo, clickAllowed)
             }
-            return renderAgentNode(node, style, onNodeInfo, onOpenTask, clickAllowed, onFoldNode)
+            return renderAgentNode(node, style, onNodeInfo, onOpenTask, clickAllowed, foldNodeTouched)
           })}
         </div>
         <div className={css.controls} data-graph-controls>
           <ViewModeToggle mode={mode} onModeChange={onModeChange} />
-          <FoldToggleButton folded={folded} onToggleFold={onToggleFold} />
+          <FoldToggleButton folded={folded} onToggleFold={toggleFoldTouched} />
           <Button
             variant="ghost"
             size="sm"

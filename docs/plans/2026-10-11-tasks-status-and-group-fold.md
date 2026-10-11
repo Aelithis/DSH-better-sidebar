@@ -127,7 +127,20 @@ state === 'running'              → liveActivityLabel(summary)   // 宿主 mess
 
 ### 第二轮的实施偏差与未验证项
 
-1. **画布跑 FLIP 库是错的——已回退为 CSS 入场**（维护者真机反馈「折叠展开的动效都特别怪」，比预期的严重）。读源码后确认两处几何错误都不可修：`remove(el)` 会把离场元素重新插入 DOM 并钉上 **绝对 `left/top`/`width`/`height`（由 `getBoundingClientRect` 换算）**，而卡片层带 `transform: scale(k)` —— 这个钉位在缩放层里根本无法表达，离场卡片会跳位；移动项用 `el.animate` 播未缩放的 `translate`，而量测是缩放过的，行程差 k 倍。加上连线（SVG path）与相位框本来就不同步，观感必然崩。**处置**：画布改为 `.node` 上的纯 CSS 入场（150ms，mount-only，离场即时——与不动的连线一致），auto-animate 只保留在**流式布局**的树视图与任务抽屉（那两处的 FLIP 语义正确：离场元素原地淡出、兄弟滑位）。新增 `tests/tasks-motion.spec.ts` 把这条边界钉死：画布不得 import `use-auto-animate`，树与抽屉必须有。
+1. **画布动效：FLIP 库 → 布局坐标补间**（维护者两轮真机反馈：「折叠展开的动效都特别怪」→「还是突然直接出现」）。
+   读 `@formkit/auto-animate` 源码确认它在缩放层里两处几何都不可修：`remove(el)` 把离场元素重新插入 DOM 并钉上
+   由 `getBoundingClientRect` 换算的绝对 `left/top/width/height`（卡片层带 `transform: scale(k)`，这个钉位无法表达
+   → 跳位）；移动项用 `el.animate` 播未缩放的 `translate`，而量测是缩放过的（行程差 k 倍）。于是分两步收口：
+   - **画布改用自己的补间** `tasks-layout-tween.ts`：rAF 逐帧插值每张卡在**画布坐标**里的 `x`/`y`/高度（`left`/`top`
+     是画布单位，缩放对它和对终点位置一样生效），并把 `fromRef` 跟着**已绘制**状态走（中途再来一次布局变化时接着当前位置走，
+     不会弹回上一个目标）。连线路径与相位框改为读**补间后的盒子**，所以线跟着卡片走；新入场的卡片在引入它的那一帧就带着
+     目标盒子渲染（否则会有「先消失一帧再出现」的闪烁，首版实测就踩到了）。
+   - **入场用 CSS 关键帧**：300ms 上浮 + `scale(0.88→1)` + 淡入（轻微过冲），按节点页序**错峰 26ms**，`fill-mode: backwards`
+     让等待中的卡片先隐形。`prefers-reduced-motion` 下补间与入场都关闭。
+   - **读者碰折叠即接管视图**：`markTouched` 挂在三个折叠入口上（聚合卡、卡片 chevron、控制条开关），此后不再随布局自动重框；
+     切会话重置并重新适配（顺带修掉「拖过一次后换会话不再适配」）。
+   - **FLIP 库保留在流式布局**（树视图、任务抽屉）；`tests/tasks-motion.spec.ts` 把「画布不得 import 它」写进守护，
+     `tests/tasks-layout-tween.spec.tsx` 钉住插值 / 缓动 / 中途位置 / 画布尺寸不中途变化 / 入场盒子不缺席。
 2. **真机只跑通到「插件挂载 + 零 pageerror」**：新构建已装进 `sidebar-test` profile 并在 http://127.0.0.1:3080 提供服务（`[data-dsh-better-sidebar]` 挂载、`/sidebar/api/*` 200、无 pageerror / console error）。但**动效与观感的逐帧复核没做成**：宿主右栏在无头上下文里以 `transform` 平移到视口外，我的合成点击无法稳定地把任务页调出来（多次尝试后放弃）。这一条由维护者自己在实例上看。
 3. **实机数据的两个新行未在真机核验**：Token / 耗时两行通过夹具断言（25.5K / 2 分 42 秒）与 `session-metrics` 单测覆盖，但没有在真实子代理会话上截图确认数值口径（真实会话的 `tokenUsage` 是整段日志累计，包含 fork 继承前缀这一点已写进 `context-types.ts` 的注释）。
 4. **`uses` 依赖新增**：`@formkit/auto-animate@^0.10.0` 进 `dependencies`（无 `cordis`、无安装脚本，市场约束满足）。本 worktree 的 `node_modules` 因此从符号链接物化为独立副本（源仓库未被触碰，见仓库规则）。

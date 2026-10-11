@@ -142,11 +142,15 @@
    activity. The layout in tasks-graph-layout.ts reserves those rows, so the
    box handed to a card is exactly its height. */
 .node {
-  /* Cards ARRIVE with a short entrance and leave instantly: the leaving side
-     is what a FLIP library would animate, and it is exactly what a scaled
-     canvas layer cannot express (see TasksGraph). Mount-only, so the page's
-     poll never re-plays it, and the edges they hang from stay honest. */
-  animation: dsh-card-in 150ms cubic-bezier(0.2, 0.8, 0.3, 1);
+  /* Cards ARRIVE with a real entrance — a rise, a scale-up and a fade, with a
+     slight overshoot so the arrival reads as motion rather than a repaint. The
+     per-card `animation-delay` the graph sets inline staggers a group that
+     reveals several cards at once; `backwards` keeps a staggered card invisible
+     during its wait instead of popping and then animating. Mount-only, so the
+     page's poll never re-plays it. Position changes are NOT animated here: the
+     graph tweens the layout coordinates instead (tasks-layout-tween.ts), which
+     is the only space the fit's scale cannot distort. */
+  animation: dsh-card-in 300ms cubic-bezier(0.2, 0.9, 0.25, 1.06) backwards;
   position: absolute;
   box-sizing: border-box;
   display: flex;
@@ -819,8 +823,9 @@
 }
 
 @keyframes dsh-card-in {
-  from { opacity: 0; transform: translateY(2px); }
-  to { opacity: 1; transform: none; }
+  0% { opacity: 0; transform: translateY(10px) scale(0.88); }
+  60% { opacity: 1; }
+  100% { opacity: 1; transform: none; }
 }
 
 @keyframes dsh-pop-in {
