@@ -45,7 +45,6 @@ import {
   TaskLine, WorkflowGlyph, workflowMeta,
 } from './tasks-shared.tsx'
 import { CardBar, CardTop, phaseClass, type CardKind } from './tasks-card.tsx'
-import { useAutoAnimateRef } from './use-auto-animate.ts'
 import { t } from './locales.ts'
 import css from './tasks-graph.module.css'
 import canvasCss from './tasks-canvas.module.css'
@@ -186,14 +185,17 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
     onFoldNode, mode, onModeChange, loading,
   } = props
   const containerRef = useRef<HTMLDivElement>(null)
-  /**
-   * The cards' own layer: FLIP-animated, so folding a group makes the cards
-   * leave (and the canvas re-slot) instead of blinking. The layer is the
-   * canvas's scaled child, so a move animation is scaled with the zoom — see
-   * use-auto-animate.ts.
+  /*
+   * The canvas deliberately runs NO FLIP library: auto-animate pins a leaving
+   * card with absolute `left/top` measured from `getBoundingClientRect()` and
+   * translates the movers in UNSCALED units, while this layer carries the
+   * fit's `transform: scale(k)`. Inside that layer the leaving card's pinned
+   * box cannot even be expressed (its position jumps) and every mover travels
+   * k× its true distance — reproduced live as "折叠展开的动效都特别怪".
+   * Cards therefore arrive with the CSS entrance in tasks-graph.module.css
+   * (mount-only, no geometry math) and leave instantly; the edges they hang
+   * from are not animated either, so nothing disagrees with them.
    */
-  const cardsRef = useRef<HTMLDivElement>(null)
-  useAutoAnimateRef(cardsRef)
   const [tf, setTf] = useState({ x: 0, y: 0, k: 1 })
   const [dragging, setDragging] = useState(false)
   /** Pointer travel of the in-flight gesture (click suppression). */
@@ -450,7 +452,6 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
           </div>
         )}
         <div
-          ref={cardsRef}
           className={css.canvasInner}
           style={{
             width: layout.width,

@@ -127,7 +127,7 @@ state === 'running'              → liveActivityLabel(summary)   // 宿主 mess
 
 ### 第二轮的实施偏差与未验证项
 
-1. **画布上的 FLIP 位移会被缩放比例影响**：auto-animate 用 `getBoundingClientRect` 量测、以未缩放的 `transform` 播放，而卡片层带着 fit 的 `scale(k)`——插入 / 移除的淡入淡出不受影响，**位置移动**的行程在 k≠1 时按 k 缩放（落点仍然正确）。选择接受并在 `use-auto-animate.ts` 里写明；若真机观感不够好，画布那一处可退化回 CSS 入场关键帧（库只保留树 / 抽屉）。
+1. **画布跑 FLIP 库是错的——已回退为 CSS 入场**（维护者真机反馈「折叠展开的动效都特别怪」，比预期的严重）。读源码后确认两处几何错误都不可修：`remove(el)` 会把离场元素重新插入 DOM 并钉上 **绝对 `left/top`/`width`/`height`（由 `getBoundingClientRect` 换算）**，而卡片层带 `transform: scale(k)` —— 这个钉位在缩放层里根本无法表达，离场卡片会跳位；移动项用 `el.animate` 播未缩放的 `translate`，而量测是缩放过的，行程差 k 倍。加上连线（SVG path）与相位框本来就不同步，观感必然崩。**处置**：画布改为 `.node` 上的纯 CSS 入场（150ms，mount-only，离场即时——与不动的连线一致），auto-animate 只保留在**流式布局**的树视图与任务抽屉（那两处的 FLIP 语义正确：离场元素原地淡出、兄弟滑位）。新增 `tests/tasks-motion.spec.ts` 把这条边界钉死：画布不得 import `use-auto-animate`，树与抽屉必须有。
 2. **真机只跑通到「插件挂载 + 零 pageerror」**：新构建已装进 `sidebar-test` profile 并在 http://127.0.0.1:3080 提供服务（`[data-dsh-better-sidebar]` 挂载、`/sidebar/api/*` 200、无 pageerror / console error）。但**动效与观感的逐帧复核没做成**：宿主右栏在无头上下文里以 `transform` 平移到视口外，我的合成点击无法稳定地把任务页调出来（多次尝试后放弃）。这一条由维护者自己在实例上看。
 3. **实机数据的两个新行未在真机核验**：Token / 耗时两行通过夹具断言（25.5K / 2 分 42 秒）与 `session-metrics` 单测覆盖，但没有在真实子代理会话上截图确认数值口径（真实会话的 `tokenUsage` 是整段日志累计，包含 fork 继承前缀这一点已写进 `context-types.ts` 的注释）。
 4. **`uses` 依赖新增**：`@formkit/auto-animate@^0.10.0` 进 `dependencies`（无 `cordis`、无安装脚本，市场约束满足）。本 worktree 的 `node_modules` 因此从符号链接物化为独立副本（源仓库未被触碰，见仓库规则）。

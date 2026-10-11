@@ -136,11 +136,17 @@
    instead of a hole under it (the box size itself is fixed — the edges and the
    phase frames are placed from it, so a card can never be content-sized). */
 /* The two-segment node card. The segments own their padding because each one
-   paints its own surface: the TOP segment carries the identity (kind badge,
-   name, meta, task line) over the level's faint tint, the BOTTOM bar carries
-   the state and the merged activity. The layout in tasks-graph-layout.ts
-   reserves both rows, so the box handed to a card is exactly its height. */
+   paints its own surface: the TOP segment carries the identity (kind badge +
+   mode chip, name, task line — a workflow run adds its mono meta line) over
+   the level's faint tint, the BOTTOM bar carries the state and the merged
+   activity. The layout in tasks-graph-layout.ts reserves those rows, so the
+   box handed to a card is exactly its height. */
 .node {
+  /* Cards ARRIVE with a short entrance and leave instantly: the leaving side
+     is what a FLIP library would animate, and it is exactly what a scaled
+     canvas layer cannot express (see TasksGraph). Mount-only, so the page's
+     poll never re-plays it, and the edges they hang from stay honest. */
+  animation: dsh-card-in 150ms cubic-bezier(0.2, 0.8, 0.3, 1);
   position: absolute;
   box-sizing: border-box;
   display: flex;
@@ -812,6 +818,11 @@
   box-sizing: border-box;
 }
 
+@keyframes dsh-card-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: none; }
+}
+
 @keyframes dsh-pop-in {
   from { opacity: 0; transform: translateY(4px) scale(0.985); }
   to { opacity: 1; transform: none; }
@@ -819,7 +830,8 @@
 
 /* Motion is decoration: the card is fully usable without it. */
 @media (prefers-reduced-motion: reduce) {
-  .popCard {
+  .popCard,
+  .node {
     animation: none;
   }
 }
