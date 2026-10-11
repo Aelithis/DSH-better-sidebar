@@ -2,11 +2,9 @@
  * The session's live FILE-OPERATION stream — the signal the editor's
  * auto-refresh rides (#855).
  *
- * The model's file tools leave their calls in the session event log, and the
- * plugin's own `changes.ops` route ships that log's `tool/call` +
- * `tool/result` rows as a `seq > afterSeq` delta (see `src/index.ts`). This
- * module folds those deltas into "which file did the model just write or
- * edit", which is the whole question an open preview has to answer.
+ * 模型调用文件工具时，会话日志记录直接调用或 PTC 子调用。
+ * `changes.ops` 按 `seq > afterSeq` 发送这些事件（见 `src/index.ts`）。
+ * 本模块据此识别模型刚写入或编辑的文件，供预览自动刷新使用。
  *
  * Design constraints it exists to honour:
  *

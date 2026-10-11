@@ -914,13 +914,8 @@ function buildApi(
         default: defaultModelRoute(ctx),
       }
     },
-    // The session's file-tool events for the changes tab's session lens
-    // (and its badge): the CLIENT runtime's sessions face has no event-log
-    // access, so the events cross the wire here — live session log first,
-    // the persisted logical log for not-yet-hydrated sessions. Only the
-    // two event types the lens folds are sent, narrowed to `seq > afterSeq`
-    // so polling is a small delta, with the same recent-window cap the
-    // client accumulator applies.
+    // 客户端无法直接读取会话日志，此路由从在线会话或持久化记录提供文件工具事件。
+    // 只发送游标之后的直接调用与 PTC 子调用，减少轮询数据量。
     'changes.ops': async (payload) => {
       const sessionId = requireString(payload, 'sessionId')
       const rawAfter = (payload as { afterSeq?: unknown } | null)?.afterSeq
@@ -947,7 +942,8 @@ function buildApi(
       if (events === undefined) return { events: [], lastSeq: Math.max(afterSeq, 0) }
       const CHANGES_EVENTS_CAP = 4000
       const filtered = events.filter(
-        event => (event.type === 'tool/call' || event.type === 'tool/result') && event.seq > afterSeq,
+        event => (event.type === 'tool/call' || event.type === 'tool/result'
+          || event.type === 'tool/ptc-dispatch-start' || event.type === 'tool/ptc-dispatch') && event.seq > afterSeq,
       )
       const window = filtered.length > CHANGES_EVENTS_CAP ? filtered.slice(filtered.length - CHANGES_EVENTS_CAP) : filtered
       return { events: window, lastSeq: window.at(-1)?.seq ?? afterSeq }
