@@ -159,6 +159,9 @@ export function webTerminals(ctx: Context): WebTerminalsFace | undefined {
 /** Namespace for the plugin's own occurrence key and content identity. */
 const TERMINAL_NS = 'dsh-better-sidebar:terminal-bottom'
 
+/** The persisted `tab.meta` field identifying ONE terminal tab instance. */
+export const INSTANCE_FIELD = 'terminalInstance'
+
 /** The persisted `tab.meta` field holding the content-identity generation. */
 const RUN_FIELD = 'terminalRun'
 
@@ -173,8 +176,9 @@ const RUN_FIELD = 'terminalRun'
  * `missingTerminal` forever.
  * @param run - the content-identity generation (0 for a tab's first terminal).
  */
-export function bottomTerminalContentId(run: number): string {
-  return run === 0 ? TERMINAL_NS : `${TERMINAL_NS}#${run}`
+export function bottomTerminalContentId(run: number, instance?: string): string {
+  const base = instance === undefined || instance === '' ? TERMINAL_NS : `${TERMINAL_NS}:${instance}`
+  return run === 0 ? base : `${base}#${run}`
 }
 
 /**
@@ -184,8 +188,17 @@ export function bottomTerminalContentId(run: number): string {
  * with a host sidebar occurrence key (those are layout tab ids such as `tab1`).
  * @param run - the content-identity generation.
  */
-export function bottomTerminalKey(run: number): string {
-  return bottomTerminalContentId(run)
+export function bottomTerminalKey(run: number, instance?: string): string {
+  return bottomTerminalContentId(run, instance)
+}
+
+/** The per-tab instance id a tab carries (absent/legacy tabs read as `undefined`). */
+export function terminalInstanceOf(tab: { meta?: unknown }): string | undefined {
+  const meta = tab.meta !== null && typeof tab.meta === 'object' && !Array.isArray(tab.meta)
+    ? tab.meta as Record<string, unknown>
+    : {}
+  const instance = meta[INSTANCE_FIELD]
+  return typeof instance === 'string' && instance !== '' ? instance : undefined
 }
 
 /** The content-identity generation a tab carries (absent/corrupt reads as 0). */
@@ -215,5 +228,6 @@ export function closeBottomTerminal(ctx: Context, tab: { meta?: unknown }, sessi
   const service = webTerminals(ctx)
   if (service === undefined) return
   const run = terminalRunOf(tab)
-  service.close(sessionId, bottomTerminalKey(run), bottomTerminalContentId(run))
+  const instance = terminalInstanceOf(tab)
+  service.close(sessionId, bottomTerminalKey(run, instance), bottomTerminalContentId(run, instance))
 }

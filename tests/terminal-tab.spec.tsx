@@ -267,15 +267,19 @@ afterEach(() => {
 })
 
 describe('terminal-bottom: carrier surface', () => {
-  it('registers as a bottom-only, single-instance, service-gated built-in tab', () => {
+  it('registers as a bottom-only, multi-instance, service-gated built-in tab', () => {
     const tabs = builtinTabs(ctxWith({ webTerminals: new FakeTerminals() }))
     const terminal = tabs.find(tab => tab.id === 'terminal-bottom')
     expect(terminal).toBeDefined()
     expect(terminal?.bottomOnly).toBe(true)
-    expect(terminal?.single).toBe(true)
+    expect(terminal?.single).not.toBe(true)
     expect(terminal?.hidden).not.toBe(true)
-    // No createTab: the id safety net keeps ONE bottom terminal per session.
-    expect(terminal?.createTab).toBeUndefined()
+    // createTab mints a FRESH tab per open: the old id safety net used to
+    // collapse them into one, which is exactly what this follow-up removes.
+    expect(typeof terminal?.createTab).toBe('function')
+    const first = terminal?.createTab?.({} as never)
+    const second = terminal?.createTab?.({} as never)
+    expect(first?.tab.id).not.toBe(second?.tab.id)
   })
 
   it('the + menu row is disabled when the host provides no terminal service', () => {
