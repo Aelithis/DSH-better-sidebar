@@ -778,7 +778,10 @@ interface BetterSidebarService {
    *  （含 React 自己的渲染订阅），也不会把整条侧栏换成错误条——所以
    *  listener 里读宿主 state 的字段仍请自己判空，别指望异常能当哨兵。 */
   subscribeState(listener: () => void): () => void
-  /** 更新一个已打开 tab 的显示字段（title/path/meta）；tab 不存在时 no-op */
+  /** 更新一个已打开 tab 的显示字段（title/path/meta）；tab 不存在时 no-op。
+   *  **改 path 等于一次新的打开**：引用带的行号（#826）是那次导航的瞬态状态，
+   *  会随之清掉——原地切换文件 / 重命名若留着它，下一个文件会跳到上一个文件
+   *  的行号（markdown 还会被拉进编辑态）。 */
   updateTab(tabId: string, patch: { title?: string; path?: string; meta?: unknown }): void
   /** 激活一个已打开的 tab（tab 栏点击路径；触发 descriptor.onActivate；
    *  未知 id 严格 no-op）；scope（v0.12.0+）随回调传递，同 closeTab */

@@ -193,3 +193,44 @@ describe('a referenced line does not own the file mode (#826)', () => {
     }
   })
 })
+describe('a spent line must not ride along to the next file', () => {
+  it('an in-place path switch drops it (updateTab retargets the record)', async () => {
+    // The reader types another path into the same window (merged mode): the
+    // record keeps its identity and takes the new path, but the landing line
+    // belonged to the navigation that delivered the PREVIOUS file. Keeping it
+    // sent the new file to line 3 — and, being markdown, forced it into the
+    // editor, which is the same "stuck in edit mode" the reload bug produced.
+    const { ctx, store, tabOf } = harness()
+    const tab = tabOf('/tmp/a.md', 3)
+    const view = mount(ctx, tab, store)
+    const host = (next: SidebarTab): ReturnType<typeof createElement> => createElement(EditorHost, {
+      ctx,
+      store,
+      scope: { sessionId: SESSION, cwd: '/tmp' },
+      tab: next,
+      visible: true,
+      expanded: [],
+      revealed: [],
+      onToggleDir: () => {},
+      onReferenceFile: () => {},
+    })
+    try {
+      await settle()
+      expect(editing(view.container)).toBe(true)
+
+      // The real retarget path (`EditorHost.openFile` merged mode / a rename),
+      // then the tab the store actually holds after it.
+      ctx.betterSidebar.updateTab(tab.id, { path: '/tmp/b.md', title: 'b.md' }, SESSION)
+      const retargeted = allLeaves(store.getSnapshot().state!.bottomSplits).flatMap(leaf => leaf.tabs)
+        .find(item => item.id === tab.id)!
+      expect(retargeted.line).toBeUndefined()
+
+      view.rerender(host(retargeted))
+      await settle()
+
+      expect(editing(view.container)).toBe(false)
+    } finally {
+      view.unmount()
+    }
+  })
+})

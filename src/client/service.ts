@@ -472,6 +472,10 @@ export interface OpenTabSeed {
    * Transient like the record's own `line`: it rides the open as a navigation
    * the editor applies once (leaving preview, which renders no source lines)
    * and the record forgets it right after.
+   *
+   * It is applied on a CREATE and on a native re-navigation; a store-branch
+   * FOCUS of an already-open tab (a host with no native surface) keeps the tab
+   * as it is — the same limitation the `diff` seed has.
    */
   line?: SidebarTab['line']
   /** Explicit tab id (defaults to the type). */
@@ -684,6 +688,13 @@ export interface BetterSidebarService {
    * ids restart per session and several sessions' tabs stay mounted at once,
    * so a component that knows its scope should pass it; omitted, a native id
    * resolves against the mounted seat.
+   */
+  /**
+   * Update the display fields of one open tab (title / path / meta) without
+   * re-opening it. A **path change is a new open**: the transient landing line
+   * a reference carried (#826) is dropped with it, because that line belongs to
+   * the navigation that delivered the file — an in-place switch or a rename
+   * that kept it would send the next file to the previous file's line.
    */
   updateTab(tabId: string, patch: { title?: string; path?: string; meta?: unknown }, sessionId?: string): void
   /**

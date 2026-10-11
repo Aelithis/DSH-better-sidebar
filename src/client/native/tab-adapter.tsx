@@ -320,7 +320,14 @@ export function createNativeTabRecords(): NativeTabRecords {
       const key = viewKey(sessionId, id)
       const entry = views.get(key)
       if (entry === undefined) return
-      put(key, { ...entry, tab: { ...entry.tab, ...patch } })
+      const next: SidebarTab = { ...entry.tab, ...patch }
+      // A path change is a NEW open: the landing line (#826) rides the
+      // navigation that delivered the file, so it must not survive into the
+      // next one — `updateTab` is exactly how an in-place switch and a rename
+      // retarget a record. Keeping it sent the next file to the previous
+      // file's line (and forced a markdown file into the editor).
+      if (patch.path !== undefined && patch.path !== entry.tab.path) next.line = undefined
+      put(key, { ...entry, tab: next })
     },
     drop(sessionId, id) {
       const key = viewKey(sessionId, id)
