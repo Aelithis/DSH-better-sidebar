@@ -10,7 +10,14 @@
 import { encodeHtmlUrl } from '../html-route.ts'
 import { hostRouteUrl } from './host-route-url.ts'
 import { resolveSidebarPath } from './paths.ts'
-import type { SidechatLiveEvent, SidechatLogEvent, SidechatThreadInfo } from '../sidechat-core.ts'
+import type {
+  SidechatLiveEvent,
+  SidechatLogEvent,
+  SidechatModelCatalog,
+  SidechatModelSelection,
+  SidechatPendingInput,
+  SidechatThreadInfo,
+} from '../sidechat-core.ts'
 import type {
   SidebarCreateTeamTaskRequest,
   SidebarChildLiveView,
@@ -594,12 +601,39 @@ export const api = {
    *  `afterSeq` narrows the response to the delta beyond it (poll tail).
    *  `live` is the thread's in-flight model deltas (DSH 0.1.5 publishes them
    *  outside the session log) — the CURRENT attempt on every pull, never a
-   *  delta, so the caller replaces its live set instead of appending. */
+   *  delta, so the caller replaces its live set instead of appending.
+   *  `pending` is the thread's live UNCLAIMED inbox in claim order (all
+   *  `next-step` entries, then the queued turns): the view renders those as
+   *  pending bubbles, deduped by id against the durable `user/message` rows
+   *  the claim later writes. */
   sidechatEvents: (childId: string, afterSeq?: number, signal?: AbortSignal) =>
-    call<{ events: SidechatLogEvent[]; live: SidechatLiveEvent[] }>('sidechat.events', {
+    call<{ events: SidechatLogEvent[]; live: SidechatLiveEvent[]; pending: SidechatPendingInput[] }>('sidechat.events', {
       childId,
       ...(afterSeq !== undefined ? { afterSeq } : {}),
     }, signal),
+  /** Drop one pending inbox message (no `messageId` = drop the whole queue).
+   *  `removed` is how many the host actually took out; a cold thread answers
+   *  `0` rather than failing. */
+  sidechatDequeue: (childId: string, messageId?: string) =>
+    call<{ accepted: true; removed: number }>('sidechat.dequeue', {
+      childId,
+      ...(messageId !== undefined ? { messageId } : {}),
+    }),
+  /** The host's own model catalog for the per-thread picker. `available:
+   *  false` means no catalog was readable (headless or older host) — the
+   *  picker then offers only "inherit the parent conversation". */
+  sidechatModels: () =>
+    call<SidechatModelCatalog>('sidechat.models', {}),
+  /** Pin one Side Chat thread's model route (the host disables its own picker
+   *  for subagent-origin sessions, so this is the only switch a side thread
+   *  has). `reasoningEffort` is omitted unless chosen. */
+  sidechatModel: (childId: string, provider: string, model: string, reasoningEffort?: string) =>
+    call<{ accepted: true; selection: SidechatModelSelection }>('sidechat.model', {
+      childId,
+      provider,
+      model,
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+    }),
   /** Read the side card preferences (plugin-global, no session scope). */
   settingsGet: () =>
     call<{ value?: unknown; revision?: number; externalDisable?: boolean }>('settings.get', {}),

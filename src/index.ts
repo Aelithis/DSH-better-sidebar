@@ -39,6 +39,7 @@ import { decodeHtmlUrl } from './html-route.ts'
 import { isTrustedApiRequest } from './trust-fence.ts'
 import { registerBundleRoute } from './bundle-route.ts'
 import { createDirectoryWatchers, type DirectoryWatchers } from './fs-watch.ts'
+import { createSidechatPushHub } from './sidechat-push.ts'
 import { launchExternal } from './open-external.ts'
 import { createArchiveTasks, respondArchiveDownload, type ArchiveTasks } from './archive-route.ts'
 import * as git from './git.ts'
@@ -1775,11 +1776,34 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
     },
   }), 'dsh-better-sidebar: file-tree watch WebSocket')
 
+  // ── Side-chat live push WebSocket ──────────────────────────────────────
+  // The side-chat transcript polls `sidechat.events`; this socket tells it
+  // WHEN to pull instead, so a streaming answer, a just-claimed message and a
+  // finished tool call appear immediately rather than on the next 2s tick.
+  // Frames carry only the stale thread id (never event bodies), so the
+  // transcript transport, its afterSeq deltas and its tail cap are unchanged.
+  const sidechatWss = new WebSocketServer({ noServer: true })
+  const sidechatPush = createSidechatPushHub(ctx)
+  ctx.effect(() => () => { sidechatPush.dispose() }, 'dsh-better-sidebar: side-chat push hub')
+  ctx.effect(() => ctx.webServer.registerUpgrade({
+    path: '/sidebar/ws/sidechat',
+    handler: (req, socket, head) => {
+      if (!fence(req)) {
+        socket.destroy()
+        return
+      }
+      sidechatWss.handleUpgrade(req as unknown as IncomingMessage, socket as unknown as Duplex, head as Buffer, (ws) => {
+        sidechatPush.attach(ws)
+      })
+    },
+  }), 'dsh-better-sidebar: side-chat push WebSocket')
+
   ctx.effect(() => () => {
     openToolsDisposers?.()
     agentOpenRegistry.dispose()
     agentOpenWss.close()
     fsWatchWss.close()
+    sidechatWss.close()
   }, 'dsh-better-sidebar: teardown')
 }
 
