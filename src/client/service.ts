@@ -542,6 +542,28 @@ export interface NativeTabParams {
 }
 
 /**
+ * One native tab that carries a file path, as {@link SidebarSurface.pathTabs}
+ * reports it. The right column's records live in the native adapter and are
+ * invisible to the store, so this is the only handle on its open files.
+ */
+export interface NativePathTab {
+  /** The SEAT session the tab is drawn in (native tab ids restart per session,
+   *  so this is what tells two same-numbered tabs apart). */
+  sessionId: string
+  /** The session the tab's CONTENT belongs to — the `scope.sessionId` its
+   *  editor runs with. */
+  scopeSessionId: string
+  /** That session's workspace root, for resolving `path` when the address
+   *  stored it workspace-relative (a chat link does). */
+  cwd: string | undefined
+  /** The native tab id. */
+  id: string
+  /** The path the tab is bound to — a file path, or a browser tab's address
+   *  (a url seed is stored on the same field). */
+  path: string
+}
+
+/**
  * The plugin's write face over DSH's native right Sidebar.
  *
  * Installed by the client half ({@link ./native/surface.ts}) so the service —
@@ -565,6 +587,13 @@ export interface SidebarSurface {
    * itself, and a tab id is not a type.
    */
   tabTypeOf?(sessionId: string, tabId: string): string | undefined
+  /**
+   * Every native tab bound to a path. The file tree's rename/delete
+   * reconciliation walks BOTH tab spaces — the bottom workbench's splits come
+   * from the store, and the right column exists only here. A surface that
+   * cannot enumerate them omits this.
+   */
+  pathTabs?(): NativePathTab[]
   /** Close one native tab; the closed record's type/title/meta, or undefined when the id is not native. */
   close(sessionId: string, tabId: string): { type: string; title: string; meta?: unknown } | undefined
   /**
@@ -747,6 +776,13 @@ export interface BetterSidebarService {
    * @internal Called once by the client half; not part of the consumer API.
    */
   setSurface(surface: SidebarSurface | undefined): void
+  /**
+   * Every native tab bound to a path (empty when no native surface is
+   * installed).
+   * @internal The file tree's rename/delete reconciliation; not part of the
+   * consumer API.
+   */
+  nativePathTabs(): NativePathTab[]
 }
 
 /** The file name of a path (both separators). */
@@ -1394,6 +1430,7 @@ export function createBetterSidebarService(store: SidebarStore): BetterSidebarSe
     openFile,
     hostRouteUrl: (path: string): string => resolveHostRoute(path).href,
     setSurface: (next: SidebarSurface | undefined) => { surface = next },
+    nativePathTabs: () => surface?.pathTabs?.() ?? [],
     clearUnread: clearUnreadFor,
   }
 }
