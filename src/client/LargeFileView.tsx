@@ -24,7 +24,7 @@ import clsx from 'clsx'
 import { IconChevronLeftOutlineRegular, IconChevronRightOutlineRegular, IconRefreshOutlineRegular, JsonTree, type JsonTreeLabels } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SessionScope } from './api.ts'
 import { downloadUrl } from './api.ts'
-import { formatByteSize, MAX_EDITABLE_LABEL } from '../editor-limits.ts'
+import { formatByteSize, MAX_EDITABLE_BYTES, MAX_EDITABLE_LABEL } from '../editor-limits.ts'
 import { isJsonlPath, isTreeRecord, parseRecord, summarizeRecord } from './jsonl.ts'
 import { splitLines, useTextPager } from './text-pages.ts'
 import { t } from './locales.ts'
@@ -69,6 +69,15 @@ export function LargeFileView(props: {
   const { scope, path, size, visible, revision } = props
   const pager = useTextPager(scope, path, visible, revision)
   const records = isJsonlPath(path)
+  /**
+   * Whether this file is over the EDITABLE threshold — which is a different
+   * question from "is this view paged".
+   *
+   * A small `.jsonl` opens straight into this record list as its PREVIEW, and
+   * announcing "the file is too large, paged preview only" over a 2 KB file
+   * would be a lie. The threshold decides, not the component.
+   */
+  const tooLarge = size > MAX_EDITABLE_BYTES
   const rows = useMemo(() => splitLines(pager.text), [pager.text])
   /** Which record rows are expanded (reset with every page). */
   const [expanded, setExpanded] = useState<ReadonlySet<number>>(new Set())
@@ -90,12 +99,14 @@ export function LargeFileView(props: {
 
   return (
     <div className={css.largeFile}>
-      <div className={css.largeFileNotice}>
-        <span>{t('previewOnlyNotice', { size: formatByteSize(size), limit: MAX_EDITABLE_LABEL })}</span>
-        <a className={css.largeFileDownload} href={downloadUrl(scope, path)} download>
-          {t('downloadToView')}
-        </a>
-      </div>
+      {tooLarge && (
+        <div className={css.largeFileNotice}>
+          <span>{t('previewOnlyNotice', { size: formatByteSize(size), limit: MAX_EDITABLE_LABEL })}</span>
+          <a className={css.largeFileDownload} href={downloadUrl(scope, path)} download>
+            {t('downloadToView')}
+          </a>
+        </div>
+      )}
       <div className={clsx(css.largeFileBody, records && css.largeFileRecords)}>
         {pager.error !== null && <div className={css.editorError}>{pager.error}</div>}
         {pager.error === null && pager.loading && pager.text === '' && (
