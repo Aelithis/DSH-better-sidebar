@@ -34,6 +34,12 @@ interface PathTab {
    *  ABSOLUTE paths while a tab opened from a chat link carries the address's
    *  workspace-relative spelling, so every comparison runs here. */
   absolute: string
+  /** The session this tab's EDITOR reads and writes in — the `scope.sessionId`
+   *  its host registers the unsaved draft under, so it is the one the close
+   *  guard has to name. Absent only for a bottom-workbench tab whose store has
+   *  no session yet (the guard then reads conservatively rather than missing
+   *  the record and closing a live draft without asking). */
+  scopeSessionId: string | undefined
   /** The native tab's seat session; absent for a bottom-workbench tab, whose
    *  updates resolve against the store's current session. */
   sessionId?: string
@@ -109,13 +115,22 @@ function pathTabsOf(snapshot: SidebarSnapshot, native: readonly NativePathTab[])
   const tabs: PathTab[] = []
   const state = snapshot.state
   if (state !== undefined) {
+    // A bottom-workbench row resolves its scope against the store's session, so
+    // that same session is the one its editor registered its draft under — the
+    // key's `?? ''` is only the marker's spelling for "no session".
     const session = snapshot.sessionId ?? ''
     for (const leaf of allLeaves(state.bottomSplits)) {
       for (const tab of leaf.tabs) {
         // A bottom-workbench row carries an absolute path already, and it is the
         // same string the tree hands this module — one spelling, both fields.
         if (tab.path !== undefined) {
-          tabs.push({ key: pathTabKey(session, tab.id), id: tab.id, path: tab.path, absolute: tab.path })
+          tabs.push({
+            key: pathTabKey(session, tab.id),
+            id: tab.id,
+            path: tab.path,
+            absolute: tab.path,
+            scopeSessionId: snapshot.sessionId,
+          })
         }
       }
     }
@@ -130,6 +145,10 @@ function pathTabsOf(snapshot: SidebarSnapshot, native: readonly NativePathTab[])
       // raw against the tree's absolute paths skipped exactly those tabs, so the
       // comparison runs on the resolved form while the tab keeps its spelling.
       absolute: resolveSidebarPath(tab.cwd, tab.path),
+      // The SEAT session (below) keys the record; THIS one is the namespace the
+      // editor behind it runs in, and a file address may name a session other
+      // than the column it is drawn in.
+      scopeSessionId: tab.scopeSessionId,
       sessionId: tab.sessionId,
     })
   }
@@ -177,7 +196,11 @@ export function retargetPathTabs(ctx: Context, store: SidebarStore, oldPath: str
  *  subtree of open files with it). A tab holding an unsaved draft asks first
  *  (the same guard + copy as the sidebar's tab close); declining keeps the
  *  tab — which is the user's call for the bottom workbench, and stays a
- *  conflict-gated save on the native side, never a silent re-create. */
+ *  conflict-gated save on the native side, never a silent re-create.
+ *
+ *  The question is asked in the tab's OWN session: the draft registry is keyed
+ *  by `sessionId::tabId`, so a bare id read would look up a same-numbered tab in
+ *  some other session (or nothing at all) and close a live draft unprompted. */
 export function closePathTabs(ctx: Context, store: SidebarStore, target: string, unsavedMessage: string): void {
   const service = ctx.get('betterSidebar')
   if (service === undefined) return
@@ -185,7 +208,7 @@ export function closePathTabs(ctx: Context, store: SidebarStore, target: string,
     // `isWithinWorkspace` is true for the target itself too, so one test covers
     // both "this exact file" and "anything under this directory".
     if (!isWithinWorkspace(target, tab.absolute)) continue
-    if (!confirmDiscardDraft(tab.id, unsavedMessage)) continue
+    if (!confirmDiscardDraft(tab.id, unsavedMessage, tab.scopeSessionId)) continue
     // The tab is going away: a move announced for it can never be claimed.
     clearRetargetedPath(tab.key)
     service.closeTab(tab.id, tab.sessionId === undefined ? undefined : { sessionId: tab.sessionId })
