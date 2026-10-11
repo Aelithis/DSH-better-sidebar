@@ -11,6 +11,7 @@ import { act } from 'react-dom/test-utils'
 import { renderRoot } from './test-utils.ts'
 import { SubagentView } from '../src/client/SubagentView.tsx'
 import { createSidebarStore } from '../src/client/state.ts'
+import { attachLocale } from '../src/client/locales.ts'
 import type {
   Context,
   SidebarClientJobsService,
@@ -123,6 +124,44 @@ let runsPayload: unknown[] = []
 /** A write rejection the stub answers `teams.taskUpdate` with (undefined = ok). */
 let writeRejection: { status: number; code: string; message: string } | undefined
 
+/**
+ * The host's `chat` namespace, as the plugin reads it through `chatT`. The
+ * Tasks page deliberately borrows the HOST's wording for the merged activity
+ * (see process-labels.ts), so a suite that asserts the bar's copy has to serve
+ * those keys — without this the wording falls back to the call's own detail and
+ * the assertions would pin the fallback instead of the contract.
+ *
+ * The subset is the host's real zh copy, plus the separator key the labels
+ * join with; `active: 'zh'` keeps the plugin's own dictionaries on the zh
+ * chain the rest of this file asserts against.
+ */
+class FakeChatLocale {
+  active = 'zh'
+  private readonly dicts: Record<string, Record<string, string>> = {
+    chat: {
+      'message.turnProcess.separator': ' · ',
+      'message.stepProcess.thinking': '正在分析请求',
+      'message.stepProcess.read': '正在读取文件',
+      'message.stepProcess.commands': '正在运行命令',
+      'message.stepProcess.prepare.read': '准备读取文件',
+      'message.stepProcess.done.read': '已读取文件',
+      'message.stepProcess.done.thinking': '已完成分析',
+    },
+  }
+  getSnapshot(): { active: string } {
+    return { active: this.active }
+  }
+  bind(ns: string): (key: string) => string {
+    const dict = this.dicts[ns] ?? {}
+    return (key: string) => dict[key] ?? key
+  }
+}
+
+/** Attach the host `chat` wording for one test. */
+function attachChatLocale(): void {
+  attachLocale(new FakeChatLocale())
+}
+
 beforeEach(() => {
   teamProjection = undefined
   livePayload = {}
@@ -163,6 +202,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  attachLocale(undefined)
   vi.unstubAllGlobals()
   for (const el of document.querySelectorAll('body > div')) el.remove()
 })
@@ -894,7 +934,9 @@ describe('Tasks page: the shared task window', () => {
     expect(aggregate).not.toBeNull()
     expect(aggregate.textContent).toContain('1')
 
-    // Clicking the aggregate expands EVERYTHING (manual + global folds).
+    // Clicking the aggregate reveals THAT group: the manual fold is released
+    // (the reader asked to see these nodes) while every other group keeps its
+    // own state.
     await act(async () => { aggregate.click() })
     expect(container.querySelector('[data-graph-node="child-0"]')).not.toBeNull()
     expect(container.querySelector('[data-graph-node="fold:root"]')).toBeNull()
@@ -904,7 +946,8 @@ describe('Tasks page: the shared task window', () => {
   it('gives the waiting members their own aggregate row, and folds one by its chevron', async () => {
     // Three idle teammates meet the idle head count, so they fold — into a row
     // of their OWN: the finished work keeps its "✓ N 已完成" badge and the
-    // waiting members say "N 个待命" instead of hiding inside a ✓ count.
+    // waiting members count themselves on the badge, instead of hiding inside
+    // a ✓ count.
     const mate = (index: number): SidebarTeamMemberProjection => ({
       id: `child-${index}`, name: `mate-${index}`, role: 'teammate', phase: 'active',
     })
@@ -916,7 +959,10 @@ describe('Tasks page: the shared task window', () => {
     await flushJobs()
     const aggregate = container.querySelector('[data-graph-node="fold:root:idle"]') as HTMLElement
     expect(aggregate).not.toBeNull()
-    expect(aggregate.textContent).toContain('3 待命')
+    // The badge carries the REAL count (it used to print the literal copy "N"),
+    // and the bar does not print it a second time.
+    expect(aggregate.querySelector('[data-card-kind="fold"]')?.textContent).toBe('3 个待命')
+    expect(aggregate.querySelector('[data-card-bar]')?.textContent).toBe('')
     expect(aggregate.textContent).not.toContain('已完成')
     // The finished group is a DIFFERENT row (empty here: nothing is done).
     expect(container.querySelector('[data-graph-node="fold:root"]')).toBeNull()
@@ -943,9 +989,9 @@ describe('Tasks page: the shared task window', () => {
     await act(async () => { chevron.click() })
     const aggregate = container.querySelector('[data-graph-node="fold:root:idle"]') as HTMLElement
     expect(aggregate).not.toBeNull()
-    expect(aggregate.textContent).toContain('1 待命')
+    expect(aggregate.textContent).toContain('1 个待命')
     // The aggregate's badge says 待命 too, so the row never reads as finished.
-    expect(aggregate.querySelector('[data-card-kind="fold"]')?.textContent).toBe('N 个待命')
+    expect(aggregate.querySelector('[data-card-kind="fold"]')?.textContent).toBe('1 个待命')
     expect(container.querySelector('[data-graph-node="child-0"]')).toBeNull()
     unmount()
   })
@@ -1091,6 +1137,206 @@ describe('Tasks page: the shared task window', () => {
     expect(first.textContent).toContain('扫描')
     expect(second.textContent).toContain('复核')
     expect(first.getAttribute('data-depth')).toBe('2')
+    unmount()
+  })
+})
+
+/**
+ * The bar and the node detail read the SAME merged-activity rule, and that
+ * rule follows the node's own state: a running node prints the host's live
+ * wording in place of the state word, a settled one prints the completed
+ * wording, and a node the live channel says nothing about falls back to its
+ * state word instead of claiming to be analysing a request.
+ */
+describe('Tasks page: the node status line and per-group expansion', () => {
+  /** Render the page and unfold the page-level rule, so cards are on screen. */
+  async function renderUnfolded(snapshot: SidebarSessionList): Promise<{
+    container: HTMLElement
+    unmount(): void
+  }> {
+    const store = makeStore(snapshot)
+    const rendered = renderRoot(
+      createElement(SubagentView, { sessionId: 'root', active: true, ctx: makeCtx(store) }),
+    )
+    await flushJobs()
+    const foldToggle = rendered.container.querySelector(
+      'button[aria-label="展开已完成的节点"]',
+    ) as HTMLButtonElement | null
+    if (foldToggle !== null) await act(async () => { foldToggle.click() })
+    return rendered
+  }
+
+  it('prints the running native status instead of the state word', async () => {
+    attachChatLocale()
+    livePayload = {
+      'child-0': {
+        running: true,
+        summary: { counts: [{ kind: 'read', count: 2 }], running: 'read', runningDetail: 'main.ts' },
+      },
+    }
+    const snapshot = snapshotWithChildren(2)
+    snapshot.byId['child-0']!.running = true
+    const { container, unmount } = await renderUnfolded(snapshot)
+    const bar = container.querySelector('[data-graph-node="child-0"] [data-card-bar]') as HTMLElement
+    expect(bar.getAttribute('data-running')).toBe('true')
+    expect(bar.textContent).toBe('正在读取文件 · main.ts')
+    expect(bar.textContent).not.toContain('运行中')
+    // The settled sibling keeps its word: it has no summary to speak with.
+    const settled = container.querySelector('[data-graph-node="child-1"] [data-card-bar]') as HTMLElement
+    expect(settled.textContent).toBe('已完成')
+    unmount()
+  })
+
+  it('falls back to the state word when the node has no activity data at all', async () => {
+    attachChatLocale()
+    // The live channel reports the node as running but folds nothing for it:
+    // the bar must not invent "正在分析请求" out of the host's thinking wording.
+    livePayload = { 'child-0': { running: true } }
+    const snapshot = snapshotWithChildren(2)
+    snapshot.byId['child-0']!.running = true
+    const { container, unmount } = await renderUnfolded(snapshot)
+    const bar = container.querySelector('[data-graph-node="child-0"] [data-card-bar]') as HTMLElement
+    expect(bar.textContent).toBe('运行中')
+    unmount()
+  })
+
+  it('prints a settled node the completed wording, and the ROOT its own live status', async () => {
+    attachChatLocale()
+    livePayload = {
+      // The root's fold is computed by the live route like every child's; the
+      // page used to drop it, so the main agent's card read the fallback text
+      // whatever the session was doing.
+      root: {
+        summary: { counts: [{ kind: 'commands', count: 1 }], running: 'commands', runningDetail: 'npm run build' },
+      },
+      'child-0': {
+        running: false,
+        summary: { counts: [{ kind: 'read', count: 1 }], runningDetail: '' },
+      },
+    }
+    const { container, unmount } = await renderUnfolded(snapshotWithChildren(2))
+    const rootBar = container.querySelector('[data-graph-node="root"] [data-card-bar]') as HTMLElement
+    expect(rootBar.textContent).toBe('正在运行命令 · npm run build')
+    const settledBar = container.querySelector('[data-graph-node="child-0"] [data-card-bar]') as HTMLElement
+    expect(settledBar.textContent).toBe('已读取文件')
+    expect(settledBar.textContent).not.toContain('已完成')
+    unmount()
+  })
+
+  it('sets the node detail activity under the title, and claims nothing without data', async () => {
+    attachChatLocale()
+    livePayload = {
+      'child-0': {
+        running: true,
+        text: 'half-finished line',
+        summary: { counts: [{ kind: 'read', count: 1 }], running: 'read', runningDetail: 'main.ts' },
+      },
+    }
+    const snapshot = snapshotWithChildren(2)
+    snapshot.byId['child-0']!.running = true
+    const { container, unmount } = await renderUnfolded(snapshot)
+
+    await act(async () => {
+      (container.querySelector('[data-graph-node="child-0"]') as HTMLElement).click()
+    })
+    const dialog = document.querySelector('[role="dialog"]') as HTMLElement
+    // The label row is gone: the position under the title says what it is.
+    expect(dialog.textContent).not.toContain('最近活动')
+    const block = dialog.querySelector('[data-node-activity]') as HTMLElement
+    expect(block.textContent).toContain('正在读取文件 · main.ts')
+    expect(block.textContent).toContain('half-finished line')
+    // …and it sits directly under the title, above the key/value grid.
+    const card = dialog.firstElementChild as HTMLElement
+    const parts = Array.from(card.children)
+    expect(parts.indexOf(block)).toBeLessThan(parts.indexOf(card.querySelector('dl') as Element))
+
+    // A node with no live data shows no activity block at all — the detail used
+    // to print "正在分析请求" for every node in the tree.
+    await act(async () => {
+      (container.querySelector('[data-graph-node="child-1"]') as HTMLElement).click()
+    })
+    const settledDialog = document.querySelector('[role="dialog"]') as HTMLElement
+    expect(settledDialog.querySelector('[data-node-activity]')).toBeNull()
+    expect(settledDialog.textContent).not.toContain('正在分析请求')
+    unmount()
+  })
+
+  it('expands ONE aggregate group per click; the cluster still folds the page', async () => {
+    // Two settled subagents (the `done` group) plus three waiting teammates
+    // (the `idle` group): both aggregates exist at once, which is exactly what
+    // makes "one click unfolded everything" observable.
+    const mate = (index: number): SidebarTeamMemberProjection => ({
+      id: `child-${index}`, name: `mate-${index}`, role: 'teammate', phase: 'active',
+    })
+    withTeam({
+      members: [{ id: 'root', name: 'lead', role: 'lead', phase: 'active' }, ...[2, 3, 4].map(mate)],
+    })
+    const store = makeStore(snapshotWithChildren(5))
+    const { container, unmount } = renderRoot(
+      createElement(SubagentView, { sessionId: 'root', active: true, ctx: makeCtx(store) }),
+    )
+    await flushJobs()
+    expect(container.querySelector('[data-graph-node="fold:root"]')).not.toBeNull()
+    expect(container.querySelector('[data-graph-node="fold:root:idle"]')).not.toBeNull()
+
+    // One click on the finished group reveals ITS members only.
+    await act(async () => {
+      (container.querySelector('[data-graph-node="fold:root"]') as HTMLElement).click()
+    })
+    expect(container.querySelector('[data-graph-node="child-0"]')).not.toBeNull()
+    expect(container.querySelector('[data-graph-node="child-1"]')).not.toBeNull()
+    expect(container.querySelector('[data-graph-node="fold:root"]')).toBeNull()
+    expect(container.querySelector('[data-graph-node="fold:root:idle"]')).not.toBeNull()
+    expect(container.querySelector('[data-graph-node="child-2"]')).toBeNull()
+
+    // The cluster keeps the page-level switch: unfolding the page shows every
+    // node, and collapsing it re-folds every group — including the one the
+    // reader had opened by hand.
+    await act(async () => {
+      (container.querySelector('button[aria-label="展开已完成的节点"]') as HTMLButtonElement).click()
+    })
+    expect(container.querySelector('[data-graph-node="child-2"]')).not.toBeNull()
+    await act(async () => {
+      (container.querySelector('button[aria-label="折叠已完成的节点"]') as HTMLButtonElement).click()
+    })
+    expect(container.querySelector('[data-graph-node="fold:root"]')).not.toBeNull()
+    expect(container.querySelector('[data-graph-node="fold:root:idle"]')).not.toBeNull()
+    expect(container.querySelector('[data-graph-node="child-0"]')).toBeNull()
+    unmount()
+  })
+
+  it('drops the per-group openings when the CLUSTER collapses the page', async () => {
+    // The polarity that matters: a group opened from its aggregate must not
+    // survive the reader asking the whole page to collapse. Driven from the
+    // unfolded state, where a fold could otherwise be remembered as "opened"
+    // while every sibling folds around it.
+    const store = makeStore(snapshotWithChildren(3))
+    const { container, unmount } = renderRoot(
+      createElement(SubagentView, { sessionId: 'root', active: true, ctx: makeCtx(store) }),
+    )
+    await flushJobs()
+    // Unfold the page, fold ONE card back in, then open that aggregate.
+    await act(async () => {
+      (container.querySelector('button[aria-label="展开已完成的节点"]') as HTMLButtonElement).click()
+    })
+    await act(async () => {
+      (container.querySelector(
+        '[data-graph-node="child-0"] button[aria-label="收进已完成聚合"]',
+      ) as HTMLButtonElement).click()
+    })
+    await act(async () => {
+      (container.querySelector('[data-graph-node="fold:root"]') as HTMLElement).click()
+    })
+    expect(container.querySelector('[data-graph-node="child-0"]')).not.toBeNull()
+
+    // Now collapse the page from the cluster: the opened group goes with it.
+    await act(async () => {
+      (container.querySelector('button[aria-label="折叠已完成的节点"]') as HTMLButtonElement).click()
+    })
+    expect(container.querySelector('[data-graph-node="child-0"]')).toBeNull()
+    const aggregate = container.querySelector('[data-graph-node="fold:root"]') as HTMLElement
+    expect(aggregate).not.toBeNull()
+    expect(aggregate.textContent).toContain('✓ 3 已完成')
     unmount()
   })
 })

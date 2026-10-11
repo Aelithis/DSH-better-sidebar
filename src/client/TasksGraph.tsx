@@ -41,10 +41,10 @@ import {
   type GraphBox,
 } from './tasks-graph-layout.ts'
 import {
-  agentIdentity, agentMeta, foldPreviews, foldTally, TaskLine, WorkflowGlyph, workflowMeta,
+  activityLine, agentIdentity, agentMeta, foldErrorTally, foldPreviews, foldTally,
+  TaskLine, WorkflowGlyph, workflowMeta,
 } from './tasks-shared.tsx'
 import { CardBar, CardTop, phaseClass, type CardKind } from './tasks-card.tsx'
-import { doneActivityTitle, liveActivityLabel } from './process-labels.ts'
 import { t } from './locales.ts'
 import css from './tasks-graph.module.css'
 import canvasCss from './tasks-canvas.module.css'
@@ -75,18 +75,6 @@ const CLICK_TOLERANCE_PX = 4
 function agentCardKind(node: TasksAgentNode): CardKind {
   if (node.team?.role === 'teammate') return 'teammate'
   return node.parentId === undefined ? 'main' : 'subagent'
-}
-
-/**
- * The bar's activity line. A running node shows the LIVE merged activity; a
- * settled one shows the same merged wording in its completed form (the host's
- * own `done.*` phrasing) — a settled card whose bar read only "已完成" would
- * throw away the one thing the fold is for.
- */
-function barActivity(node: TasksAgentNode): string | undefined {
-  const summary = node.live?.summary
-  if (node.state === 'running') return liveActivityLabel(summary)
-  return summary === undefined ? undefined : doneActivityTitle(summary)
 }
 
 /** Members of one run that already reported an outcome. */
@@ -129,8 +117,8 @@ export interface TasksGraphProps {
   onOpenTask(taskId: string, anchor: HTMLElement): void
   /** The control cluster's global fold switch (settled leaves). */
   onToggleFold(): void
-  /** The fold AGGREGATE's click: expand everything (global + manual folds). */
-  onExpandFold(): void
+  /** The fold AGGREGATE's click: reveal THIS group's members only. */
+  onExpandGroup(node: TasksFoldNode): void
   /** Fold ONE settled node into its parent's aggregate (the bar's chevron). */
   onFoldNode(node: TasksAgentNode): void
   mode: 'graph' | 'tree'
@@ -193,7 +181,7 @@ export function FoldToggleButton(props: { folded: boolean; onToggleFold(): void 
 
 export function TasksGraph(props: TasksGraphProps): ReactNode {
   const {
-    nodes, folded, rootId, onNodeInfo, onWorkflowInfo, onOpenTask, onToggleFold, onExpandFold,
+    nodes, folded, rootId, onNodeInfo, onWorkflowInfo, onOpenTask, onToggleFold, onExpandGroup,
     onFoldNode, mode, onModeChange, loading,
   } = props
   const containerRef = useRef<HTMLDivElement>(null)
@@ -502,7 +490,7 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
             const box = layout.boxes.get(node.id)
             if (box === undefined) return null
             const style = { left: box.x, top: box.y, width: GRAPH_NODE_W, minHeight: box.h }
-            if (node.kind === 'fold') return renderFoldNode(node, style, onExpandFold, clickAllowed)
+            if (node.kind === 'fold') return renderFoldNode(node, style, onExpandGroup, clickAllowed)
             if (node.kind === 'workflow') {
               return renderWorkflowNode(node, style, onWorkflowInfo, clickAllowed)
             }
@@ -572,6 +560,8 @@ function renderAgentNode(
    * and only there.
    */
   const foldable = (settled || node.state === 'idle') && node.parentId !== undefined
+  /** The merged process line the bar shows in place of the state word. */
+  const activity = activityLine(node)
   return (
     <div
       key={node.id}
@@ -606,7 +596,7 @@ function renderAgentNode(
       <CardBar
         state={node.state}
         running={node.state === 'running'}
-        {...(barActivity(node) === undefined ? {} : { activity: barActivity(node) })}
+        {...(activity === undefined ? {} : { activity })}
         {...(foldable && !node.current && onFold !== undefined
           ? { onFold: () => { onFold(node) } }
           : {})}
@@ -655,15 +645,23 @@ function renderWorkflowNode(
 }
 
 /**
- * One fold aggregate node: the completed leaves of one parent, collapsed. Its
- * bar is the action row (expand), so the whole card stays one click target.
+ * One fold aggregate node: the finished or the waiting members of one parent,
+ * collapsed. Its bar is the action row (expand THIS group), so the whole card
+ * stays one click target.
+ *
+ * The count is printed ONCE: the badge names it, so the bar only carries what
+ * the badge cannot say — a stray failure ("出错 N" would otherwise hide inside
+ * the ✓) — beside the expand chevron. The full tally stays the card's
+ * accessible name and tooltip, which a screen reader reads instead of the
+ * badge's inner text.
  */
 function renderFoldNode(
   node: TasksFoldNode,
   style: { left: number; top: number; width: number; minHeight: number },
-  onToggleFold: () => void,
+  onExpandGroup: (node: TasksFoldNode) => void,
   clickAllowed: () => boolean,
 ): ReactNode {
+  const errors = foldErrorTally(node)
   return (
     <div
       key={node.id}
@@ -676,7 +674,7 @@ function renderFoldNode(
       style={style}
       onClick={() => {
         if (!clickAllowed()) return
-        onToggleFold()
+        onExpandGroup(node)
       }}
     >
       <CardTop
@@ -688,11 +686,9 @@ function renderFoldNode(
         extraClass={css.cardNamePlain}
       />
       <CardBar state={node.foldKind === 'idle' ? 'idle' : 'done'} stateWord={false}>
-        {/* The bar SAYS what the row holds — "✓ N 已完成 · 出错 N" for finished
-            work (a stray failure would otherwise hide inside the ✓) and
-            "N 待命" for the waiting members. No action word: the tally needs
-            the room and the chevron already points at 展开. */}
-        <span className={css.barActivity} title={foldTally(node)}>{foldTally(node)}</span>
+        {errors !== undefined && (
+          <span className={css.barActivity} title={foldTally(node)}>{errors}</span>
+        )}
         <span className={css.barFold} aria-hidden="true">
           <IconChevronDownOutlineRegular size={12} />
         </span>

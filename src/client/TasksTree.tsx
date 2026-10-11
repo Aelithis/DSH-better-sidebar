@@ -7,8 +7,8 @@
  *
  * Behaviour contract: `role="tree"` / `role="treeitem"` + `aria-level`, a
  * `[data-tasks-row]` focus order, ArrowUp / ArrowDown / Home / End focus moves,
- * Enter / Space activation, and the global fold aggregate (a fold row toggles
- * the whole page's fold state).
+ * Enter / Space activation, and the fold rows (a fold row reveals its OWN
+ * group; the control cluster keeps the page-level switch).
  *
  * Readability: rows sit on the page's 32px rhythm (a 2px accent bar marks the
  * current session, hover is the native fill, settled rows recede), and every
@@ -18,7 +18,7 @@
 import { useCallback, useMemo, useRef, type KeyboardEvent, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { IconLoadingOutlineRegular, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { TasksAgentNode, TasksNode, TasksWorkflowNode } from './tasks-model.ts'
+import type { TasksAgentNode, TasksFoldNode, TasksNode, TasksWorkflowNode } from './tasks-model.ts'
 import {
   AgentGlyph, agentMeta, FoldGlyph, foldPreviews, foldTally, LiveLine, nodeDotState,
   TaskLine, WorkflowGlyph, workflowMeta,
@@ -34,7 +34,10 @@ export interface TasksTreeProps {
   onWorkflowInfo(node: TasksWorkflowNode, anchor: HTMLElement): void
   /** Open the shared task window for one task id. */
   onOpenTask(taskId: string, anchor: HTMLElement): void
+  /** The control cluster's page-level fold switch. */
   onToggleFold(): void
+  /** A fold row's own click: reveal THIS group's members only. */
+  onExpandGroup(node: TasksFoldNode): void
   mode: 'graph' | 'tree'
   onModeChange(mode: 'graph' | 'tree'): void
   /** Fallback loading row while the root catalog hydrates. */
@@ -43,7 +46,8 @@ export interface TasksTreeProps {
 
 export function TasksTree(props: TasksTreeProps): ReactNode {
   const {
-    nodes, folded, onNodeInfo, onWorkflowInfo, onOpenTask, onToggleFold, mode, onModeChange, loading,
+    nodes, folded, onNodeInfo, onWorkflowInfo, onOpenTask, onToggleFold, onExpandGroup,
+    mode, onModeChange, loading,
   } = props
   const bodyRef = useRef<HTMLDivElement>(null)
 
@@ -106,16 +110,18 @@ export function TasksTree(props: TasksTreeProps): ReactNode {
           aria-level={depth + 1}
           aria-label={`${foldTally(node)} · ${t('tasksFoldExpand')}`}
           className={clsx(css.treeRow, css.treeFoldRow)}
-          onClick={onToggleFold}
-          onKeyDown={(event) => { activateOnKey(event, onToggleFold) }}
+          onClick={() => { onExpandGroup(node) }}
+          onKeyDown={(event) => { activateOnKey(event, () => { onExpandGroup(node) }) }}
         >
           <span className={css.treeGlyph} aria-hidden="true"><FoldGlyph /></span>
           <span className={css.treeContent}>
             <span className={css.treeTitle}>
               {foldTally(node)}
-              <span className={css.treeMeta}>
-                {t(folded ? 'tasksFoldExpand' : 'tasksFoldCollapse')}
-              </span>
+              {/* The row only EXISTS while its group is folded, so its action is
+                  always "expand" — the old reading followed the page-level
+                  `folded` flag, which said "collapse" on a row that offers to do
+                  the opposite. */}
+              <span className={css.treeMeta}>{t('tasksFoldExpand')}</span>
             </span>
             <span className={css.treeMeta} title={foldPreviews(node.previews, node.count)}>
               {foldPreviews(node.previews, node.count)}

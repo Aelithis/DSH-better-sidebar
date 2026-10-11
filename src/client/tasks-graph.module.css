@@ -370,15 +370,17 @@
 }
 
 /* The merged activity: the main agent's own wording for the node's newest
-   range. It deliberately keeps the BAR's font — no mono family. The state word
-   beside it is UI copy, and the two stacks do not share metrics: measured at
-   11px, the sans stack reports ascent/descent 11/2 against the mono stack's
-   10/3, so a mono activity line sits 1px LOWER than the state word it follows
-   (the reader reported exactly that misalignment). The mono face bought
-   nothing here either: every CJK glyph in this line comes from the same
-   fallback family, so only the Latin fragments changed face — half a sentence
-   in mono, one pixel off. Machine text keeps its mono voice where it belongs
-   (the meta row above, the job rows, the terminal well). */
+   range, and the bar's primary content — it takes the state word's place for a
+   running node's native status and a settled node's summary. It deliberately
+   keeps the BAR's font — no mono family. Where the state word DOES stay beside
+   it (`空闲` / `出错`) the two stacks do not share metrics: measured at 11px,
+   the sans stack reports ascent/descent 11/2 against the mono stack's 10/3, so
+   a mono activity line sits 1px LOWER than the state word it follows (the
+   reader reported exactly that misalignment). The mono face bought nothing here
+   either: every CJK glyph in this line comes from the same fallback family, so
+   only the Latin fragments changed face — half a sentence in mono, one pixel
+   off. Machine text keeps its mono voice where it belongs (the meta row above,
+   the job rows, the terminal well). */
 .barActivity {
   flex: 1;
   min-width: 0;
@@ -1010,6 +1012,36 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The node's merged activity, set under the title instead of in the key/value
+   grid: it says what the node is DOING (a subtitle), and the grid's
+   right-aligned value column ellipsised it at the popover's 280px while its
+   "最近活动" key spent a third of the width naming the position. */
+.popActivityBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.popActivity {
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--dsw-alias-state-business-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The streamed text tail under it keeps the card's smallest voice, clamped to
+   two lines: the tail is capped at 400 characters upstream, which would
+   otherwise push the state rows out of the card. */
+.popActivityBlock .popHint {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 
 /* The card's smallest voice (the empty-description line, the drag hint, the

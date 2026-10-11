@@ -20,8 +20,9 @@
  *
  * Node click jumps straight into the transcript (root → main session); the
  * ⓘ button opens the detail popover. Completed leaf agents fold into one
- * aggregate node per parent (click it or the control-cluster toggle to
- * expand/collapse).
+ * aggregate node per GROUP (finished work / waiting members); clicking an
+ * aggregate reveals THAT group, while the control cluster's switch keeps the
+ * page-level expand/collapse.
  *
  * The shell itself is the page's own module stylesheet plus host primitives:
  * the header's refresh and the failure banner's retry are host `Button`s, the
@@ -57,7 +58,7 @@ import {
   clientJobs, collectRows, useJobObservation, useJobWatchers, useJobsSnapshot,
 } from './jobs-client.ts'
 import { t } from './locales.ts'
-import { buildTasksModel, type TasksAgentNode, type TasksWorkflowNode } from './tasks-model.ts'
+import { buildTasksModel, type TasksAgentNode, type TasksFoldNode, type TasksWorkflowNode } from './tasks-model.ts'
 import { TasksGraph } from './TasksGraph.tsx'
 import { TasksTree } from './TasksTree.tsx'
 import { JobsDrawer, JobOutputWindow } from './JobsDrawer.tsx'
@@ -242,9 +243,17 @@ export function SubagentView(props: {
   /**
    * Nodes the reader folded by hand from their own card bar. Kept apart from
    * `folded` (the global rule) so the control cluster and a single card never
-   * fight: the aggregate's click clears BOTH, which is what "expand" means.
+   * fight.
    */
   const [foldedIds, setFoldedIds] = useState<ReadonlySet<string>>(() => new Set())
+  /**
+   * The fold GROUPS the reader opened by clicking one aggregate card. Expanding
+   * an aggregate reveals that group ONLY — it used to clear the manual folds and
+   * switch the global rule off, so one click unfolded the whole page. The
+   * control cluster keeps the page-level expand/collapse; collapsing there drops
+   * these per-group openings (a global collapse must really collapse).
+   */
+  const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(() => new Set())
   const [teamBoardCollapsed, setTeamBoardCollapsed] = useState(false)
   const [popover, setPopover] = useState<PagePopover | null>(null)
 
@@ -262,8 +271,9 @@ export function SubagentView(props: {
         teamTasks: team?.tasks ?? [],
         folded,
         foldedIds,
+        expandedGroups,
       })),
-    [byId, catalogs, rootId, sessionId, live, runs, teamMembers, team, folded, foldedIds],
+    [byId, catalogs, rootId, sessionId, live, runs, teamMembers, team, folded, foldedIds, expandedGroups],
   )
 
   /**
@@ -336,11 +346,37 @@ export function SubagentView(props: {
     })
   }, [])
 
-  /** Expand every fold: the global rule off AND the manual folds cleared. */
-  const expandFold = useCallback((): void => {
-    setFolded(false)
-    setFoldedIds(current => (current.size === 0 ? current : new Set()))
+  /**
+   * Expand ONE aggregate: the group the reader clicked shows its members while
+   * every other group stays folded. The members it held are also released from
+   * the manual per-node set — clicking an aggregate means "show me these nodes
+   * now", and a hand-folded member left in `foldedIds` would stay hidden inside
+   * a group the reader just opened.
+   */
+  const expandGroup = useCallback((node: TasksFoldNode): void => {
+    setExpandedGroups(current => {
+      if (current.has(node.id)) return current
+      const next = new Set(current)
+      next.add(node.id)
+      return next
+    })
+    setFoldedIds(current => {
+      if (!node.memberIds.some(id => current.has(id))) return current
+      const next = new Set(current)
+      for (const id of node.memberIds) next.delete(id)
+      return next
+    })
   }, [])
+
+  /**
+   * The control cluster's page-level switch. COLLAPSING there re-folds every
+   * group, so the per-group openings are dropped with it; expanding leaves them
+   * (an unfolded page already shows everything they would reveal).
+   */
+  const toggleFold = useCallback((): void => {
+    if (!folded) setExpandedGroups(current => (current.size === 0 ? current : new Set()))
+    setFolded(!folded)
+  }, [folded])
 
   /** Open the shared task window from a board row (undefined = create). */
   const openTaskFromBoard = useCallback((
@@ -557,8 +593,8 @@ export function SubagentView(props: {
               onNodeInfo={(node, anchor) => { setPopover({ kind: 'node', nodeId: node.id, anchor }) }}
               onWorkflowInfo={(node, anchor) => { setPopover({ kind: 'workflow', nodeId: node.id, anchor }) }}
               onOpenTask={openTaskById}
-              onToggleFold={() => { setFolded(current => !current) }}
-              onExpandFold={expandFold}
+              onToggleFold={toggleFold}
+              onExpandGroup={expandGroup}
               onFoldNode={foldNode}
               mode={mode}
               onModeChange={setModeOverride}
@@ -572,7 +608,8 @@ export function SubagentView(props: {
               onNodeInfo={(node, anchor) => { setPopover({ kind: 'node', nodeId: node.id, anchor }) }}
               onWorkflowInfo={(node, anchor) => { setPopover({ kind: 'workflow', nodeId: node.id, anchor }) }}
               onOpenTask={openTaskById}
-              onToggleFold={() => { setFolded(current => !current) }}
+              onToggleFold={toggleFold}
+              onExpandGroup={expandGroup}
               mode={mode}
               onModeChange={setModeOverride}
             />

@@ -2,8 +2,8 @@
  * The anchored-popover CONTENTS of the Tasks page (geometry and dismissal
  * live in AnchoredPopover): the agent node detail with a transcript jump and
  * the workflow run detail with clickable member rows. Both share one grammar:
- * a letter-spaced uppercase head, a dt/dd key/value grid, a titled well and
- * one full-width jump action.
+ * a letter-spaced uppercase head, a [glyph][title] title row, a dt/dd
+ * key/value grid, a titled well and one full-width jump action.
  *
  * The two cards are ONE skeleton: the same head band, the same [glyph][title]
  * title row (the card's own host glyph, never a typed character), the same
@@ -30,10 +30,9 @@ import { Button, IconRightUpOutlineRegular, StateDot, Tag } from '@deepseek-ai/d
 import type { SidebarSubagentAddress } from '../context-types.ts'
 import type { TasksAgentNode, TasksWorkflowNode } from './tasks-model.ts'
 import {
-  AgentGlyph, WorkflowGlyph, flatten, modeLabel, nodeDotState, taskDotState,
+  activityLine, AgentGlyph, WorkflowGlyph, flatten, modeLabel, nodeDotState, taskDotState,
   taskStatusLabel, taskTone, workflowStatusKey,
 } from './tasks-shared.tsx'
-import { liveActivityLabel } from './process-labels.ts'
 import { t, type CopyKey } from './locales.ts'
 import css from './tasks-graph.module.css'
 
@@ -72,7 +71,16 @@ function PopTitleRow(props: { glyph: ReactNode; title: string }): ReactNode {
   )
 }
 
-/** The agent node detail popover. */
+/**
+ * The agent node detail popover.
+ *
+ * The merged activity is a SUBTITLE, not a fact: it sits under the title in
+ * the card's smallest voice instead of filling a row of the key/value grid
+ * (where the right-aligned value column ellipsised it at 280px and the label
+ * "最近活动" spent a third of the width saying what the position already says).
+ * With no process data at all the block renders nothing — a settled node must
+ * never claim to be analysing a request.
+ */
 export function AgentNodePopover(props: {
   node: TasksAgentNode
   onJump(node: TasksAgentNode): void
@@ -84,14 +92,25 @@ export function AgentNodePopover(props: {
   const nodeMode = modeLabel(node.mode)
   const liveText = node.live?.text !== undefined ? flatten(node.live.text) : undefined
   // The merged activity the main conversation would show for this node's
-  // newest range (category wording + the running call's detail).
-  const liveTool = liveActivityLabel(node.live?.summary)
+  // newest range — the host's own wording, in its running or settled form
+  // (see activityLine).
+  const activity = activityLine(node)
   return (
     <div className={css.popCard}>
       <div className={css.popHead}>
         <span>{t('tasksNodeDetail')}</span>
       </div>
       <PopTitleRow glyph={<AgentGlyph node={node} />} title={node.label} />
+      {(activity !== undefined || liveText !== undefined) && (
+        <div className={css.popActivityBlock} data-node-activity>
+          {activity !== undefined && (
+            <span className={css.popActivity} title={activity}>{activity}</span>
+          )}
+          {liveText !== undefined && (
+            <span className={css.popHint} title={liveText}>{liveText}</span>
+          )}
+        </div>
+      )}
       <PopRows>
         <PopRow label={t('tasksNodeState')}>
           <StateDot state={nodeDotState(node.state)} size={6} /> {t(stateKey(node.state))}
@@ -104,13 +123,7 @@ export function AgentNodePopover(props: {
             {node.team.role === 'lead' ? 'lead' : node.team.name}
           </PopRow>
         )}
-        {(liveTool !== undefined || liveText !== undefined) && (
-          <PopRow label={t('tasksNodeActivity')} mono>{liveTool ?? liveText}</PopRow>
-        )}
       </PopRows>
-      {liveText !== undefined && liveTool !== undefined && (
-        <div className={css.popHint}>{liveText}</div>
-      )}
       {(node.tasks?.length ?? 0) > 0 && (
         <div className={css.popSection}>
           <div className={css.popGroup}>{t('tasksNodeTasks')}</div>

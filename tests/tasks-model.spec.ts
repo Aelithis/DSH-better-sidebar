@@ -358,6 +358,90 @@ describe('buildTasksModel', () => {
     })
     expect(buildTasksModel(base).map(node => node.id)).toEqual(['root', 'done-1'])
   })
+
+  it('expands ONE group per reader click, leaving the sibling aggregate folded', () => {
+    // Two groups of one parent at once: finished work (`done-1` / `failed-1`)
+    // and three waiting teammates. Opening the finished group must reveal those
+    // two nodes and NOTHING else — the page used to clear every fold it had.
+    const base = input({
+      catalogs: {
+        root: catalog([child('m1'), child('m2'), child('m3'), child('done-1'), child('failed-1')]),
+        ...Object.fromEntries(
+          ['m1', 'm2', 'm3', 'done-1', 'failed-1'].map(id => [id, catalog([])]),
+        ),
+      },
+      byId: Object.fromEntries(
+        [['root', summary('root')], ...['m1', 'm2', 'm3', 'done-1', 'failed-1'].map(id => [id, summary(id)])],
+      ),
+      teamMembers: [
+        ...['m1', 'm2', 'm3'].map(id => member({ id, name: id, status: 'idle' })),
+        member({ id: 'failed-1', name: 'failed-1', phase: 'failed', status: 'failed' }),
+      ],
+    })
+    expect(buildTasksModel({ ...base, expandedGroups: new Set(['fold:root']) })
+      .map(node => node.id)).toEqual(['root', 'done-1', 'failed-1', 'fold:root:idle'])
+    // …and the idle group's own opening leaves the finished one folded. Kept
+    // children keep the catalog order; the aggregates trail whatever stays
+    // folded (the model's one ordering rule).
+    expect(buildTasksModel({ ...base, expandedGroups: new Set(['fold:root:idle']) })
+      .map(node => node.id)).toEqual(['root', 'm1', 'm2', 'm3', 'fold:root'])
+    // The group ids are the aggregate row ids the page hands back.
+    expect(buildTasksModel(base).filter(node => node.kind === 'fold').map(node => node.id))
+      .toEqual(['fold:root', 'fold:root:idle'])
+  })
+
+  it('keeps a member released while its group is open, even with a stale manual fold', () => {
+    // `foldedIds` is a per-node request; the aggregate's click means "show me
+    // these now", so an open group wins over a hand-folded member the page has
+    // not finished dropping.
+    const model = buildTasksModel(input({
+      catalogs: { root: catalog([child('done-1')]) },
+      byId: { root: summary('root'), 'done-1': summary('done-1') },
+      folded: true,
+      foldedIds: new Set(['done-1']),
+      expandedGroups: new Set(['fold:root']),
+    }))
+    expect(model.map(node => node.id)).toEqual(['root', 'done-1'])
+  })
+
+  it('expands a RUN member group by its own aggregate id', () => {
+    const audit = run({
+      originSessionId: 'root',
+      phases: [{
+        title: '侦察',
+        members: [
+          { seq: 1, label: 'existing', phase: '侦察', childId: 'm1', outcome: 'completed' },
+          { seq: 2, label: 'synthesized', phase: '侦察', childId: 'm2', outcome: 'completed' },
+        ],
+      }],
+    })
+    const base = input({
+      catalogs: { root: catalog([child('m1')]), m1: catalog([]) },
+      byId: { root: summary('root'), m1: summary('m1') },
+      runs: [audit],
+    })
+    // Folded by default: both settled members collapse under the run node.
+    expect(buildTasksModel(base).map(node => node.id)).toEqual(['root', 'run:run-1', 'fold:run:run-1'])
+    // Opening that aggregate reveals the run's own members, in phase order.
+    expect(buildTasksModel({ ...base, expandedGroups: new Set(['fold:run:run-1']) })
+      .map(node => node.id)).toEqual(['root', 'run:run-1', 'm1', 'm2'])
+  })
+
+  it('carries the topology ROOT\'s own live view (the card and the row read it)', () => {
+    const live: Record<string, SidebarChildLiveView> = {
+      root: {
+        summary: {
+          counts: [{ kind: 'commands', count: 1 }], running: 'commands', runningDetail: 'npm run build',
+        },
+      },
+    }
+    const node = agents(buildTasksModel(input({ live }))).find(candidate => candidate.id === 'root')
+    expect(node?.live?.summary?.running).toBe('commands')
+    // A root the live channel reported nothing for keeps the field absent — the
+    // bar then falls back to the state word instead of inventing copy.
+    expect(agents(buildTasksModel(input({ live: {} }))).find(candidate => candidate.id === 'root')?.live)
+      .toBeUndefined()
+  })
 })
 
 describe('tasksEdges', () => {
