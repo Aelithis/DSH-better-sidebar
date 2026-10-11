@@ -1,27 +1,32 @@
 /**
  * The read-only paged preview for a file above the editable threshold.
  *
- * Two row shapes share one cursor ({@link useTextPager}):
+ * Two row shapes share one accumulator ({@link useTextPager}):
  *
  * - `jsonl` — one row per record, collapsed to a one-line summary and
- *   expandable into the host's `JsonTree`. A page is line-aligned, so a page
- *   is exactly a run of whole records.
+ *   expandable into the host's `JsonTree`. A page is line-aligned, so a page is
+ *   exactly a run of whole records.
  * - everything else — one row per line, monospace, no wrapping (horizontal
- *   scroll), which is the log-viewer shape and the reason a page's row count
- *   stays bounded.
+ *   scroll), which is the log-viewer shape.
  *
- * The pager is EXPLICIT (previous/next page) rather than an infinite scroll.
- * Byte offsets only exist for pages already walked forward, so "scroll to the
- * end" cannot be offered honestly without indexing the whole file on open;
- * what the cursor CAN do is revisit any visited page in either direction, and
- * the pager says exactly that. See text-pages.ts for the full reasoning.
+ * Scrolling is APPEND-ONLY, like VS Code's output/log view: reaching the bottom
+ * pulls the next window and keeps everything already read on screen. There is
+ * also an explicit "load all" in the notice bar, for a reader who wants the
+ * whole thing up front rather than scroll-hunting for it.
+ *
+ * The one thing VS Code does not need and this does: a ROW CAP. Its `TextModel`
+ * and its view are virtualized, so it can append a gigabyte into the model and
+ * still keep the DOM small; this renders real elements. {@link MAX_PREVIEW_ROWS}
+ * is therefore where appending stops and the reader is pointed at the download —
+ * a visible ceiling beats a frozen tab, and it sits far above any log a person
+ * reads in a side panel.
  *
  * Nothing here fetches the document: the file is above the editor's limit
  * precisely because holding it whole is what we are avoiding.
  */
-import { useMemo, useState, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type UIEvent } from 'react'
 import clsx from 'clsx'
-import { IconChevronLeftOutlineRegular, IconChevronRightOutlineRegular, IconRefreshOutlineRegular, JsonTree, type JsonTreeLabels } from '@deepseek-ai/dsh-client-ui-primitives'
+import { IconRefreshOutlineRegular, JsonTree, type JsonTreeLabels } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SessionScope } from './api.ts'
 import { downloadUrl } from './api.ts'
 import { formatByteSize, MAX_EDITABLE_BYTES, MAX_EDITABLE_LABEL } from '../editor-limits.ts'
@@ -29,6 +34,21 @@ import { isJsonlPath, isTreeRecord, parseRecord, summarizeRecord } from './jsonl
 import { splitLines, useTextPager } from './text-pages.ts'
 import { t } from './locales.ts'
 import css from './sidebar.module.css'
+
+/**
+ * How many rows the preview will append before it stops and points at the
+ * download instead.
+ *
+ * This is a DOM budget, not a byte budget: the rows are real elements, and one
+ * page of short JSONL lines is a few thousand of them. 50k keeps the worst case
+ * (a JSONL log read end to end) at a couple of seconds of layout while still
+ * covering any file a person reads in a side panel — the 6 MB reference log
+ * lands around 35k records, comfortably inside it.
+ */
+export const MAX_PREVIEW_ROWS = 50_000
+
+/** Distance from the bottom (px) at which the next page is pulled. */
+const APPEND_THRESHOLD_PX = 320
 
 /** Copy the host's `JsonTree` needs; this plugin owns the wording. */
 function jsonLabels(): JsonTreeLabels {
@@ -56,7 +76,8 @@ function jsonLabels(): JsonTreeLabels {
  * @param props.path - the file being previewed.
  * @param props.size - the file's size in bytes (from the read that refused it).
  * @param props.visible - whether the tab is on screen; a parked tab stops reading.
- * @param props.revision - bumped by the host's refresh to restart from page 1.
+ * @param props.revision - bumped by the host's refresh to restart from page one.
+ * @param props.maxRows - row ceiling (defaults to {@link MAX_PREVIEW_ROWS}).
  * @returns the preview.
  */
 export function LargeFileView(props: {
@@ -65,142 +86,185 @@ export function LargeFileView(props: {
   size: number
   visible: boolean
   revision: number
+  maxRows?: number
 }): ReactNode {
   const { scope, path, size, visible, revision } = props
-  const pager = useTextPager(scope, path, visible, revision)
+  const maxRows = props.maxRows ?? MAX_PREVIEW_ROWS
+  // The row ceiling is the HOOK's argument, not something this component
+  // enforces from its own rendered row count: while `loadAll` walks pages, a
+  // render-fresh count lags by however many pages React has not flushed.
+  const pager = useTextPager(scope, path, visible, revision, maxRows)
   const records = isJsonlPath(path)
+  const bodyRef = useRef<HTMLDivElement | null>(null)
+  /** Absolute record/line numbers the reader expanded (survives appends). */
+  const [expanded, setExpanded] = useState<ReadonlySet<number>>(new Set())
+  const labels = useMemo(() => jsonLabels(), [])
+
   /**
-   * Whether this file is over the EDITABLE threshold — which is a different
-   * question from "is this view paged".
+   * Whether this file is over the EDITABLE threshold — a different question
+   * from "is this view paged".
    *
    * A small `.jsonl` opens straight into this record list as its PREVIEW, and
    * announcing "the file is too large, paged preview only" over a 2 KB file
    * would be a lie. The threshold decides, not the component.
    */
   const tooLarge = size > MAX_EDITABLE_BYTES
-  const rows = useMemo(() => splitLines(pager.text), [pager.text])
-  /** Which record rows are expanded (reset with every page). */
-  const [expanded, setExpanded] = useState<ReadonlySet<number>>(new Set())
-  const pageKey = `${pager.page}`
-  const labels = useMemo(() => jsonLabels(), [])
 
-  const parsed = useMemo(
-    () => (records ? rows.map(parseRecord) : []),
-    [records, rows],
-  )
+  const rows = useMemo(() => pager.pages.map(splitLines), [pager.pages])
+  const totalRows = useMemo(() => rows.reduce((sum, page) => sum + page.length, 0), [rows])
 
-  /** Absolute line/record number of row `index` on the current page. */
-  const numberAt = (index: number): number => pager.firstLine + index
+  /** Pull the next page unless there is nothing left to pull. */
+  const maybeLoadMore = useCallback((): void => {
+    if (pager.atEnd || pager.atCap || pager.loadingAll) return
+    pager.loadMore()
+  }, [pager])
 
-  const selectPage = (next: () => void): void => {
-    setExpanded(new Set())
-    next()
+  // Fill the viewport: a page that does not reach the bottom leaves nothing to
+  // scroll, so the scroll handler would never fire and the reader would sit in
+  // front of a half-empty pane. Re-checking after each append makes a short file
+  // load in as many pages as it takes to overflow — and stop at EOF.
+  useEffect(() => {
+    const el = bodyRef.current
+    if (el === null || !visible) return
+    if (el.scrollHeight <= el.clientHeight + 8) maybeLoadMore()
+  }, [visible, pager.pages.length, pager.atEnd, pager.atCap, maybeLoadMore])
+
+  const onScroll = (event: UIEvent<HTMLDivElement>): void => {
+    const el = event.currentTarget
+    if (el.scrollHeight - el.scrollTop - el.clientHeight <= APPEND_THRESHOLD_PX) maybeLoadMore()
   }
+
+  const toggle = useCallback((number: number): void => {
+    setExpanded((previous) => {
+      const next = new Set(previous)
+      if (next.has(number)) next.delete(number)
+      else next.add(number)
+      return next
+    })
+  }, [])
+
+  const firstNumber = pager.lineStarts[0] ?? 1
+  const lastNumber = Math.max(firstNumber, firstNumber + totalRows - 1)
+  /** The footer only means something while there is more to come, or once more
+   *  than one window has arrived (a single-page file needs no commentary). */
+  const showFooter = !pager.atEnd || pager.pages.length > 1
 
   return (
     <div className={css.largeFile}>
       {tooLarge && (
         <div className={css.largeFileNotice}>
           <span>{t('previewOnlyNotice', { size: formatByteSize(size), limit: MAX_EDITABLE_LABEL })}</span>
+          <button
+            type="button"
+            className={css.largeFileNoticeAction}
+            disabled={pager.atEnd || pager.atCap || pager.loadingAll}
+            title={pager.atCap ? t('previewRowLimit', { rows: maxRows }) : undefined}
+            onClick={pager.loadAll}
+          >
+            {pager.loadingAll
+              ? t('loadAllProgress', {
+                loaded: formatByteSize(pager.loadedBytes),
+                total: formatByteSize(size),
+              })
+              : t('loadAll')}
+          </button>
           <a className={css.largeFileDownload} href={downloadUrl(scope, path)} download>
             {t('downloadToView')}
           </a>
         </div>
       )}
-      <div className={clsx(css.largeFileBody, records && css.largeFileRecords)}>
+      {pager.atCap && (
+        <div className={css.editorBanner}>{t('previewRowLimit', { rows: maxRows })}</div>
+      )}
+      <div
+        className={clsx(css.largeFileBody, records && css.largeFileRecords)}
+        ref={bodyRef}
+        onScroll={onScroll}
+      >
         {pager.error !== null && <div className={css.editorError}>{pager.error}</div>}
-        {pager.error === null && pager.loading && pager.text === '' && (
+        {pager.error === null && pager.loading && pager.pages.length === 0 && (
           <div className={css.editorPlaceholder}>{t('loading')}</div>
         )}
-        {pager.error === null && !(pager.loading && pager.text === '') && records && (
-          <ol className={css.largeFileList} start={pager.firstLine}>
-            {parsed.map((record, index) => (
-              <RecordRow
-                key={`${pageKey}:${index}`}
-                number={numberAt(index)}
-                line={rows[index] ?? ''}
-                record={record}
-                expanded={expanded.has(index)}
-                labels={labels}
-                onToggle={() => {
-                  setExpanded((previous) => {
-                    const next = new Set(previous)
-                    if (next.has(index)) next.delete(index)
-                    else next.add(index)
-                    return next
-                  })
-                }}
-              />
-            ))}
+        {pager.error === null && pager.pages.length > 0 && records && (
+          <ol className={css.largeFileList} start={firstNumber}>
+            {rows.flatMap((lines, pageIndex) => {
+              const start = pager.lineStarts[pageIndex] ?? 1
+              return lines.map((line, rowIndex) => {
+                const number = start + rowIndex
+                return (
+                  <RecordRow
+                    key={number}
+                    number={number}
+                    line={line}
+                    expanded={expanded.has(number)}
+                    labels={labels}
+                    onToggle={toggle}
+                  />
+                )
+              })
+            })}
           </ol>
         )}
-        {pager.error === null && !(pager.loading && pager.text === '') && !records && (
+        {pager.error === null && pager.pages.length > 0 && !records && (
           <div className={css.largeFileLines}>
-            {rows.map((line, index) => (
-              <div className={css.largeFileLine} key={`${pageKey}:${index}`}>
-                <span className={css.largeFileLineNo} aria-hidden="true">{numberAt(index)}</span>
-                <span className={css.largeFileLineText}>{line === '' ? '\u00a0' : line}</span>
-              </div>
-            ))}
-            {rows.length === 0 && !pager.loading && (
-              <div className={css.editorPlaceholder}>{t('largeFileEmpty')}</div>
-            )}
+            {rows.flatMap((lines, pageIndex) => {
+              const start = pager.lineStarts[pageIndex] ?? 1
+              return lines.map((line, rowIndex) => (
+                <div className={css.largeFileLine} key={`${pageIndex}:${rowIndex}`}>
+                  <span className={css.largeFileLineNo} aria-hidden="true">{start + rowIndex}</span>
+                  <span className={css.largeFileLineText}>{line === '' ? '\u00a0' : line}</span>
+                </div>
+              ))
+            })}
           </div>
         )}
+        {pager.error === null && pager.atEnd && totalRows === 0 && !pager.loading && (
+          <div className={css.editorPlaceholder}>{t('largeFileEmpty')}</div>
+        )}
       </div>
-      <div className={css.largeFilePager}>
-        <button
-          type="button"
-          className={css.iconButton}
-          aria-label={t('pagedPrev')}
-          title={t('pagedPrev')}
-          disabled={pager.page <= 1 || pager.loading}
-          onClick={() => { selectPage(pager.prev) }}
-        >
-          <IconChevronLeftOutlineRegular size={14} />
-        </button>
-        <span className={css.largeFilePageLabel}>
-          {records
-            ? t('jsonlRecordRange', { from: pager.firstLine, to: numberAt(Math.max(0, rows.length - 1)) })
-            : t('pagedLineRange', { from: pager.firstLine, to: numberAt(Math.max(0, rows.length - 1)) })}
-          {' · '}
-          {pager.atEnd ? t('pagedPageOfTotal', { page: pager.page, total: pager.page }) : t('pagedPage', { page: pager.page })}
-        </span>
-        <button
-          type="button"
-          className={css.iconButton}
-          aria-label={t('pagedNext')}
-          title={pager.atEnd ? t('pagedEnd') : t('pagedNext')}
-          disabled={pager.atEnd || pager.loading}
-          onClick={() => { selectPage(pager.next) }}
-        >
-          <IconChevronRightOutlineRegular size={14} />
-        </button>
-        <button
-          type="button"
-          className={css.iconButton}
-          aria-label={t('refresh')}
-          title={t('refresh')}
-          onClick={pager.reload}
-        >
-          <IconRefreshOutlineRegular size={14} />
-        </button>
-      </div>
+      {showFooter && (
+        <div className={css.largeFilePager}>
+          <span className={css.largeFilePageLabel}>
+            {records
+              ? t('jsonlRecordRange', { from: firstNumber, to: lastNumber })
+              : t('pagedLineRange', { from: firstNumber, to: lastNumber })}
+            {' · '}
+            {`${formatByteSize(pager.loadedBytes)} / ${formatByteSize(size)}`}
+          </span>
+          {pager.loading && !pager.loadingAll && <span className={css.largeFilePageLabel}>{t('loading')}</span>}
+          <button
+            type="button"
+            className={css.iconButton}
+            aria-label={t('refresh')}
+            title={t('refresh')}
+            onClick={pager.reload}
+          >
+            <IconRefreshOutlineRegular size={14} />
+          </button>
+        </div>
+      )}
     </div>
   )
 }
 
-/** One JSONL record row: a summary line, expanding into the host's JSON tree. */
-function RecordRow(props: {
+/**
+ * One JSONL record row: a summary line, expanding into the host's JSON tree.
+ *
+ * Memoized because appending a page re-renders the whole list: without this,
+ * every already-mounted record would be reconciled again on each append, and the
+ * list is expected to grow into the tens of thousands. The record is parsed here
+ * (rather than by the caller) so the parent's `flatMap` only builds elements.
+ */
+const RecordRow = memo(function RecordRow(props: {
   number: number
   /** The raw line, shown verbatim when the record does not parse. */
   line: string
-  record: ReturnType<typeof parseRecord>
   expanded: boolean
   labels: JsonTreeLabels
-  onToggle: () => void
+  onToggle: (number: number) => void
 }): ReactNode {
-  const { number, line, record, expanded, labels, onToggle } = props
+  const { number, line, expanded, labels, onToggle } = props
+  const record = useMemo(() => parseRecord(line), [line])
   if (!record.ok) {
     // A blank line is not a broken record — JSONL files normally end with one,
     // and the host's pages are line-aligned, so it lands as its own row.
@@ -226,7 +290,7 @@ function RecordRow(props: {
           className={css.largeFileRecordSummary}
           aria-expanded={tree ? expanded : undefined}
           disabled={!tree}
-          onClick={onToggle}
+          onClick={() => { onToggle(number) }}
         >
           {summarizeRecord(value)}
         </button>
@@ -238,4 +302,4 @@ function RecordRow(props: {
       </div>
     </li>
   )
-}
+})

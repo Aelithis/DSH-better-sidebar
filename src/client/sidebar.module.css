@@ -2515,9 +2515,27 @@ body[data-dsh-sidebar-dragging] .bottomPanel {
 }
 
 .largeFileDownload {
-  margin-left: auto;
   color: inherit;
   text-decoration: underline;
+}
+
+/* The notice's own "load all" action. It rides the notice's warn ink (the bar
+   is a warning surface, not a toolbar) and sits flush right, with the download
+   link beside it. `margin-left: auto` is what pins the PAIR to the far edge. */
+.largeFileNoticeAction {
+  margin-left: auto;
+  padding: 0 6px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.largeFileNoticeAction:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .largeFileBody {

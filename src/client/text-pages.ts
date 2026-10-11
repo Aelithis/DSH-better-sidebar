@@ -6,213 +6,280 @@
  * refusing to show it (VS Code pops a placeholder and offers "Open Anyway").
  * That is safe but useless for the files people actually want to LOOK at —
  * session logs, eval dumps, dataset rows — so instead of refusing, this reads
- * the file in windows and renders one window at a time. Memory stays flat
- * whatever the file weighs.
+ * the file in windows.
  *
- * The cursor model, and its one honest limitation:
+ * The model is APPEND-ONLY, which is what VS Code's output/log viewer does
+ * (its `readFile(resource, { position: endOffset })` tail reads append into the
+ * model). Pages accumulate in file order, so:
  *
- * - `pageStarts[i]` is the byte offset page `i` starts at. It is filled in as
- *   the reader walks FORWARD, so it is only known up to the furthest page
- *   visited — byte offsets cannot be computed backwards.
- * - Therefore navigation reaches any VISITED page in either direction, plus
- *   the next unvisited one. There is no "jump to the last page" and no total
- *   page count until the file is read to the end. A random-access index would
- *   mean scanning the whole file on open, which is exactly the cost paging
- *   exists to avoid.
- * - Decoded page text is cached separately from the page table, in a bounded
- *   LRU, so revisiting a page does not re-read it while memory still cannot
- *   grow with the file.
+ * - scrolling to the bottom appends the next page instead of replacing the
+ *   current one — the reader keeps everything they have already scrolled past;
+ * - "load all" is just "append until EOF", one sequential request at a time.
+ *   It HAS to be sequential: each request's `offset` is the previous response's
+ *   `nextOffset`, so the offsets cannot be computed ahead of time.
+ *
+ * That is also why there is no page count and no jump-to-the-end: a byte offset
+ * is only knowable for the pages already read. A random-access index would mean
+ * scanning the whole file on open — exactly the cost paging exists to avoid.
+ *
+ * Memory is therefore proportional to what the user has actually read, and the
+ * VIEW caps that (see `MAX_PREVIEW_ROWS` in LargeFileView): this hook will
+ * append for as long as it is asked to.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, type SessionScope } from './api.ts'
 
-/** How many decoded pages stay in memory (the page table is tiny and unbounded). */
-const PAGE_CACHE_MAX = 24
-
-/** The cursor state one preview renders from. */
-export interface TextPager {
-  /** Whether a load is in flight (the first page included). */
-  loading: boolean
-  /** Wire/transport failure of the last load; cleared once one succeeds. */
-  error: string | null
-  /** The current page's text; '' before the first load settles. */
-  text: string
-  /** 1-based page number. */
-  page: number
-  /** Absolute 1-based line number the current page starts at. */
-  firstLine: number
-  /** The file's size in bytes (0 until the first page reports it). */
+/** Everything one read produced, in the shape the preview renders from. */
+interface PagerState {
+  /** Decoded page texts, in file order (`pages[0]` is the first window). */
+  pages: string[]
+  /** Absolute 1-based number of the first line each page holds. */
+  lineStarts: number[]
+  /** Lines in each page (parallel to `pages`; summed for the row cap). */
+  lineCounts: number[]
+  /** Where the next page starts — also the count of bytes read so far. */
+  nextOffset: number
+  /** The file's size in bytes, as the first response reported it. */
   size: number
-  /** True once the file's last page has been loaded. */
   atEnd: boolean
-  /** 1-based number of the furthest page reachable right now. */
-  lastReachable: number
-  /** True when a page after the current one is reachable (possibly not yet read). */
-  hasNext: boolean
-  next: () => void
-  prev: () => void
-  /** Re-read from page 1 (the toolbar's refresh, and the conflict banner's action). */
+  encoding: string
+}
+
+/** The empty state (also what a file switch resets to). */
+const EMPTY: PagerState = {
+  pages: [],
+  lineStarts: [],
+  lineCounts: [],
+  nextOffset: 0,
+  size: 0,
+  atEnd: false,
+  encoding: 'utf8',
+}
+
+/** The paging state one preview renders from. */
+export interface TextPager {
+  /** A single page append is in flight. */
+  loading: boolean
+  /** The "load all" loop is running (its per-page appends also set `loading`). */
+  loadingAll: boolean
+  /** Wire/transport failure of the last append; cleared once one succeeds. */
+  error: string | null
+  /** Loaded page texts, in file order. Append-only — nothing is ever dropped. */
+  pages: readonly string[]
+  /** Absolute 1-based first line of each page (parallel to `pages`). */
+  lineStarts: readonly number[]
+  /** Total decoded lines across the loaded pages (the row cap's input). */
+  totalLines: number
+  /** Bytes read so far (`nextOffset` — the same number, named for the UI). */
+  loadedBytes: number
+  /** The file's size in bytes (0 until the first response arrives). */
+  size: number
+  /** True once the file's last page has been read. */
+  atEnd: boolean
+  /** True when `maxLines` is what stopped the reading (not EOF). */
+  atCap: boolean
+  /** Append the next page, unless nothing may be appended any more. */
+  loadMore: () => void
+  /**
+   * Read every remaining page, one at a time, until EOF, the `maxLines`
+   * ceiling, or a failure.
+   */
+  loadAll: () => void
+  /** Throw away everything and re-read from the first page (the refresh). */
   reload: () => void
-  /** The file's detected encoding, as reported by the first page. */
+  /** The file's detected encoding, as the first page reported it. */
   encoding: string
 }
 
 /**
- * Page through one file.
+ * Page through one file, appending.
  *
  * @param scope - the session scope.
  * @param path - the file to read ('' parks the hook).
  * @param enabled - false issues no request and keeps the previous state (a
  *  viewer that is merely hidden must not keep reading).
- * @param revision - bump to restart from page 1 (the host's refresh path).
- * @returns the cursor and its navigation commands.
+ * @param revision - bump to restart from the first page (the host's refresh).
+ * @param maxLines - ceiling on accumulated lines. The hook stops appending
+ *  once it is reached, and reports `atCap`. It lives HERE rather than in the
+ *  caller because the accounting has to be synchronous: while `loadAll` walks
+ *  pages in an `await` loop, a caller reading its own RENDERED row count would
+ *  decide from a stale number and overshoot the ceiling by however many pages
+ *  React had not re-rendered yet.
+ * @returns the accumulator and its commands.
  */
 export function useTextPager(
   scope: SessionScope,
   path: string,
   enabled: boolean,
   revision: number,
+  maxLines = Number.POSITIVE_INFINITY,
 ): TextPager {
-  /** `pageStarts[i]` = byte offset page `i` starts at; one extra slot past the
-   *  last loaded page holds where the next one begins. */
-  const [pageStarts, setPageStarts] = useState<number[]>([0])
-  /** Absolute 1-based first line of each page, chained as pages are read. */
-  const [lineStarts, setLineStarts] = useState<number[]>([1])
-  /** Page index → decoded text, insertion-ordered for the LRU trim. */
-  const cacheRef = useRef(new Map<number, string>())
-  /** Mirror of `pageStarts` for the identity-stable `load` callback. */
-  const startsRef = useRef(pageStarts)
-  startsRef.current = pageStarts
-  const linesRef = useRef(lineStarts)
-  linesRef.current = lineStarts
-
-  const [page, setPage] = useState(0)
-  const [size, setSize] = useState(0)
-  const [atEnd, setAtEnd] = useState(false)
-  const [encoding, setEncoding] = useState('utf8')
+  const [state, setState] = useState<PagerState>(EMPTY)
   const [loading, setLoading] = useState(false)
+  const [loadingAll, setLoadingAll] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  /** Bumped after every cache write so the returned memo re-reads it. */
-  const [cacheStamp, setCacheStamp] = useState(0)
   const [reloadSeq, setReloadSeq] = useState(0)
-  const inFlight = useRef<Set<number>>(new Set())
-  /** Guards a late response from the previous file/revision. */
+
+  /** One append at a time: every request needs the previous `nextOffset`. */
+  const inFlight = useRef(false)
+  /** Guards a late response from the file/revision we have already left. */
   const generationRef = useRef(0)
+  /**
+   * The cursor, as REFS rather than reads of the rendered state.
+   *
+   * This is load-bearing, not a micro-optimisation: `loadAll` walks pages in a
+   * tight `await` loop, and a `setState` from the previous page is not rendered
+   * yet when the next iteration starts. Reading the offset out of state there
+   * re-requests the SAME page forever (found by the spec — it OOMs the worker in
+   * about ten seconds). The refs are written synchronously with the response,
+   * so the loop always advances.
+   */
+  const nextOffsetRef = useRef(0)
+  const atEndRef = useRef(false)
+  const totalLinesRef = useRef(0)
+  const loadingAllRef = useRef(false)
+  /** Mirror of the ceiling, so the identity-stable callbacks read it fresh. */
+  const maxLinesRef = useRef(maxLines)
+  maxLinesRef.current = maxLines
+
+  /** Whether anything may still be appended: neither EOF nor the ceiling. */
+  const canAppend = (): boolean =>
+    !atEndRef.current && totalLinesRef.current < maxLinesRef.current
 
   const reset = useCallback((): void => {
     generationRef.current += 1
-    cacheRef.current = new Map()
-    inFlight.current = new Set()
-    setPageStarts([0])
-    setLineStarts([1])
-    setPage(0)
-    setSize(0)
-    setAtEnd(false)
-    setError(null)
+    inFlight.current = false
+    loadingAllRef.current = false
+    nextOffsetRef.current = 0
+    atEndRef.current = false
+    totalLinesRef.current = 0
+    setState(EMPTY)
     setLoading(false)
-    setCacheStamp(stamp => stamp + 1)
+    setLoadingAll(false)
+    setError(null)
   }, [])
 
-  // A new file restarts the cursor; so does the host's refresh — the file may
-  // have moved on disk, and a stale byte offset would splice two different
-  // revisions of the document together.
+  // A new file restarts from the first page; so does the host's refresh — the
+  // file may have moved on disk, and a stale byte offset would splice two
+  // different revisions of the document together.
   useEffect(() => {
     reset()
     setReloadSeq(sequence => sequence + 1)
   }, [reset, path, scope.sessionId, scope.cwd, revision])
 
-  const load = useCallback((index: number): void => {
-    if (inFlight.current.has(index)) return
-    const offset = index === 0 ? 0 : startsRef.current[index]
-    if (offset === undefined) return
+  /**
+   * Read the page at the current `nextOffset` and append it.
+   *
+   * @returns whether the caller's loop may continue (false on a failure, on a
+   *  superseded generation, or when another append is already in flight).
+   */
+  const appendOnce = useCallback((): Promise<boolean> => {
+    if (inFlight.current) return Promise.resolve(false)
+    if (!canAppend()) return Promise.resolve(false)
     const generation = generationRef.current
-    inFlight.current.add(index)
+    const offset = nextOffsetRef.current
+    inFlight.current = true
     setLoading(true)
     setError(null)
-    api.fsReadPage(scope, path, offset).then((result) => {
-      inFlight.current.delete(index)
-      if (generation !== generationRef.current) return
-      const cache = cacheRef.current
-      cache.set(index, result.text)
-      while (cache.size > PAGE_CACHE_MAX) {
-        const oldest = cache.keys().next()
-        if (oldest.done || oldest.value === index) break
-        cache.delete(oldest.value)
-      }
-      setPageStarts((previous) => {
-        // Chaining the page table HERE (rather than in a separate effect) keeps
-        // "page i was read" and "page i+1 starts at X" one atomic update: no
-        // render can observe a table that skips the page it just saw.
-        const next = [...previous]
-        if (next[index] === undefined) next[index] = result.offset
-        next[index + 1] = result.nextOffset
-        return next
+    return api.fsReadPage(scope, path, offset).then((result) => {
+      if (generation !== generationRef.current) return false
+      inFlight.current = false
+      // Written BEFORE the state update: the next iteration of `loadAll` runs
+      // off these, and `setState` has not rendered yet at that point.
+      nextOffsetRef.current = result.nextOffset
+      atEndRef.current = result.eof
+      const lines = splitLines(result.text).length
+      totalLinesRef.current += lines
+      setState((previous) => {
+        const previousStart = previous.lineStarts[previous.lineStarts.length - 1] ?? 1
+        const previousLines = previous.lineCounts[previous.lineCounts.length - 1] ?? 0
+        return {
+          pages: [...previous.pages, result.text],
+          lineStarts: [
+            ...previous.lineStarts,
+            previous.pages.length === 0 ? 1 : previousStart + previousLines,
+          ],
+          lineCounts: [...previous.lineCounts, lines],
+          nextOffset: result.nextOffset,
+          size: result.size,
+          atEnd: result.eof,
+          encoding: result.encoding,
+        }
       })
-      setLineStarts((previous) => {
-        const next = [...previous]
-        next[index] = previous[index] ?? 1
-        next[index + 1] = next[index]! + lineCount(result.text)
-        return next
-      })
-      setSize(result.size)
-      setEncoding(result.encoding)
-      setAtEnd(result.eof)
-      setPage(index)
       setLoading(false)
-      setCacheStamp(stamp => stamp + 1)
+      return canAppend()
     }).catch((reason: unknown) => {
-      inFlight.current.delete(index)
-      if (generation !== generationRef.current) return
+      inFlight.current = false
+      if (generation !== generationRef.current) return false
       setLoading(false)
       setError(reason instanceof Error ? reason.message : String(reason))
+      return false
     })
   }, [scope, path])
+
+  const loadMore = useCallback((): void => {
+    if (!canAppend()) return
+    void appendOnce()
+  }, [appendOnce])
+
+  const loadAll = useCallback((): void => {
+    if (loadingAllRef.current) return
+    loadingAllRef.current = true
+    setLoadingAll(true)
+    void (async () => {
+      try {
+        // Sequential on purpose: each page's offset IS the previous page's
+        // `nextOffset`, so there is nothing to parallelise.
+        for (;;) {
+          // Both guards read REFS, which `appendOnce` writes synchronously with
+          // the response — the rendered state lags an `await` behind.
+          if (!canAppend()) break
+          // Sequential by construction, not by style: the next request's
+          // offset IS this response's `nextOffset`.
+          const advanced = await appendOnce()
+          if (!advanced) break
+        }
+      } finally {
+        loadingAllRef.current = false
+        setLoadingAll(false)
+      }
+    })()
+  }, [appendOnce])
 
   const reload = useCallback(() => {
     reset()
     setReloadSeq(sequence => sequence + 1)
   }, [reset])
 
-  // Load the current page when it is not cached yet. A page past the table's
-  // reach has no known offset and must not be requested.
+  // The first page, and the first page only: later appends are driven by the
+  // view's scroll and load-all. `pages.length` returning to 0 is what a reset
+  // looks like from here, so a file/revision change re-seeds automatically.
   useEffect(() => {
     void reloadSeq
     if (!enabled || path === '') return
-    if (cacheRef.current.has(page)) return
-    if (page > 0 && page >= startsRef.current.length) return
-    load(page)
-  }, [enabled, path, page, load, cacheStamp, reloadSeq])
-
-  const current = cacheRef.current.get(page)
-  const lastReachable = Math.max(1, pageStarts.length)
-
-  const next = useCallback(() => {
-    setPage(currentPage => (currentPage + 1 < Math.max(1, startsRef.current.length) ? currentPage + 1 : currentPage))
-  }, [])
-  const prev = useCallback(() => { setPage(currentPage => Math.max(0, currentPage - 1)) }, [])
+    if (state.pages.length > 0 || state.atEnd) return
+    if (inFlight.current || !canAppend()) return
+    void appendOnce()
+    // The guards are the two `state` FIELDS, not `state`: the effect must fire
+    // on "nothing loaded yet", not on every append.
+  }, [enabled, path, reloadSeq, state.pages.length, state.atEnd, appendOnce])
 
   return useMemo<TextPager>(() => ({
     loading,
+    loadingAll,
     error,
-    text: current ?? '',
-    page: page + 1,
-    firstLine: lineStarts[page] ?? 1,
-    size,
-    atEnd,
-    lastReachable,
-    hasNext: !atEnd && page + 1 < lastReachable,
-    next,
-    prev,
+    pages: state.pages,
+    lineStarts: state.lineStarts,
+    totalLines: state.lineCounts.reduce((sum, count) => sum + count, 0),
+    loadedBytes: state.nextOffset,
+    size: state.size,
+    atEnd: state.atEnd,
+    atCap: !state.atEnd && state.lineCounts.reduce((sum, count) => sum + count, 0) >= maxLines,
+    loadMore,
+    loadAll,
     reload,
-    encoding,
-    // `cacheStamp` is the cache-generation signal this memo reads through.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [loading, error, current, page, lineStarts, size, atEnd, lastReachable, next, prev, reload, encoding, cacheStamp])
-}
-
-/** Lines in one page's text (a trailing newline does not open a new line). */
-export function lineCount(text: string): number {
-  return splitLines(text).length
+    encoding: state.encoding,
+  }), [loading, loadingAll, error, state, maxLines, loadMore, loadAll, reload])
 }
 
 /**

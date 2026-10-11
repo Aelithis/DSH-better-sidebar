@@ -16,6 +16,7 @@ import { createElement } from 'react'
 import { act } from 'react-dom/test-utils'
 import type { Context } from '../src/context-types.ts'
 import { downloadUrl } from '../src/client/api.ts'
+import { LargeFileView, MAX_PREVIEW_ROWS } from '../src/client/LargeFileView.tsx'
 import { TextEditor } from '../src/client/TextEditor.tsx'
 import { createSidebarStore } from '../src/client/state.ts'
 import { attachLocale, t } from '../src/client/locales.ts'
@@ -138,6 +139,202 @@ describe('TextEditor over-limit preview', () => {
       expect(container.querySelector('.cm-editor')).not.toBeNull()
       expect(container.querySelector('button[aria-label="Save"]')).not.toBeNull()
       expect(readPage, 'an editable load never pages').not.toHaveBeenCalled()
+    } finally {
+      unmount()
+    }
+  })
+})
+
+/**
+ * The append-on-scroll behaviour and the row ceiling.
+ *
+ * These render {@link LargeFileView} directly (the TextEditor cases above pin
+ * how it is reached), because the questions here are about the preview's own
+ * scrolling: does reaching the bottom APPEND rather than replace, does the
+ * notice's "load all" pull everything, and does the ceiling stop it with an
+ * explanation instead of a frozen tab.
+ *
+ * jsdom reports zero geometry for every element, which the real component reads
+ * as "the content does not fill the pane" and answers by pulling another page —
+ * correct behaviour, but it makes a scroll test meaningless. The element metrics
+ * are therefore stubbed per test: `overflow` for the scroll cases, `empty` for
+ * the fill-the-viewport case.
+ */
+interface Metrics {
+  scrollHeight: number
+  clientHeight: number
+}
+
+/** Force every element to report the given scroll geometry. */
+function stubMetrics({ scrollHeight, clientHeight }: Metrics): void {
+  Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+    configurable: true, get: () => scrollHeight,
+  })
+  Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+    configurable: true, get: () => clientHeight,
+  })
+}
+
+afterEach(() => {
+  // Restore jsdom's own (zero) geometry for the next test.
+  delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollHeight
+  delete (HTMLElement.prototype as unknown as Record<string, unknown>).clientHeight
+})
+
+/** One page fixture with an explicit continuation. */
+function page(text: string, offset: number, nextOffset: number, eof: boolean) {
+  return { kind: 'text' as const, text, offset, nextOffset, eof, size: nextOffset, encoding: 'utf8' }
+}
+
+/** The preview's scroll container. */
+function bodyOf(container: HTMLElement): HTMLElement {
+  const body = container.querySelector('[class*="largeFileBody"]')
+  expect(body, 'the preview renders a scroll body').not.toBeNull()
+  return body as HTMLElement
+}
+
+describe('LargeFileView appends on scroll', () => {
+  it('pulls the next page at the bottom and KEEPS the one already read', async () => {
+    attachLocale(new FakeLocale())
+    stubMetrics({ scrollHeight: 1000, clientHeight: 300 })
+    readPage
+      .mockResolvedValueOnce(page('one\n', 0, 4, false))
+      .mockResolvedValueOnce(page('two\n', 4, 8, false))
+      .mockResolvedValueOnce(page('three\n', 8, 12, true))
+    const { container, unmount } = renderRoot(createElement(LargeFileView, {
+      scope: SCOPE, path: PATH, size: SIZE, visible: true, revision: 0,
+    }))
+    try {
+      await flush()
+      expect(readPage).toHaveBeenCalledTimes(1)
+      expect(container.textContent).toContain('one')
+
+      // Scrolling to within the threshold of the bottom appends page two.
+      const body = bodyOf(container)
+      Object.defineProperty(body, 'scrollTop', { value: 750, configurable: true })
+      await act(async () => { body.dispatchEvent(new Event('scroll')) })
+      await flush()
+      expect(readPage).toHaveBeenLastCalledWith(expect.anything(), PATH, 4)
+      // BOTH pages are on screen: appending does not throw away what was read.
+      expect(container.textContent).toContain('one')
+      expect(container.textContent).toContain('two')
+      // Line numbering continues across the boundary — the appended page's
+      // first row is number 2, not a fresh 1.
+      expect(container.textContent).toContain('1one')
+      expect(container.textContent).toContain('2two')
+    } finally {
+      unmount()
+    }
+  })
+
+  it('does not pull anything while the reader is mid-document', async () => {
+    attachLocale(new FakeLocale())
+    stubMetrics({ scrollHeight: 10_000, clientHeight: 300 })
+    readPage.mockResolvedValue(page('one\n', 0, 4, false))
+    const { container, unmount } = renderRoot(createElement(LargeFileView, {
+      scope: SCOPE, path: PATH, size: SIZE, visible: true, revision: 0,
+    }))
+    try {
+      await flush()
+      const body = bodyOf(container)
+      Object.defineProperty(body, 'scrollTop', { value: 0, configurable: true })
+      await act(async () => { body.dispatchEvent(new Event('scroll')) })
+      await flush()
+      expect(readPage).toHaveBeenCalledTimes(1)
+    } finally {
+      unmount()
+    }
+  })
+
+  it('fills the viewport by itself when the first page does not overflow', async () => {
+    attachLocale(new FakeLocale())
+    // Zero geometry everywhere: the pane is never "full", so the preview keeps
+    // pulling until EOF rather than leaving the reader in front of a stub.
+    stubMetrics({ scrollHeight: 0, clientHeight: 0 })
+    readPage
+      .mockResolvedValueOnce(page('one\n', 0, 4, false))
+      .mockResolvedValueOnce(page('two\n', 4, 8, true))
+    const { container, unmount } = renderRoot(createElement(LargeFileView, {
+      scope: SCOPE, path: PATH, size: SIZE, visible: true, revision: 0,
+    }))
+    try {
+      await flush()
+      await flush()
+      expect(readPage).toHaveBeenCalledTimes(2)
+      expect(container.textContent).toContain('two')
+    } finally {
+      unmount()
+    }
+  })
+})
+
+describe('LargeFileView load-all and its ceiling', () => {
+  it('loads every remaining page from the notice button and then disables it', async () => {
+    attachLocale(new FakeLocale())
+    stubMetrics({ scrollHeight: 1000, clientHeight: 300 })
+    readPage
+      .mockResolvedValueOnce(page('one\n', 0, 4, false))
+      .mockResolvedValueOnce(page('two\n', 4, 8, false))
+      .mockResolvedValueOnce(page('three\n', 8, 12, true))
+    const { container, unmount } = renderRoot(createElement(LargeFileView, {
+      scope: SCOPE, path: PATH, size: SIZE, visible: true, revision: 0,
+    }))
+    try {
+      await flush()
+      const button = [...container.querySelectorAll('button')]
+        .find(node => node.textContent === t('loadAll'))
+      expect(button, 'the notice offers load all').toBeDefined()
+      expect(button!.hasAttribute('disabled')).toBe(false)
+
+      await act(async () => { button!.click() })
+      await flush()
+      await flush()
+      // Every page is in, sequential and in order.
+      expect(readPage.mock.calls.map(call => call[2])).toEqual([0, 4, 8])
+      expect(container.textContent).toContain('three')
+      expect([...container.querySelectorAll('button')]
+        .find(node => node.textContent === t('loadAll'))!.hasAttribute('disabled')).toBe(true)
+    } finally {
+      unmount()
+    }
+  })
+
+  it('stops at the row ceiling and says so instead of growing the DOM forever', async () => {
+    attachLocale(new FakeLocale())
+    stubMetrics({ scrollHeight: 1000, clientHeight: 300 })
+    // A tiny ceiling stands in for MAX_PREVIEW_ROWS: the page below is three
+    // rows, so the first window already spends the budget.
+    readPage.mockResolvedValue(page('a\nb\nc\n', 0, 6, false))
+    const { container, unmount } = renderRoot(createElement(LargeFileView, {
+      scope: SCOPE, path: PATH, size: SIZE, visible: true, revision: 0, maxRows: 2,
+    }))
+    try {
+      await flush()
+      await flush()
+      // Exactly one page: the ceiling stopped the walk, and the reader is told
+      // why rather than being left with a silently dead scroll.
+      expect(readPage).toHaveBeenCalledTimes(1)
+      expect(container.textContent).toContain(t('previewRowLimit', { rows: 2 }))
+      const button = [...container.querySelectorAll('button')]
+        .find(node => node.textContent === t('loadAll'))
+      expect(button!.hasAttribute('disabled'), 'load all is spent').toBe(true)
+    } finally {
+      unmount()
+    }
+  })
+
+  it('uses the shipped ceiling when the caller does not override it', async () => {
+    attachLocale(new FakeLocale())
+    stubMetrics({ scrollHeight: 1000, clientHeight: 300 })
+    readPage.mockResolvedValue(page('a\n', 0, 2, false))
+    const { container, unmount } = renderRoot(createElement(LargeFileView, {
+      scope: SCOPE, path: PATH, size: SIZE, visible: true, revision: 0,
+    }))
+    try {
+      await flush()
+      // Three rows is nowhere near the real ceiling, so nothing is capped and
+      // the button stays live.
+      expect(container.textContent).not.toContain(t('previewRowLimit', { rows: MAX_PREVIEW_ROWS }))
     } finally {
       unmount()
     }

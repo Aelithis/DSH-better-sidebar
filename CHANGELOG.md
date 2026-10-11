@@ -4,6 +4,11 @@
 
 ### 未发布
 
+- 📜 **超大文件的预览改成 VS Code 那种追加式滚动**：第一版做的是「上一页/下一页」的显式翻页（新页替换当前页），现在改为**滚到底自动取下一页并拼接**——读者读过的内容不会被抽走，行号跨页连续，「加载全部」就是一路追加到 EOF（必须串行：每一页的 `offset` 就是上一页响应的 `nextOffset`）。超限提示条最右侧新增「加载全部」按钮，加载中显示已读字节进度，到 EOF 后自动置灰。
+
+  配套的**行数上限**（`MAX_PREVIEW_ROWS = 50_000`）是这里唯一 VS Code 不需要、而本插件必须有的东西：它的 `TextModel` 与视图都做了虚拟化，所以模型里塞进一个 GB、DOM 仍然很小；本插件渲染的是真实元素。到顶后停止追加并明确提示改用下载——看得见的天花板胜过卡死的标签页，且这个数远高于任何人在侧栏里真会读的日志（6 MB 参考日志约 3.5 万条记录）。上限由读取 hook 持有而不是视图按**已渲染**行数判断：`loadAll` 在 `await` 循环里推进时 React 尚未重渲染，读渲染态的数字会滞后好几页把上限冲过去（新 spec 直接抓到：worker 十秒内 OOM）。
+
+
 > 📦 **上传、下载、HTML 预览与打包全部改为流式传输，不再有大小限制。** 三个部署限额键 `readLimit` / `mediaLimit` / `uploadLimit` 随之删除（旧 profile 里残留的值会被当作未知键静默忽略，无需迁移）；`listLimit` 保留。
 
 - ⚡ **下载不再有 20 MB 上限，宿主内存不再随文件增长**：`/sidebar/file` 与 `/sidebar/html` 从「整份 `readFile` → `res.end(buffer)`」改为 `createReadStream` + `pipeline`。关键在**写响应头的时机**——先等流的 `open` 事件再 `writeHead`，所以文件读不到（ENOENT/EACCES/目录）仍然回插件的 JSON 错误信封，而不是一个 200 加空体；提交之后再失败（文件被换掉、客户端断开）就 `destroy()` 掉连接，并给 `writeJson` 加了 `headersSent` 早退守卫，避免路由的 catch 块在已提交的响应上抛 `ERR_HTTP_HEADERS_SENT` 把「下载被截断」升级成「请求崩溃」。判别性用例见 `tests/file-stream-route.spec.ts`（21 MiB 真 `node:http` 下发、中途断开存活、不可读路径仍是 4xx 信封）。
