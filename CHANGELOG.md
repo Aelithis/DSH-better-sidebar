@@ -4,15 +4,106 @@
 
 ### Unreleased
 
-- 🎯 **文件引用终于落到那一行（[#826](https://github.com/omdsh-dev/DSH-better-sidebar/issues/826) 第二半）**：第一半把 `path:131` 的行号从地址上切了下来、文件能打开了，但行号**被解析出来就扔掉**——点开停在第 1 行。现在两种写法合流到同一个字段：`#L131` 由宿主解析成 `navigation.params.line`，`path:131` 由插件在 `src/client/path-line.ts` 切出，都落到 `SidebarTab.line`，再经 `FileViewerProps.line` 交给 viewer；文本编辑器在**到达时定位一次**并给编辑器焦点（CodeMirror 只在获焦时画光标），越界行号钳到最后一行，区间（`:起-止`）只取起始行、列号丢弃（编辑器只有一处光标）。定位直接写 `view.scrollDOM.scrollTop` 而不是 `scrollIntoView`——后者会走遍每一层可滚动祖先，浏览器缩放时连 window 都算上、把整个侧栏拖上去。**`line` 是瞬态**：`sanitizePersistedTab` 的白名单不含它（与 `revealed` 同处理），链接可能是几天前写的，刷新后不该把读者拽回那一行。**markdown / html 收到行号会先强制切到编辑态再定位**——预览里没有源码行号可放，而它自己挂载时的滚动恢复（`useLayoutEffect`）会和跳转抢同一个 `scrollTop`；引用要的是源码，所以让源码先可见。**公开面纯增量**：`FileViewerProps.line?: number`（§5 已同步），第三方 viewer 忽略它即可。原地把 `a.ts:131` 切到 `a.ts` 时行号会被**清掉**（更新路径比的是当前值而不是「有没有传」），否则每次通知都会把读者弹回去；同一引用重复投递不重复跳，同一文件的新行号照跳。
-  - 🧪 测试：`tests/native-tab-line.spec.ts`（6 例：记录铸造 / 宿主 `#L` 片段 / 普通打开不种子 / 新导航改行 / **裸路径清行** / 重复投递保住记录身份）、`tests/text-editor-line-jump.spec.tsx`（6 例：落到指定行 / 越界钳位 / 普通打开不跳 / **markdown 强制切出预览** / 无行号留在预览 / 只落一次），`tests/native-surface.spec.ts` 的 `fileParamsOf` 断言补上 `line` 并加区间与 `行:列` 两例。scroll 那一步刻意不断言（骑在两层嵌套 rAF 之后、且 jsdom 不排版），断言的是同一次 dispatch 的 selection anchor。（贡献者 PR [#865](https://github.com/omdsh-dev/DSH-better-sidebar/pull/865) @yanzhaohui1999）
-
 - 🔁 **引用行号的四处收尾（[#826](https://github.com/omdsh-dev/DSH-better-sidebar/issues/826) 后续）**：上一批把行号接进了编辑器，真机手测与代码审计在这条路上又抓到四类问题，一并收掉。
   - **跳转后回不到预览**：`line` 的「已消费」记忆原本在 **viewer 组件实例**里，而 `EditorHost` 每次 reload 都用 loading 行把 viewer 整个重建——重建出的实例 `mode` 回到 `preview`、记忆为空，于是同一条行号再次强制切编辑；**而「预览」按钮本身就会 reload**（#167 part B 的编辑→预览重载），所以读者点下去必然被切回去，页头刷新 / #855 自动刷新 / 预览态保存后的刷新同理。记忆改由**宿主**持有（它比 viewer 活得久）：viewer 落地后回调 `onLineConsumed()`，`EditorHost` 记住已消费的 `${path}#${line}` 并停止再下发（换文件清空、换行号自然重置）。公开面纯增量：`FileViewerProps.onLineConsumed?: () => void`。
   - **插件自绘的预览里点 `#L131` 根本不跳行**：`MarkdownDelegate.openFile(path, { line })` 收到的行号只被当成「这是行号不是标题锚点」的判据，随后在 `use-markdown-surface` → `openSidebarFile` → `openTab` 三跳里被丢掉（种子没有 `line` 字段、原生分支的 `surface.openResource` 也没传，而末跳 `src/client/native/surface.ts` 本来就支持）。现在补齐三跳，并新增 `lineOfHostFragment` 兜住只有 destination 的调用方（区间取起始行）；四处插件自绘 markdown（编辑器预览 / 侧边对话转录 / 文件变动阅读窗 / 任务窗口）从此与聊天正文行为一致：**跳到那一行 + 离开预览**。
   - **换文件会继承上一个文件的行号**：`updateTab` 的补丁只有 title/path/meta，合并模式在页头换文件、以及文件树里重命名打开的文件，都把上一个文件的行号留在记录里——新文件跳到旧行号，markdown 还被拉进编辑态（与 reload 那条同症状，触发点不同）。规则统一成「**改 path 就是一次新的打开**」，两个记录层（`patchTab` 与原生 `records.update`）都清掉瞬态行号；只改 title / meta 的补丁不动它。
   - **落地没有光标，还会被预览的阅读位置覆盖**：落地只 `dispatch({ selection })`，而 CodeMirror **只在获焦的编辑器里画光标**、零长度选择本身什么都不画——文件短时一页装得下又没有光标，读者无从判断落在哪。且「进入编辑态按预览滚动位置恢复」那条副作用**声明在落地之后**，同一次提交里会把选择与滚动重新写回读者刚才预览的位置：先在预览里滚动、再点带行号的引用，跳转被静默抹掉。现在行号引用这条路上 `view.focus()`（普通打开不动读者焦点，他可能正从聊天输入框点链接），并在落地前清空 `previewSyncRef`。
   - 🧪 测试：新增 `tests/editor-line-nav-mode.spec.tsx`（4 例，**真 `TextEditor` 过真 `EditorHost`**：落地后能切回预览 / 页头刷新不回弹 / 同文件新行号仍落地 / 换文件不继承行号），`tests/text-editor-line-jump.spec.tsx` +6（落地获焦 / 普通打开不抢焦点 / markdown 翻转后仍获焦 / 消费契约两例 / 预览位置覆盖），`tests/markdown-surface.spec.tsx` +2（真实宿主 `MarkdownText` 下点 `#L42` 与 `#L20-L25` 进记录、标题锚点仍只走 parked 片段），`tests/native-tab-line.spec.ts` +2（换 path 清行号 / 只改 title 保留），`tests/markdown-navigation.spec.ts` +1（`lineOfHostFragment`），`tests/file-open-claim.spec.ts` +1（种子透传与「不传就不带这个键」）。判别性：去掉 `previewSyncRef` 清空 → 预览覆盖用例红（期望第 3 行的 offset 8、实得按比例算出的 14）；去掉两个记录层的清行号 → 对应两条红。（回归报告 [#914](https://github.com/omdsh-dev/DSH-better-sidebar/issues/914)；贡献者 PR [#916](https://github.com/omdsh-dev/DSH-better-sidebar/pull/916) @yanzhaohui1999）
+
+- 📜 **超大文件的预览改成 VS Code 那种追加式滚动**：第一版做的是「上一页/下一页」的显式翻页（新页替换当前页），现在改为**滚到底自动取下一页并拼接**——读者读过的内容不会被抽走，行号跨页连续，「加载全部」就是一路追加到 EOF（必须串行：每一页的 `offset` 就是上一页响应的 `nextOffset`）。超限提示条最右侧新增「加载全部」按钮，加载中显示已读字节进度，到 EOF 后自动置灰。
+
+  配套的**行数上限**（`MAX_PREVIEW_ROWS = 50_000`）是这里唯一 VS Code 不需要、而本插件必须有的东西：它的 `TextModel` 与视图都做了虚拟化，所以模型里塞进一个 GB、DOM 仍然很小；本插件渲染的是真实元素。到顶后停止追加并明确提示改用下载——看得见的天花板胜过卡死的标签页，且这个数远高于任何人在侧栏里真会读的日志（6 MB 参考日志约 3.5 万条记录）。上限由读取 hook 持有而不是视图按**已渲染**行数判断：`loadAll` 在 `await` 循环里推进时 React 尚未重渲染，读渲染态的数字会滞后好几页把上限冲过去（新 spec 直接抓到：worker 十秒内 OOM）。
+
+
+> 📦 **上传、下载、HTML 预览与打包全部改为流式传输，不再有大小限制。** 三个部署限额键 `readLimit` / `mediaLimit` / `uploadLimit` 随之删除（旧 profile 里残留的值会被当作未知键静默忽略，无需迁移）；`listLimit` 保留。
+
+- ⚡ **下载不再有 20 MB 上限，宿主内存不再随文件增长**：`/sidebar/file` 与 `/sidebar/html` 从「整份 `readFile` → `res.end(buffer)`」改为 `createReadStream` + `pipeline`。关键在**写响应头的时机**——先等流的 `open` 事件再 `writeHead`，所以文件读不到（ENOENT/EACCES/目录）仍然回插件的 JSON 错误信封，而不是一个 200 加空体；提交之后再失败（文件被换掉、客户端断开）就 `destroy()` 掉连接，并给 `writeJson` 加了 `headersSent` 早退守卫，避免路由的 catch 块在已提交的响应上抛 `ERR_HTTP_HEADERS_SENT` 把「下载被截断」升级成「请求崩溃」。判别性用例见 `tests/file-stream-route.spec.ts`（21 MiB 真 `node:http` 下发、中途断开存活、不可读路径仍是 4xx 信封）。
+
+- ⚡ **上传的两道 128 MB 闸门删除**：上传本就已经端到端流式（`for await (chunk of req)` → 临时文件 → 原子 rename），挡路的只是客户端的 `MAX_UPLOAD_BYTES` 预检与宿主的逐块 `limit` 检查，两者一并去掉；流式核心、失败清理、不留残file的保证一字未改。
+
+- ⚡ **打包改由系统命令完成，不再自己写 ZIP**：删除手写的 300 行 ZIP writer（`src/zip.ts`，连同 `ZIP_MAX_BYTES` / `ZIP_MAX_ENTRIES` 两道上限），改为探测并调用系统的 `zip`（恒带 `-y`，否则会**跟随**符号链接、一个 `a -> .` 的自指环会一直递归）或 `tar`（Windows 10 1803+ 自带 `bsdtar` 而没有 `zip`）。压缩包的 stdout 直接写进 OS 临时目录，**从不整包进内存**，下载时流式下发、流结束后删除。`archive.status` 的 `done/total` 逐条目进度随之消失（子进程不报），状态收缩为 `{ state, bytes }`；工具都不存在时 `archive.build` 立刻回新的 wire 错误码 **`unavailable`**，界面显示一句可操作的提示。客户端的下载也从 `fetch → blob` 改回普通 `<a download>` 直链——Blob 会把整包放进标签页内存，正好抵消宿主侧的改造。
+
+- ⚡ **编辑器保存拆掉 1 MiB 的墙**：`fs.write` 原走 JSON，而 `/sidebar/api` 的请求体上限是 1 MiB，所以「能打开的文件存不回去」。保存改为 `POST /sidebar/write` 的 raw 路由（**文档即请求体**），编码与行尾还原逻辑（#523 / #871 的两条保证）原样保留并由 `tests/fs-write-route.spec.ts` 继续钉住，另加一条「远超旧上限的一次保存」。
+
+- 🧾 **超大文件从「截断成只读」改为「只读分页预览」**：`fs.read` 从「全读或截断」变成三态（`text` / `binary` / **`too-large`**）。超过编辑上限（5 MiB）的文本文件不再回半份文档，而是只带 4 KiB 嗅探头的 `too-large`，客户端据此渲染**分页只读预览**（等宽行列表，日志查看器形态）并提供下载出口；超过该大小的**二进制**走原来的 media 路径，行为完全不变。`FileViewerProps.truncated` 与 `truncation` 文案键一并删除——「拿到半份文档但看起来能编辑」这个状态本身就是 #732 的成因。新 `fs.readPage` 按字节窗口分页，窗口回退到最后一个换行，所以一页是整数行；超长单行原样返回而不是空页（否则「下一页」会停在一个永不前进的偏移上）。
+
+- 🆕 **`.jsonl` / `.ndjson` 有原生支持了**：此前它们既没有语法高亮（`lang.ts` 无映射 → 纯白文本），也不能简单地映射到 `json()`——`@lezer/json` 的文法只接受一个顶层值，实测 400 条记录的文件会解析出 **402 个错误节点**。现在有一个手写的逐行 JSON 词法分析器（一行一次、不携带跨行状态、未闭合字符串直接标错），新增第 4 个内置 viewer `jsonl`：**预览**是每条记录一张可折叠卡片（默认折叠成一行摘要，点开用宿主的 `JsonTree`），**编辑**是原样可保存的 CodeMirror，由预览/编辑开关切换。行引用（`a.jsonl#L131`）仍会先切到编辑档再落行。
+
+- 🎨 **修掉「错误标记看不见」**：`tags.invalid` 在深浅两种配色下都是 `#ffffff` —— 在浅色主题里就是白底白字。它是 JSON/JSONL 语法错误落到的 token，读者本该能看出哪段没解析；现改为红色波浪下划线。
+
+- 🔧 **`stat` 失败从 500 变 400**：两条字节路由原先让 `stat` 的原始 rejection 逃成「internal」500，读起来像插件故障；不可读的用户路径是 400。
+
+- 🔧 **分页读取的编码一致性（一处只有真机才会发现的回归）**：第一版锁死了第一页嗅探到的编码，于是「长 ASCII 前缀 + GBK 正文」的文件第一页判成 UTF-8 后，后半段 GBK 字节被按 UTF-8 解成乱码——而一次性全读是能正确解出来的。现在**只锁宽字符编码**（UTF-16/UTF-32 是文件属性，一页恰好没有 NUL 不能重新裁决），字节序编码逐页各自嗅探（纯 ASCII 页在两种编码下解出来是同一个字符串）。这在分页按行对齐的前提下是安全的：`0x0A` 既不能是 UTF-8 的续字节，也不能是 GBK 的尾字节。双向用例见 `tests/fs-read-page.spec.ts`。
+
+- 🧪 新守护：`tests/file-stream-route.spec.ts`、`tests/fs-read-page.spec.ts`、`tests/jsonl.spec.ts`、`tests/jsonl-language.spec.ts`、`tests/archive-tools.spec.ts`、`tests/archive.spec.ts`、`tests/editor-large-file.spec.tsx`（超限只读预览 + 可编辑反证）。`tests/zip.spec.ts` 随 writer 一起重写为 `tests/archive.spec.ts`；唯一一条真二进制用例自探测、缺席即跳过（CI 上没有 `zip` 的 Windows runner 不会红）。
+
+- 📖 设计过程、与 VS Code Web 的对照（含「VS Code 并不分页，它的模型是阈值 + 确认 + 关闭 tokenization」这一条纠错）以及实施偏差记录见 [docs/plans/2026-10-11-streaming-transfer-jsonl-preview.md](docs/plans/2026-10-11-streaming-transfer-jsonl-preview.md)。
+
+- 🃏 **任务卡小条只说原生状态**（首轮）：运行中不再是「● 运行中 正在读取文件」这样把状态念两遍，而是**活动行取代状态词**——`正在分析请求` / `正在读取文件 · main.ts` / `正在准备读取文件` / `正在运行命令 · npm run build` 等措辞来自宿主 `chat` 命名空间，与主对话逐字一致；已结算小条同理（只留 `已读取文件、执行了命令`）。**`空闲` 与 `出错` 保留状态词**（不被任何活动措辞蕴含），完全没有活动数据时回退状态词，小条永不空着。状态点、执行扫光与折叠 chevron、22px 高度都不变。
+- 🧩 **主代理卡片接上自己的实时数据**：`subagents.live` 路由一直把拓扑根的 fold 结果放在 `live[rootSessionId]`，而模型从未把它挂到根节点上——于是主代理卡片的状态文本**恒为 thinking 兜底**，与主会话在做什么无关。现在根卡显示真实状态，树模式根行的实时行也从恒定的「思考中…」变成真实活动。
+- 🔎 **节点详情浮窗的活动行移到标题下方**：原来在键值格里（`最近活动 ｜ 值`），右对齐的值列在 280px 被省略、标签又占掉三分之一宽；现在是标题下的一行 10px 小字（宿主措辞）+ 夹两行的实时文本尾行，**没有活动数据就不渲染**（此前每个浮窗都会显示「最近活动：正在分析请求」，已结算节点也一样）。词条 `tasksNodeActivity` 随这一行从 20 份词典删除。
+- 🗂 **聚合卡改为「按组展开」**：点一个聚合卡只展开**该组**（`fold:<parentId>` / `fold:<parentId>:idle`），兄弟组、页级折叠与手工折叠都不受影响；控制条按钮仍是页级展开/折叠，且**收起时清掉按组展开**。树里的聚合行同一语义。**展开后卡片自己的 chevron 仍然有效**（手动折叠是该节点的最新意图，优先级高于组展开），聚合卡随之重新出现并能再次展开——否则「展开后点不回去了」。
+- 🔢 **聚合卡计数只说一次、小条变动作行**：待命组徽标此前印的是**字面量字母 N**（`tasksFoldIdleGroup` 在 20 份词典里都没有 `{count}` 插值），现在插值出真实计数；小条不再是重复计数的空条，而是「组图标 + 展开 + 出错尾注 + 展开箭头」，完整 tally 仍是卡片的 `aria-label` 与 tooltip。
+- 🏷 **模式词搬进徽标行**：子代理卡片此前每个都有一行 mono 元信息写着「一次性」——同一句话在每张卡上重复一次、还占一行高。现在模式（一次性 / 可持续）是**徽标旁的 chip**，智能体卡因此不再有元信息行、卡片高度预算同步收窄（只有工作流 run 卡还保留那行状态 / 成员元信息，行距按模型里有没有 run 取）。
+- 📊 **节点详情多两项事实**：新增 **Token 用量**（宿主 `tokenUsage` projection 的四个互斥桶求和，悬停给出未缓存输入 / 缓存读取 / 缓存写入 / 输出明细）与 **耗时**（宿主 `subagentTiming`：已结算回合 + 正在跑的那一轮，按页面轮询刷新）。两项都按宿主投影的**存在性**渲染——没有测量就不显示这一行，绝不打印一个说不清的 0；`SidebarProjectionSnapshot.values` 的镜像类型同步补上这两个键。
+- 🪟 **「查看转录」改为在原生右侧栏打开**（这是宿主自带能力）：`dsh-resource://subagentchat/session/<childId>?parent=&mode=` + `ctx.sidebarRight.openResource(..., { kind: 'subagentchat', preferNewPane: true })`——与宿主自己的子代理列表（点行 = 主窗、点 chevron = 侧栏）同一套 tab 类型，主列保持不动；右侧新增小下拉按钮，菜单里可**在主窗中打开**（走原有的 `uiWorkspace.openSession` + 页签重挂）。宿主没有该 tab 类型 / 没有右栏 / 没有挂载会话时逐项降级回主窗并保持单按钮。
+- ✨ **动效：画布在自己的坐标系里补间**（`tasks-layout-tween.ts`）。卡片层带着 fit 的 `transform: scale(k)`，所以任何「量 rect、播 transform」的 FLIP 库在这里都是错的——`@formkit/auto-animate` 更会把离场卡片钉上由 rect 换算的绝对 `left/top`（缩放层里根本表达不出来 → 跳位）。改为**直接补间布局坐标**（每张卡的 `x`/`y`/高度）：`left`/`top` 就是画布自己的单位，缩放对它和对终点位置一样生效；而连线路径与相位框都是「盒子的纯函数」，于是**跟着卡片逐帧走**，不再在卡片还在飞的时候先瞬移到终点。入场另有 CSS 关键帧（300ms：上浮 + 0.88→1 缩放 + 淡入，带轻微过冲），并按节点顺序**错峰 26ms**（一次展开多张时是瀑布而不是一下全冒），`backwards` 填充让等待中的卡片先隐形而不是先冒再动。
+- 🧭 **自动适配改成「滑过去」而不是「跳过去」**：布局一变，视图变换（平移 + 缩放）与卡片一起补间 220ms，于是**展开后画面仍然是自适应的居中位置**（不会让节点溢出面板/偏到一角），同时也没有原来那种瞬跳。规则不变：读者拖过或缩放过就不再自动重框（那一刻视图归他），⌂ 按钮随时交还自动适配；切会话重置并重新适配（新的树 = 新的画布），顺带修掉「拖过一次之后换会话就不再适配」的旧账。
+- 🪶 **FLIP 库只留给流式布局**：树模式行与后台任务行的离场是「原地淡出 + 兄弟滑位」，那正是 FLIP 的语义且不受缩放影响；画布则明确排除（`tests/tasks-motion.spec.ts` 钉死：画布不得 import 它、树与抽屉必须有）。
+- 💬 **卡片标题下也写最新文本**：图模式卡片在名称下新增一行 10px 的**最新助手文本尾行**（此前只有详情弹窗里才看得到），小条继续写合并活动——两行各答一个问题。**行数按布局预算夹紧**：`textTailLines()` 按字符宽度估算折行、上限 3 行，并把估算值写进卡片的 `-webkit-line-clamp`，所以渲染永远不会超出布局给这个节点算好的盒子（也就不会把行距撑爆）；行距 `rowStrideFor()` 改为**按模型里最高的一张卡**计算（工作流 run 的元信息行、成员的任务行、以及最多三行文本尾行都算进去）。详情弹窗的文本块同步从夹两行改为夹三行。
+- 🌲 **树模式对齐画布并补齐动效**：模式词从行内 mono 行搬成**标题旁的 chip**（与卡片徽标行同一处、同一个词），mono 行只留状态；**每个嵌套层级都有自己的 FLIP host**（`TreeLevel` 组件——库只看容器的直接子节点，单个 host 会让嵌套折叠硬闪）；连线改成**每个子节点自己画的肘线**——竖线落在父行的标记列上、且最后一个兄弟的竖线**停在它自己的标记处**（不再拖出组外）。
+- 🌲 **树模式补上「收起 / 展开」整套**：此前树只有页级「已完成节点聚合」，**没有任何按节点的展开收起**。现在：每行右侧有一个**单个收起/展开**（有子节点的行才有，位置与画布卡片小条的 chevron 一致，16px 同一处）；控制条新增 **全部收起 / 全部展开**（用文字而不是更多 chevron——旁边的已结算折叠开关已经占了那套图形语汇）；键盘补上标准树行为：**→ 展开（已展开则进入子级）、← 收起（已收起则退回父级）**；行上带 `aria-expanded`，折叠状态跨图/树切换保留。它与「已结算聚合」是两条互不干扰的轴：一个收子树，一个收已完成的叶子。
+- 🧪 测试：新增 `tests/session-metrics.spec.ts`（5 条：四桶求和、空投影、运行中耗时按渲染时钟、0 不算工作、时钟回拨不显示负数）与 `tests/activity-icons.spec.ts`（3 条：13 个类别全覆盖、读 / 命令 / 搜索 / 网页互不同型、`undefined` 走思考图标）；`tests/tasks-page.spec.tsx` 补 6 条（原生状态取代状态词、无数据回退、根卡真实状态、浮窗活动块位置、一次只开一组 + 判据极性的判别性用例、展开后成员仍可手工折回、Token / 耗时两行、侧栏打开地址 + 下拉在主窗打开 + 无宿主能力时单按钮、模式 chip 在徽标行）；`tests/tasks-graph-layout.spec.ts` 的高度 / 行距断言跟随新的卡片预算。[设计文档](docs/plans/2026-10-11-tasks-status-and-group-fold.md)。
+
+- 🃏 **任务卡小条只说原生状态**：运行中小条不再是「● 运行中 正在读取文件」这样把状态念两遍，而是**活动行取代状态词**——`正在分析请求` / `正在读取文件 · main.ts` / `正在准备读取文件` / `正在运行命令 · npm run build` 等措辞全部来自宿主 `chat` 命名空间，与主对话逐字一致；已结算小条同理（只留 `已读取文件、执行了命令`，不重复「已完成」）。**`空闲` 与 `出错` 保留状态词**（「待命」「失败」不被任何活动措辞蕴含），**完全没有活动数据时回退状态词**，小条永不空着。状态点、执行扫光与折叠 chevron 不变，小条仍是 22px——画布几何与卡片高度预算零改动。
+- 🧩 **主代理卡片接上自己的实时数据**：`subagents.live` 路由一直把拓扑根的 fold 结果放在 `live[rootSessionId]`，而模型从未把它挂到根节点上——于是**主代理卡片的状态文本恒为 thinking 兜底**（「正在分析请求」），与主会话在做什么无关。现在根卡显示真实状态，树模式根行的实时行也从恒定的「思考中…」变成真实活动。
+- 🔎 **节点详情浮窗的活动行移到标题下方**：那行原来在键值格里（`最近活动 ｜ 值`），右对齐的值列在 280px 里被省略，标签又占掉三分之一宽；现在它是标题下的一行 10px 小字（宿主措辞），实时文本尾行紧接其下并夹到两行。**没有活动数据就不渲染这一块**——此前每个节点浮窗都会显示「最近活动：正在分析请求」，已结算节点也不例外。词条 `tasksNodeActivity` 随这一行从 20 份词典删除。
+- 🗂 **聚合卡改为「按组展开」**：点一个聚合卡只展开**该组**（`fold:<parentId>` / `fold:<parentId>:idle`），兄弟组、页级折叠与手工折叠都不受影响——此前一次点击会清空手工折叠集并关掉全局规则，等于**点一个全开**。控制条按钮仍是页级展开/折叠，且**收起时清掉按组展开**（全局收起必须真的收起）；树里的聚合行同一语义，行内副文案固定为「展开」（该行只在折叠态存在）。
+- 🔢 **聚合卡不再两处写计数**：待命组的徽标此前印的是**字面量字母 N**（`tasksFoldIdleGroup` 在 20 份词典里都是 `'N waiting' / 'N 个待命'`，没有 `{count}` 插值）——现在插值出真实计数，小条只保留`出错 N` 尾注与展开箭头；完整 tally 仍是卡片的 `aria-label` 与 tooltip。
+- 🎨 **树模式实时行的图标按活动类别取**：`tool-icons.tsx`（工具名映射，只有一处写死的调用）换成 `activity-icons.tsx` 的 `activityGlyph(kind)`——读文件 / 搜索 / 编辑 / 命令 / 网页 / 子代理 / 计划 / 提问 / 通用工具各用自己的宿主图标，尚未派发时是思考图标；`Record<ProcessActivity, …>` 让上游新增类别编译失败而不是静默兜底。
+- 🧪 测试：`tests/tasks-page.spec.tsx` 新增一个 `FakeChatLocale`（挂宿主 `chat` 命名空间，否则只能断言到 fallback 的 detail）并补 5 条（原生状态取代状态词、无数据回退、根卡真实状态、浮窗活动块位置与「无数据不渲染」、一次只开一组＋全局收起折回、徽标真实计数）；`tests/tasks-model.spec.ts` 补 4 条（按组展开的双向隔离、组 id、`expandedGroups` 盖过残留手工折叠、根节点带 live）；新增 `tests/activity-icons.spec.ts`（类别全覆盖 + 读/命令/搜索/网页互不同型 + `undefined` 走思考图标）。[设计文档](docs/plans/2026-10-11-tasks-status-and-group-fold.md)。
+
+
+### v0.25.0
+
+> 📦 **支持线前移：仅适配 DSH `0.2.0-rc.2+`**（peer 下限 `^0.2.0-rc.2`，CI 与挂载 lane 钉 `@deepseek-ai/dsh@0.2.0-rc.2`）。DSH 的 npm `latest` 现在正是 **0.2.0-rc.2**（不再停在 0.1.7-rc.2），本版就钉在它上面。**0.2.0-rc.1 及更早（含 0.1.7 线）请固定 v0.24.1**——`^0.2.0-rc.2` 对 rc.1 判定为 false，会被宿主的启动兼容性预检整行静默禁用；0.1.7 线的最后支持版是 v0.22.1。本次前移是一次纯声明与钉版变更：0.2.0-rc.2 对本插件消费的宿主面仍是纯增量，运行时零改动。
+
+> 🙏 **本版包含以下贡献者的工作**（按合并先后；括号内为其 PR 带来的能力）：
+> [@NolanHo](https://github.com/NolanHo)（#880 搜索框粘贴路径直开 + 噪声目录名单、#884 子进程输出偶发清空）、
+> [@yanzhaohui1999](https://github.com/yanzhaohui1999)（#865 文件引用落到那一行、#828 行号后缀切分）、
+> [@finley08](https://github.com/finley08)（#890 编辑器显现后重新测量、#859 桌面壳 HTTP 走页面基址、#832 新建文件）、
+> [@ZinChl](https://github.com/ZinChl)（#806 目录命中点击、#809 打包状态按会话、#811 树批量拆分、#813 重启后的子代理、#814 任务折叠守卫）、
+> [@graydovee](https://github.com/graydovee)（#807 空白会话的底部入口）、
+> [@btsd321](https://github.com/btsd321)（#818 tab 条右侧动作）、
+> [@ZhangFengshun](https://github.com/ZhangFengshun)（#641 宿主加载不带会话日志偏移）、
+> [@PerryLink](https://github.com/PerryLink)（#843 目录条目清理）、
+> [@UNscientific-9](https://github.com/UNscientific-9)（#842 checkout 的 `--end-of-options`、#645 引用胶囊）、
+> [@lpf20200901](https://github.com/lpf20200901)（#821 插件目录 memory-delta）、
+> [@dat-lequoc](https://github.com/dat-lequoc)（#837 编辑器可见性重测量）、
+> [@lhh010](https://github.com/lhh010)（#823 插件目录 file-trace）、
+> [@MengJiapeng](https://github.com/MengJiapeng)（#803 多仓库 git 历史）、
+> [@zhanghunuaa](https://github.com/zhanghunuaa)（#802 文件树跟随活动 worktree）、
+> [@mengge237](https://github.com/mengge237)（#817 自动激活保留已开页）、
+> [@Waser750](https://github.com/Waser750)（#840 侧边对话归档线程）、
+> [@suiyideali](https://github.com/suiyideali)（#587 编辑器内查找）、
+> [@wang-kaopu](https://github.com/wang-kaopu)（#612 WSL 外部打开、#523 非 UTF-8 编码、#566/#565/#521 Windows 路径）、
+> [@nyantused-cpun](https://github.com/nyantused-cpun)（#600 编辑器草稿保护）、
+> [@bulingbuling688](https://github.com/bulingbuling688)（#574 工作区提及）、
+> [@ingeb0rga](https://github.com/ingeb0rga)（#845 IME 229 守卫）、
+> [@shyuan-hub](https://github.com/shyuan-hub)（#264 面包屑折叠与排除模式，方向）、
+> [@rijiu915](https://github.com/rijiu915)（#363 Markdown 跨文件锚点，方向）。
+> 谢谢每一位！
+
+
+- 🧷 **右侧面板展开时不再显示底部入口**：宿主右上角在那种状态下是它自己的一簇控件（Split / Fullscreen / Collapse right sidebar），插件的「展开底部面板」挤进去只会跟它们打架 —— 现在右侧栏一展开，头部入口与空白会话的备用入口都退场，收起后重新出现。这条规则把「展开态该把入口摆在哪儿」整个问题去掉了，让位逻辑只需服务收起态（那里宿主的角落只有一个按钮）。**判据必须按「可见」而不是「在不在 DOM 里」**：实测宿主把两个角落控件都留在文档里（落屏时 `data-sidebar-right-expand` 与 `data-sidebar-right-toggle` 各 1 个、而面板已经展开），只查属性会一直读成「没展开」、按钮照旧冒出来。判别性用例见 `tests/dock-fallback.spec.tsx`（造一个可见的 Collapse 控件，还原门即红）。
+
+- 🧷 **再修一处同源的碰撞：右侧栏打开时，空白会话的底部入口压在宿主「收起右侧栏」上**。备用入口是按宿主**角落控件**的 rect 左移 8+28px 定位的，但那只认控件**关闭形态**的属性 `data-sidebar-right-expand`——右侧栏**打开**时这个属性整个消失、同一个座位换成 `data-sidebar-right-toggle`，于是定位落到视口兜底坐标（`innerWidth - 44`），而那里正是宿主自己的角落按钮群。实测 2200px 视口、右侧栏打开时：入口落在 `2156..2184`，与宿主「Collapse right sidebar」（`2166..2194`）**重叠 18px**、并切到「Fullscreen」2px——与用户截图逐字一致。现在锚点同时认两种形态，**并且让位不再是一个固定偏移**——宿主的角落控件是肩并肩一簇（打开态实测 `Split@2094 / Fullscreen@2130 / Collapse@2166`，各 28px、间隔 8px），只往左挪 36px 会精确落在**下一个**按钮上（实测压住 Fullscreen 28x28px），所以改为逐个槽位左移直到与**任何**宿主按钮都不相交。真机复测（2200px 视口）：关闭态入口 `2124..2152`、宿主 `Open right sidebar@2160`，打开态入口让到 `2058..2086`、整簇从 `2094` 起——**两种状态都零重叠**。**占位判定改用命中测试**：早先按 `button, [role="button"]` 筛「谁占着这一格」，而右侧栏的**页签芯片**不是这两者——页签一多，让位就停在芯片上（用户报的「tab 多的时候位置也错误」）。现在用 `document.elementsFromPoint` 直接问页面「这一格下面有什么」：**不透明的小控件**（≤300px 宽，含页签芯片）算占位，整行的背景板（会话头 titleRow、面板 tabStrip、面板本体）不算；并且沿水平方向采 **5 个点**——只测中心点会漏掉「中心空着、右缘却压着邻居」的情况（实测这样压住 Split/Fullscreen）。让位步长同时收到 4px。判别性用例见 `tests/dock-fallback.spec.tsx`（还原锚点即红 `expected '980px' to be '464px'`；关掉让位步进即红 `expected '464px' to be '428px'`）。
+
+- 🧷 **修掉「展开底部面板」按钮在会话头与备用入口之间叠成两个**：blank 会话里宿主不渲染会话头，插件的会话头入口随之不可达，于是空白会话专用入口以 `position: fixed` 贴到宿主「Open right sidebar」按钮左侧（#698 / #623）。但**相位判定不足以互斥**——相位是每 1s 轮询来的，而会话头入口由宿主自行决定何时渲染，两者之间必然存在窗口（相位读取失败时还会按「非 blank」降级，一个从未成功读到的会话可能一直停在 blank）；而两套入口在版面上**就是同一个位置**，同时在场即精确重叠成一团。现在除相位外再加一条与相位无关的兜底：**会话头那套入口只要真的在 DOM 里，备用入口就让位**，判别性用例见 `tests/dock-fallback.spec.tsx`（造出「相位说 blank + 会话头入口在场」的不一致状态，还原守卫即红）。最多 500ms 的让位延迟（与位置对齐同一节拍）。
+
+- 🎯 **文件引用终于落到那一行（[#826](https://github.com/omdsh-dev/DSH-better-sidebar/issues/826) 第二半）**：第一半把 `path:131` 的行号从地址上切了下来、文件能打开了，但行号**被解析出来就扔掉**——点开停在第 1 行。现在两种写法合流到同一个字段：`#L131` 由宿主解析成 `navigation.params.line`，`path:131` 由插件在 `src/client/path-line.ts` 切出，都落到 `SidebarTab.line`，再经 `FileViewerProps.line` 交给 viewer；文本编辑器在**到达时定位一次**并给编辑器焦点（CodeMirror 只在获焦时画光标），越界行号钳到最后一行，区间（`:起-止`）只取起始行、列号丢弃（编辑器只有一处光标）。定位直接写 `view.scrollDOM.scrollTop` 而不是 `scrollIntoView`——后者会走遍每一层可滚动祖先，浏览器缩放时连 window 都算上、把整个侧栏拖上去。**`line` 是瞬态**：`sanitizePersistedTab` 的白名单不含它（与 `revealed` 同处理），链接可能是几天前写的，刷新后不该把读者拽回那一行。**markdown / html 收到行号会先强制切到编辑态再定位**——预览里没有源码行号可放，而它自己挂载时的滚动恢复（`useLayoutEffect`）会和跳转抢同一个 `scrollTop`；引用要的是源码，所以让源码先可见。**公开面纯增量**：`FileViewerProps.line?: number`（§5 已同步），第三方 viewer 忽略它即可。原地把 `a.ts:131` 切到 `a.ts` 时行号会被**清掉**（更新路径比的是当前值而不是「有没有传」），否则每次通知都会把读者弹回去；同一引用重复投递不重复跳，同一文件的新行号照跳。
+  - 🧪 测试：`tests/native-tab-line.spec.ts`（6 例：记录铸造 / 宿主 `#L` 片段 / 普通打开不种子 / 新导航改行 / **裸路径清行** / 重复投递保住记录身份）、`tests/text-editor-line-jump.spec.tsx`（6 例：落到指定行 / 越界钳位 / 普通打开不跳 / **markdown 强制切出预览** / 无行号留在预览 / 只落一次），`tests/native-surface.spec.ts` 的 `fileParamsOf` 断言补上 `line` 并加区间与 `行:列` 两例。scroll 那一步刻意不断言（骑在两层嵌套 rAF 之后、且 jsdom 不排版），断言的是同一次 dispatch 的 selection anchor。（贡献者 PR [#865](https://github.com/omdsh-dev/DSH-better-sidebar/pull/865) @yanzhaohui1999）
 
 - 🖥️ **桌面壳里插件路由不再满屏「Failed to fetch」**：HTTP 与 WebSocket 需要**不同**基址，而壳正是把两者拉开的地方——页面在 `dsh-app://app/`，注入的 `__DSH_TRANSPORT__.streamBaseUrl` 却是宿主的 `http://127.0.0.1:<port>`（另一个 origin）。壳的 `protocol.handle` 会把非静态的 `dsh-app://app/*` 路径**同源转发**给宿主，所以 HTTP 必须骑**页面基址**（`hostHttpBase()` → `document.baseURI`，反代目录前缀也带在里面，一套规则覆盖两种部署）；发到注入 origin 就是跨源，而插件自己的 `/sidebar/*` 路由不带 `Access-Control-Allow-*`，浏览器直接拒（文件树 / git / 编辑器全部请求失败）。WebSocket 反过来，必须用注入 origin：自定义 scheme 承载不了 `ws:`，而 `dsh-app://app` 的 host 是字面量 `app`，DNS 永远不解析。`tests/base-path.spec.ts` 钉住三种场景（壳内页面基址 + 注入 origin 的 socket、无页面基址时回退注入基址、普通 http 页面同源不变）。
 - 👁️ **被 park 过的编辑器不再是一片空白**：原生页签在宿主里靠 `keepMounted` 存活，宿主把不活跃的 body **移动**进隐藏 seat、需要时再移回来——而移动一个节点**不改变它的 border box**，所以只看尺寸变化的 `ResizeObserver` 一次都不触发，一个在隐藏宿主里被打开的编辑器会把视口量成 0 并把这个空的虚拟视口一直留着（症状很有辨识度：**行号槽照常画，正文空白**）。现在每次「显现」都重新测量：`IntersectionObserver` 报显现本身（补上移动这条 ResizeObserver 看不见的路径），`requestAnimationFrame` 兜住「显现与挂载同帧」的那一次（此时 CodeMirror 的首次测量仍可能读到 0），另接 `visibilitychange` 与 `window` resize；四种观察器都可缺省、逐个 dispose，旧浏览器/测试环境不受影响。

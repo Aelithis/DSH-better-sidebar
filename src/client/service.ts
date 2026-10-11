@@ -321,9 +321,18 @@ export interface FileViewerProps {
    *  markdown/html that means re-forcing the editor open, and the reader could
    *  never return to preview). Optional: absent means "keep handing it out". */
   onLineConsumed?: () => void
-  /** fsRead text content (fetchStrategy='fsRead'). */
+  /** fsRead text content (fetchStrategy='fsRead'). Absent when the file is
+   *  above the editable threshold — see {@link largeFile}. */
   content?: string
-  truncated?: boolean
+  /** The file's size in bytes, as the host measured it for this read. */
+  size?: number
+  /**
+   * Present when the host refused to hand the document over because the file
+   * exceeds the editable threshold. The viewer renders a read-only paged
+   * preview instead of an editor: CodeMirror has to hold the whole document in
+   * the browser, which is exactly what a file this size makes impossible.
+   */
+  largeFile?: { size: number }
   /** Last-modified time (ms) of the loaded bytes — the built-in text editor's
    *  save baseline (a file that changed on disk since refuses the write).
    *  Absent for viewers/loads that carry no baseline. */
@@ -337,6 +346,10 @@ export interface FileViewerProps {
    *  fed through the two callbacks below. Viewers that ignore these fields
    *  render exactly as before. */
   toolbar?: 'self' | 'host'
+  /** Internal: whether this tab is the ACTIVE one with its panel open. Native
+   *  tabs stay mounted while parked, so an over-limit preview must know to
+   *  stop reading pages for a tab nobody is looking at. Absent = visible. */
+  visible?: boolean
   /** Internal: the viewer reports its toolbar state (mode/dirty/save). */
   onToolbarState?: (state: EditorToolbarState) => void
   /** Internal: the viewer registers its toolbar commands on mount (null on
@@ -348,16 +361,17 @@ export interface FileViewerProps {
 
 /** The toolbar state a text editor reports to the host's merged-mode header. */
 export interface EditorToolbarState {
-  /** Whether the preview/edit mode toggle applies (markdown/html). */
+  /** Whether the preview/edit mode toggle applies (markdown / html / jsonl). */
   modes: boolean
   mode: 'preview' | 'edit'
   dirty: boolean
-  /** Whether saving applies (text content loaded). */
+  /** Whether saving applies (an editable document was loaded). */
   editable: boolean
-  /** Whether the loaded text was truncated at readLimit — the editor is
-   *  read-only and saving is disabled (issue #732: saving partial content
-   *  would overwrite and destroy the tail of the file). */
-  truncated?: boolean
+  /** Whether the viewer is showing the read-only paged preview for an
+   *  over-limit file. Nothing can be edited or saved in that state, so the
+   *  header drops the save button and the viewer's own notice carries the
+   *  size and the download escape hatch. */
+  largeFile?: boolean
   saveState: 'idle' | 'saving' | 'saved' | 'failed'
 }
 
@@ -772,7 +786,7 @@ export function matchUrlTarget(tabs: readonly TabDescriptor[], url: URL): TabDes
  * The plugin version this service instance reports. Keep in lockstep with
  * `package.json`'s version — `tests/service.spec.ts` asserts the pair.
  */
-export const SIDEBAR_SERVICE_VERSION = '0.24.1'
+export const SIDEBAR_SERVICE_VERSION = '0.25.0'
 
 /**
  * Monotonic capability list consumers use to gate new API usage (features

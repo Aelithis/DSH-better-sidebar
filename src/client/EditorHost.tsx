@@ -50,7 +50,7 @@ import css from './sidebar.module.css'
 type EditorLoad =
   | { status: 'loading' }
   | { status: 'error'; message: string }
-  | { status: 'ready'; viewer: FileViewerDescriptor; content?: string; truncated?: boolean; mtimeMs?: number; mediaUrl?: string; customData?: unknown }
+  | { status: 'ready'; viewer: FileViewerDescriptor; content?: string; size?: number; largeFile?: { size: number }; mtimeMs?: number; mediaUrl?: string; customData?: unknown }
   | { status: 'binary' }
 
 /** The docked tree panel's width bounds (drag-resize clamps into them). */
@@ -417,7 +417,8 @@ export function EditorHost(props: {
             status: 'ready',
             viewer: action.viewer,
             content: action.content,
-            truncated: action.truncated,
+            size: action.size,
+            largeFile: action.largeFile,
             mediaUrl: action.mediaUrl,
             customData: action.customData,
           })
@@ -434,13 +435,9 @@ export function EditorHost(props: {
         case 'fetchFsRead':
           api.fsRead(scope, path).then((result) => {
             if (cancelled) return
-            // Binary reads carry the head bytes for the detect re-match.
-            const outcome = planFsReadOutcome(action.viewer, {
-              binary: result.kind === 'binary',
-              content: result.kind === 'text' ? result.content : '',
-              truncated: result.truncated,
-              head: result.kind === 'binary' ? result.head : undefined,
-            }, (head) => ctx.get('betterSidebar')?.matchFileViewer(path, head), mediaUrlOf)
+            // The host answers one of three shapes; binary and too-large both
+            // carry the head bytes for the detect re-match (see editor-load.ts).
+            const outcome = planFsReadOutcome(action.viewer, result, (head) => ctx.get('betterSidebar')?.matchFileViewer(path, head), mediaUrlOf)
             // Carry the read's mtime into the rendered viewer: the text
             // editor uses it as the save baseline (fs-conflict on drift).
             if (outcome.kind === 'render') setLoad({ ...outcome, status: 'ready', mtimeMs: result.mtimeMs })
@@ -587,7 +584,7 @@ export function EditorHost(props: {
           </div>
         )}
         {toolbar?.dirty === true && <span className={css.dirtyDot} title={t('unsaved')} />}
-        {toolbar?.editable === true && toolbar?.truncated !== true && (
+        {toolbar?.editable === true && toolbar?.largeFile !== true && (
           <button
             type="button"
             className={css.iconButton}
@@ -638,12 +635,16 @@ export function EditorHost(props: {
             line: lineKey !== null && lineKey !== spentLine ? tab.line : undefined,
             onLineConsumed,
             content: load.content,
-            truncated: load.truncated,
+            size: load.size,
+            largeFile: load.largeFile,
             mtimeMs: load.mtimeMs,
             mediaUrl: load.mediaUrl,
             customData: load.customData,
             // The viewer's toolbar always hoists into this host's header.
             toolbar: 'host',
+            // Native tabs stay mounted while parked; an over-limit preview
+            // reads pages only while somebody is looking (see FileViewerProps).
+            visible,
             onToolbarState,
             onToolbarControls,
             onReload: refreshFile,
