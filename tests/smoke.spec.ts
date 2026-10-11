@@ -50,6 +50,19 @@ interface FakeContext {
   get: (key: string) => undefined
 }
 
+/**
+ * The routes the MOST RECENT mount registered, whichever helper produced them.
+ *
+ * The editor save moved from a JSON method on `/sidebar/api` to its own raw
+ * route (`/sidebar/write`, with the document as the request body). Every call
+ * site here still says `invoke(route, 'fs.write', ...)`, so the dispatcher
+ * needs a way back to the mount that produced `route` — recording the last one
+ * is far less noise than threading a second route reference through every
+ * case, and BOTH mount helpers write it so neither can leave a stale entry
+ * behind the other.
+ */
+let lastMountedRoutes: SidebarWebRoute[] = []
+
 describe('host plugin smoke', () => {
   it('serves PDF with the browser-native content type', () => {
     expect(mediaTypeForPath('/work/report.PDF')).toBe('application/pdf')
@@ -85,12 +98,17 @@ describe('host plugin smoke', () => {
     expect(routes.map(route => route.path)).toEqual([
       '/sidebar/api',
       '/sidebar/upload',
+      '/sidebar/write',
       '/sidebar/bundle',
       '/sidebar/archive',
       '/sidebar/file',
       '/sidebar/html',
     ])
-    expect(upgrades.map(route => route.path)).toEqual(['/sidebar/ws/agent-opens', '/sidebar/ws/fs-watch'])
+    expect(upgrades.map(route => route.path)).toEqual([
+      '/sidebar/ws/agent-opens',
+      '/sidebar/ws/fs-watch',
+      '/sidebar/ws/sidechat',
+    ])
     // Teardown runs without throwing.
     for (const cleanup of effects) cleanup()
   })
@@ -121,27 +139,27 @@ describe('host plugin smoke', () => {
     try {
       apply(ctx as never)
       const route = routes.find(candidate => candidate.path === '/sidebar/html')!
-      const req = {
-        method: 'GET',
-        url: encodeHtmlUrl('s-html', path),
-        headers: { host: '127.0.0.1:3080' },
-      } as never
-      const response: { status?: number; headers?: Record<string, string>; chunks: Buffer[] } = { chunks: [] }
-      const res = {
-        writeHead: (status: number, headers?: Record<string, string>) => {
-          response.status = status
-          response.headers = headers
-        },
-        end: (chunk?: string | Buffer) => {
-          if (chunk !== undefined) response.chunks.push(Buffer.from(chunk))
-        },
-      } as never
-
-      await route.handler(req, res)
+      // Over a real socket: the route STREAMS its bytes now
+      // (`createReadStream` → `pipeline` into the response), which a
+      // plain-object response stub cannot accept as a Writable.
+      const { createServer } = await import('node:http')
+      const server = createServer((req, res) => { void route.handler(req as never, res as never) })
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+      const address = server.address()
+      if (address === null || typeof address === 'string') throw new Error('test setup: no server port')
+      let response: Response
+      try {
+        response = await fetch(`http://127.0.0.1:${address.port}${encodeHtmlUrl('s-html', path)}`)
+      } finally {
+        await new Promise<void>(resolve => {
+          server.close(() => resolve())
+          server.closeAllConnections()
+        })
+      }
 
       expect(response.status).toBe(200)
-      expect(Buffer.concat(response.chunks)).toEqual(source)
-      expect(response.headers?.['content-type']).toBe('text/html; charset=utf-8')
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(source)
+      expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8')
     } finally {
       for (const cleanup of effects) cleanup()
       rmSync(directory, { recursive: true, force: true })
@@ -399,6 +417,7 @@ describe('session cwd resolution over the API route', () => {
 
   const mountAll = (overrides: CtxOverrides = {}): SidebarWebRoute[] => {
     const routes: SidebarWebRoute[] = []
+    lastMountedRoutes = routes
     const ctx = {
       webRuntime: { trustedHosts: [] },
       webServer: {
@@ -422,11 +441,17 @@ describe('session cwd resolution over the API route', () => {
 
   const mount = (overrides: CtxOverrides = {}): SidebarWebRoute => mountAll(overrides).find(route => route.path === '/sidebar/api')!
 
+  /** One save through the raw route (see the module-level `invokeRawWrite`). */
+  const invokeWrite = invokeRawWrite
+
   const invoke = async (
     route: SidebarWebRoute,
     method: string,
     payload: unknown,
   ): Promise<{ ok: boolean; status: number; value?: { cwd: string }; error?: { code?: string; message: string } }> => {
+    if (method === 'fs.write') {
+      return await invokeWrite(payload) as unknown as { ok: boolean; status: number; value?: { cwd: string } }
+    }
     const body = Buffer.from(JSON.stringify(payload))
     const req = {
       method: 'POST',
@@ -447,19 +472,41 @@ describe('session cwd resolution over the API route', () => {
     return (await invokeGetFull(route, url))
   }
 
-  /** invokeGet plus the response headers (for header contracts). */
+  /**
+   * invokeGet plus the response headers (for header contracts).
+   *
+   * Served over a REAL node:http server rather than a plain-object stub: the
+   * media and html routes STREAM now (`createReadStream` → `pipeline` into the
+   * response), and a fake response object with only `writeHead`/`end` cannot
+   * be a Writable. Going through a real socket also means the header
+   * assertions exercise node's own header validation, which is what caught the
+   * non-latin1 `Content-Disposition` case in the first place.
+   */
   const invokeGetFull = async (route: SidebarWebRoute, url: string): Promise<{ status: number; body: string; headers: Record<string, string> }> => {
-    const out: { status: number; body: string; headers: Record<string, string> } = { status: 200, body: '', headers: {} }
-    const req = { method: 'GET', url, headers: { host: '127.0.0.1:3080' } } as never
-    const res = {
-      writeHead: (status: number, headers?: Record<string, string>) => {
-        out.status = status
-        if (headers !== undefined) out.headers = headers
-      },
-      end: (chunk: unknown) => { out.body += String(chunk ?? '') },
-    } as never
-    await route.handler(req, res)
-    return out
+    const { createServer } = await import('node:http')
+    const server = createServer((req, res) => { void route.handler(req as never, res as never) })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const address = server.address()
+      if (address === null || typeof address === 'string') throw new Error('test setup: no server port')
+      // The callers spell their URLs two ways (a bare path, and an absolute
+      // `http://dsh.internal/...` from the route helpers); only the path and
+      // query are meaningful against this ephemeral port.
+      const target = new URL(url, 'http://dsh.internal')
+      const response = await fetch(`http://127.0.0.1:${address.port}${target.pathname}${target.search}`, { redirect: 'manual' })
+      const headers: Record<string, string> = {}
+      response.headers.forEach((value, key) => { headers[key] = value })
+      return { status: response.status, body: await response.text(), headers }
+    } finally {
+      // undici keeps the connection alive, and a plain `close()` waits for it:
+      // without dropping the sockets first, each call would block until the
+      // client's keep-alive timeout and the whole case would crawl past the
+      // suite's test timeout.
+      await new Promise<void>(resolve => {
+        server.close(() => resolve())
+        server.closeAllConnections()
+      })
+    }
   }
 
   it('loads branches and history when switching child repositories and their linked checkouts', async () => {
@@ -772,8 +819,12 @@ describe('session cwd resolution over the API route', () => {
       expect(await invokeGet(file, downloadUrl(scope, external)))
         .toMatchObject({ status: 200, body: '<p>external</p>' })
       rmSync(external)
-      expect((await invokeGet(html, htmlUrl(scope, external))).status).toBe(500)
-      expect((await invokeGet(file, downloadUrl(scope, external))).status).toBe(500)
+      // A path that cannot be opened is the route's own 4xx now, not a bare
+      // stat() rejection escaping as an internal 500: the stream helper opens
+      // the file BEFORE committing the response precisely so this stays a
+      // usable error envelope.
+      expect((await invokeGet(html, htmlUrl(scope, external))).status).toBe(400)
+      expect((await invokeGet(file, downloadUrl(scope, external))).status).toBe(400)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -827,26 +878,35 @@ describe('session cwd resolution over the API route', () => {
     }
   })
 
-  it('fs.read keeps a capped CJK UTF-8 file UTF-8 (the cap cuts a character, #523)', async () => {
+  it('fs.read answers a CJK UTF-8 file past the editable threshold as too-large (#523)', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-sidebar-fs-readcap-'))
     const workspace = join(root, 'workspace')
     mkdirSync(workspace)
     try {
       const route = mount({ sessions: { get: () => ({ header: { cwd: workspace } }) } })
       const target = join(workspace, 'big.txt')
-      // The default 512 KiB readLimit lands two bytes into a three-byte
-      // character; the GBK probe accepts that partial tail, so the read used
-      // to come back as 涓枃-style mojibake.
-      writeFileSync(target, Buffer.from('中'.repeat(174_763), 'utf8'))
+      // This file used to be read with a 512 KiB cap that landed two bytes
+      // into a three-byte character; the GBK probe accepted that partial tail,
+      // so the read came back as 涓枃-style mojibake. There is no capped read
+      // any more — an over-limit document is refused as a document and served
+      // through the paged preview instead, which is what removes the whole
+      // class of bug: no truncated buffer ever reaches a decoder.
+      // Past the 5 MiB editable threshold (3 bytes per character, so a little
+      // over 1.75 M characters), which is what routes it to the paged preview.
+      const content = '中'.repeat(1_800_000)
+      expect(Buffer.byteLength(content, 'utf8')).toBeGreaterThan(5 * 1024 * 1024)
+      writeFileSync(target, Buffer.from(content, 'utf8'))
       const result = await invoke(route, 'fs.read', { sessionId: 'readcap', path: target })
-      const value = result.value as { kind?: string; content?: string; truncated?: boolean } | undefined
-      expect(value?.kind).toBe('text')
-      expect(value?.truncated).toBe(true)
-      // The known-good prefix reads as 中, with the usual replacement
-      // character for the cut tail — never as 涓枃 mojibake.
-      expect(value?.content?.startsWith('中中')).toBe(true)
-      expect(value?.content).not.toContain('涓')
-      expect(value?.content?.endsWith('\ufffd')).toBe(true)
+      const value = result.value as { kind?: string; size?: number; content?: string; head?: string } | undefined
+      expect(value?.kind).toBe('too-large')
+      expect(value?.size).toBe(Buffer.byteLength(content, 'utf8'))
+      // No document rides along — that is the point.
+      expect(value?.content).toBeUndefined()
+      // The 4 KiB sniff head still does, and it is valid UTF-8 including a
+      // whole number of characters (the reader takes a byte prefix, and the
+      // paged route is what reassembles text).
+      expect(typeof value?.head).toBe('string')
+      expect(Buffer.from(value!.head!, 'base64').length).toBe(4096)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -1149,6 +1209,41 @@ describe('session cwd resolution over the API route', () => {
   })
 })
 /**
+ * One save through `POST /sidebar/write`, resolved against the most recent
+ * mount (see {@link lastMountedRoutes}).
+ * @param payload - `{ sessionId, cwd?, path, content, expectedMtimeMs? }`.
+ * @returns the parsed envelope.
+ */
+const invokeRawWrite = async (payload: unknown): Promise<{
+  ok: boolean
+  value?: unknown
+  error?: { code?: string; message: string }
+}> => {
+  const route = lastMountedRoutes.find(candidate => candidate.path === '/sidebar/write')
+  if (route === undefined) throw new Error('test setup: no /sidebar/write route was mounted')
+  const record = payload as { sessionId: string; cwd?: string; path: string; content?: unknown; expectedMtimeMs?: number }
+  const params = new URLSearchParams({ sessionId: record.sessionId, path: record.path })
+  if (record.cwd !== undefined) params.set('cwd', record.cwd)
+  if (record.expectedMtimeMs !== undefined) params.set('expectedMtimeMs', String(record.expectedMtimeMs))
+  const body = Buffer.from(String(record.content ?? ''), 'utf8')
+  const req = {
+    method: 'POST',
+    url: `/sidebar/write?${params.toString()}`,
+    headers: { host: '127.0.0.1:3080' },
+    [Symbol.asyncIterator]: async function* () { yield body },
+  } as never
+  const out: { status: number; body: string } = { status: 200, body: '' }
+  const res = {
+    headersSent: false,
+    writeHead: (status: number) => { out.status = status },
+    write: () => true,
+    end: (chunk: unknown) => { out.body += String(chunk ?? '') },
+  } as never
+  await route.handler(req, res)
+  return JSON.parse(out.body) as { ok: boolean; error?: { code?: string; message: string } }
+}
+
+/**
  * Invoke one `/sidebar/api/<method>` route against a fake Socket-ish pair.
  * @param route - the mounted prefix route.
  * @param method - the API method name.
@@ -1160,6 +1255,10 @@ const invoke = async (route: SidebarWebRoute, method: string, payload: unknown):
   value?: unknown
   error?: { code?: string; message: string }
 }> => {
+  // The editor save is its own raw route now (the document IS the body), so it
+  // is dispatched rather than posted to `/sidebar/api`. Both `invoke` helpers
+  // in this file do this; see `lastMountedRoutes` for how the route is found.
+  if (method === 'fs.write') return await invokeRawWrite(payload)
   const body = Buffer.from(JSON.stringify(payload))
   const req = {
     method: 'POST',
@@ -1227,6 +1326,7 @@ const createFakeSettings = (pre?: Record<string, Record<string, unknown>>) => {
  */
 const mountWithSettings = (settings?: unknown, home?: string): SidebarWebRoute => {
   const routes: SidebarWebRoute[] = []
+  lastMountedRoutes = routes
   const ctx = {
     webRuntime: { trustedHosts: [] },
     webServer: {
@@ -1412,7 +1512,7 @@ describe('side card settings routes', () => {
       const tree = await invoke(route, 'fs.tree', { sessionId: 'fence', cwd: workspace, path: outside })
       expect(tree).toMatchObject({ ok: true })
       const write = await invoke(route, 'fs.write', { sessionId: 'fence', cwd: workspace, path: join(outside, 'written.txt'), content: 'ok' })
-      expect(write).toMatchObject({ ok: true })
+      expect(write, JSON.stringify(write)).toMatchObject({ ok: true })
       expect(readFileSync(join(outside, 'written.txt'), 'utf8')).toBe('ok')
       // A legacy `workspaceFence: true` patch is just an unknown prefs key now
       // (the schema no longer declares it): it must not fail the write and must

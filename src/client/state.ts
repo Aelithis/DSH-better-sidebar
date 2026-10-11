@@ -384,7 +384,13 @@ export function isUnread(state: SidebarState | undefined, type: TabType): boolea
  *  re-opening it. The browser tab persists its current URL and hostname
  *  title through this reducer so a reload restores the visited page. A
  *  missing tab id is a no-op. The tab may live in either tree or a free
- *  window. */
+ *  window.
+ *
+ *  A PATH CHANGE is a new open: the transient landing line (#826) is dropped
+ *  with it. `line` belongs to the navigation that delivered the file, not to
+ *  the tab — an in-place switch or a rename that kept it would send the next
+ *  file to the previous file's line (and force a markdown file into the
+ *  editor, which is how the reader gets stuck). */
 export function patchTab(
   state: SidebarState,
   tabId: string,
@@ -398,6 +404,12 @@ export function patchTab(
       ...(patch.title !== undefined ? { title: patch.title } : {}),
       ...(patch.path !== undefined ? { path: patch.path } : {}),
       ...(patch.meta !== undefined ? { meta: patch.meta } : {}),
+      // Cleared (not merely left alone) so the reader's next file does not
+      // inherit this one's line. Compared against the current value to keep
+      // the object identity when nothing moved.
+      ...(patch.path !== undefined && patch.path !== tab.path && tab.line !== undefined
+        ? { line: undefined }
+        : {}),
     }
   }
   const walk = (node: SplitNode): SplitNode => {
