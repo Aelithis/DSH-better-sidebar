@@ -1,5 +1,12 @@
 /**
- * Host `fs.write` route: the two guarantees the editor's save depends on.
+ * Host save route (`POST /sidebar/write`): the guarantees the editor's save
+ * depends on.
+ *
+ * The route carries the document as its RAW BODY — it used to be a JSON field
+ * on `/sidebar/api/fs.write`, which put the 1 MiB `MAX_BODY_BYTES` ceiling on
+ * every save: a file the editor could open could not be written back. The
+ * request shape changed; every guarantee below is the same logic reached
+ * through `writeWorkspaceText` (src/fs-operations.ts).
  *
  * 1. Concurrent saves to the SAME path are independent — each writes its own
  *    uniquely named temp sibling, so one save's cleanup can never delete the
@@ -38,8 +45,14 @@ interface FakeContext {
   get: (key: string) => undefined
 }
 
+/** The two routes this spec drives: the JSON read and the raw save. */
+interface Mounted {
+  api: SidebarWebRoute
+  write: SidebarWebRoute
+}
+
 /** Mount the plugin against a fake context whose session cwd is `workspace`. */
-function mountApi(workspace: string): SidebarWebRoute {
+function mountApi(workspace: string): Mounted {
   const routes: SidebarWebRoute[] = []
   const ctx: FakeContext = {
     webRuntime: { trustedHosts: [] },
@@ -52,7 +65,10 @@ function mountApi(workspace: string): SidebarWebRoute {
     get: () => undefined,
   }
   apply(ctx as never, {})
-  return routes.find(route => route.path === '/sidebar/api')!
+  return {
+    api: routes.find(route => route.path === '/sidebar/api')!,
+    write: routes.find(route => route.path === '/sidebar/write')!,
+  }
 }
 
 interface Invoked {
@@ -79,13 +95,45 @@ async function invoke(route: SidebarWebRoute, method: string, payload: unknown):
   return { ...JSON.parse(out.body) as Invoked, status: out.status }
 }
 
+/**
+ * One save through the raw route: the document IS the body, everything else is
+ * a query parameter. Chunked on purpose — the route must accept a body that
+ * arrives in pieces, which a single Buffer would never exercise.
+ */
+async function invokeWrite(
+  mounted: Mounted,
+  input: { sessionId: string; path: string; content: string; expectedMtimeMs?: number; cwd?: string },
+): Promise<Invoked> {
+  const params = new URLSearchParams({ sessionId: input.sessionId, path: input.path })
+  if (input.cwd !== undefined) params.set('cwd', input.cwd)
+  if (input.expectedMtimeMs !== undefined) params.set('expectedMtimeMs', String(input.expectedMtimeMs))
+  const body = Buffer.from(input.content, 'utf8')
+  const req = {
+    method: 'POST',
+    url: `/sidebar/write?${params.toString()}`,
+    headers: { host: '127.0.0.1:3080' },
+    [Symbol.asyncIterator]: async function* () {
+      for (let offset = 0; offset < body.length; offset += 64 * 1024) {
+        yield body.subarray(offset, offset + 64 * 1024)
+      }
+    },
+  } as never
+  const out = { status: 200, body: '' }
+  const res = {
+    writeHead: (status: number) => { out.status = status },
+    end: (chunk: unknown) => { out.body += String(chunk ?? '') },
+  } as never
+  await mounted.write.handler(req, res)
+  return { ...JSON.parse(out.body) as Invoked, status: out.status }
+}
+
 /** Temp siblings the route may leave behind on failure (dev's per-save name,
  *  landed by 2e22b90 — this PR keeps it as-is). */
 function tempLeftovers(dir: string): string[] {
   return readdirSync(dir).filter(name => name.includes('.dsh-sidebar-tmp-'))
 }
 
-describe('fs.write route', () => {
+describe('/sidebar/write route', () => {
   it('keeps concurrent saves to the same path independent and leaves no temp files', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-sidebar-write-race-'))
     try {
@@ -94,9 +142,9 @@ describe('fs.write route', () => {
       const target = join(workspace, 'race.txt')
       const route = mountApi(workspace)
       const results = await Promise.all([
-        invoke(route, 'fs.write', { sessionId: 's', path: target, content: 'first' }),
-        invoke(route, 'fs.write', { sessionId: 's', path: target, content: 'second' }),
-        invoke(route, 'fs.write', { sessionId: 's', path: target, content: 'third' }),
+        invokeWrite(route, { sessionId: 's', path: target, content: 'first' }),
+        invokeWrite(route, { sessionId: 's', path: target, content: 'second' }),
+        invokeWrite(route, { sessionId: 's', path: target, content: 'third' }),
       ])
       for (const result of results) {
         // The bug this pins: with ONE shared temp name, a loser's cleanup
@@ -123,7 +171,7 @@ describe('fs.write route', () => {
       writeFileSync(target, 'v0')
       const route = mountApi(workspace)
       for (const content of ['v1', 'v2', 'v3']) {
-        const result = await invoke(route, 'fs.write', { sessionId: 's', path: target, content })
+        const result = await invokeWrite(route, { sessionId: 's', path: target, content })
         expect(result, JSON.stringify(result)).toMatchObject({ ok: true, status: 200 })
       }
       expect(readFileSync(target, 'utf8')).toBe('v3')
@@ -142,7 +190,7 @@ describe('fs.write route', () => {
       writeFileSync(target, 'disk-v1')
       const route = mountApi(workspace)
 
-      const read = await invoke(route, 'fs.read', { sessionId: 's', path: target })
+      const read = await invoke(route.api, 'fs.read', { sessionId: 's', path: target })
       expect(read).toMatchObject({ ok: true, value: { kind: 'text', content: 'disk-v1' } })
       const baseline = read.value?.mtimeMs
       expect(typeof baseline).toBe('number')
@@ -151,7 +199,7 @@ describe('fs.write route', () => {
       writeFileSync(target, 'disk-v2')
       utimesSync(target, new Date(), new Date(Date.now() + 2_000))
 
-      const stale = await invoke(route, 'fs.write', {
+      const stale = await invokeWrite(route, {
         sessionId: 's', path: target, content: 'my-draft', expectedMtimeMs: baseline,
       })
       expect(stale).toMatchObject({ ok: false, status: 409, error: { code: 'fs-conflict' } })
@@ -172,8 +220,8 @@ describe('fs.write route', () => {
       writeFileSync(target, 'disk-v1')
       const route = mountApi(workspace)
 
-      const read = await invoke(route, 'fs.read', { sessionId: 's', path: target })
-      const saved = await invoke(route, 'fs.write', {
+      const read = await invoke(route.api, 'fs.read', { sessionId: 's', path: target })
+      const saved = await invokeWrite(route, {
         sessionId: 's', path: target, content: 'disk-v2', expectedMtimeMs: read.value?.mtimeMs,
       })
       expect(saved).toMatchObject({ ok: true, status: 200, value: { ok: true } })
@@ -181,11 +229,39 @@ describe('fs.write route', () => {
       expect(readFileSync(target, 'utf8')).toBe('disk-v2')
 
       // The reported baseline is the one a follow-up save must present.
-      const second = await invoke(route, 'fs.write', {
+      const second = await invokeWrite(route, {
         sessionId: 's', path: target, content: 'disk-v3', expectedMtimeMs: saved.value?.mtimeMs,
       })
       expect(second).toMatchObject({ ok: true, status: 200 })
       expect(readFileSync(target, 'utf8')).toBe('disk-v3')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  // The whole reason the route is raw: JSON framing capped a save at 1 MiB
+  // (MAX_BODY_BYTES), so a file the editor could OPEN could not be written
+  // back. Four megabytes of text goes through in one request now.
+  it('saves a document far past the old 1 MiB JSON ceiling', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-sidebar-write-large-'))
+    try {
+      const workspace = join(root, 'ws')
+      mkdirSync(workspace)
+      const target = join(workspace, 'big.jsonl')
+      // Multi-byte content on purpose: the route counts BYTES, so the fixture
+      // is sized by byte length. (Sizing it by `line.length` builds a body
+      // three times larger than intended and lands on the wrong side of the
+      // guard — which is how this test first failed.)
+      const line = `${JSON.stringify({ text: '中文内容'.repeat(20) })}\n`
+      const content = line.repeat(Math.ceil((4 * 1024 * 1024) / Buffer.byteLength(line, 'utf8')))
+      expect(Buffer.byteLength(content, 'utf8')).toBeGreaterThan(4 * 1024 * 1024)
+      expect(Buffer.byteLength(content, 'utf8')).toBeLessThan(8 * 1024 * 1024)
+
+      const route = mountApi(workspace)
+      const result = await invokeWrite(route, { sessionId: 's', path: target, content })
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true, status: 200 })
+      expect(readFileSync(target, 'utf8')).toBe(content)
+      expect(tempLeftovers(workspace)).toEqual([])
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -207,14 +283,14 @@ describe('fs.write route', () => {
       writeFileSync(target, 'disk-v1')
       const route = mountApi(workspace)
 
-      const read = await invoke(route, 'fs.read', { sessionId: 's', path: target })
+      const read = await invoke(route.api, 'fs.read', { sessionId: 's', path: target })
       const baseline = read.value?.mtimeMs
       expect(typeof baseline).toBe('number')
 
       // The user (or something else) removed it while the draft was open.
       rmSync(target, { force: true })
 
-      const stale = await invoke(route, 'fs.write', {
+      const stale = await invokeWrite(route, {
         sessionId: 's', path: target, content: 'my-draft', expectedMtimeMs: baseline,
       })
       expect(stale).toMatchObject({ ok: false, status: 409, error: { code: 'fs-conflict' } })
@@ -222,6 +298,32 @@ describe('fs.write route', () => {
       // survived the refusal.
       expect(existsSync(target)).toBe(false)
       expect(tempLeftovers(workspace)).toEqual([])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a save path that is missing, and writes nothing', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-sidebar-write-nopath-'))
+    try {
+      const workspace = join(root, 'ws')
+      mkdirSync(workspace)
+      const route = mountApi(workspace)
+      const params = new URLSearchParams({ sessionId: 's' })
+      const req = {
+        method: 'POST',
+        url: `/sidebar/write?${params.toString()}`,
+        headers: { host: '127.0.0.1:3080' },
+        [Symbol.asyncIterator]: async function* () { yield Buffer.from('x') },
+      } as never
+      const out = { status: 200, body: '' }
+      const res = {
+        writeHead: (status: number) => { out.status = status },
+        end: (chunk: unknown) => { out.body += String(chunk ?? '') },
+      } as never
+      await route.write.handler(req, res)
+      expect({ ...JSON.parse(out.body) as Invoked, status: out.status })
+        .toMatchObject({ ok: false, status: 400, error: { code: 'bad-request' } })
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -237,13 +339,13 @@ describe('fs.write route', () => {
       writeFileSync(target, 'disk-v1')
       const route = mountApi(workspace)
 
-      const read = await invoke(route, 'fs.read', { sessionId: 's', path: target })
+      const read = await invoke(route.api, 'fs.read', { sessionId: 's', path: target })
       const baseline = read.value?.mtimeMs
       // A rename/removal of the parent directory: the writer's `mkdir -p` used
       // to rebuild the tree for a single file.
       rmSync(nested, { recursive: true, force: true })
 
-      const stale = await invoke(route, 'fs.write', {
+      const stale = await invokeWrite(route, {
         sessionId: 's', path: target, content: 'my-draft', expectedMtimeMs: baseline,
       })
       expect(stale).toMatchObject({ ok: false, status: 409, error: { code: 'fs-conflict' } })
@@ -261,7 +363,7 @@ describe('fs.write route', () => {
       const target = join(workspace, 'legacy.txt')
       writeFileSync(target, 'disk-v1')
       const route = mountApi(workspace)
-      const result = await invoke(route, 'fs.write', { sessionId: 's', path: target, content: 'overwritten' })
+      const result = await invokeWrite(route, { sessionId: 's', path: target, content: 'overwritten' })
       expect(result).toMatchObject({ ok: true, status: 200 })
       expect(readFileSync(target, 'utf8')).toBe('overwritten')
     } finally {
@@ -282,7 +384,7 @@ describe('fs.write route', () => {
       const target = join(workspace, 'win.txt')
       writeFileSync(target, 'one\r\ntwo\r\nthree\r\n')
       const route = mountApi(workspace)
-      const result = await invoke(route, 'fs.write', {
+      const result = await invokeWrite(route, {
         sessionId: 's',
         path: target,
         content: 'one\ntwo edited\nthree\n',
@@ -305,7 +407,7 @@ describe('fs.write route', () => {
       const target = join(workspace, 'posix.sh')
       writeFileSync(target, 'one\ntwo\n')
       const route = mountApi(workspace)
-      const result = await invoke(route, 'fs.write', {
+      const result = await invokeWrite(route, {
         sessionId: 's',
         path: target,
         content: 'one\ntwo edited\n',
@@ -329,7 +431,7 @@ describe('fs.write route', () => {
       const route = mountApi(workspace)
       // An LF document (what the editor always sends) into a GBK + CRLF file:
       // both restores have to fire for the bytes to match.
-      const result = await invoke(route, 'fs.write', {
+      const result = await invokeWrite(route, {
         sessionId: 's',
         path: target,
         content: '@echo off\necho 中文 saved\n',

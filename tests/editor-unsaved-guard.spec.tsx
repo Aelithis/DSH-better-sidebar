@@ -144,7 +144,7 @@ function openTabIds(store: SidebarStore): string[] {
 
 beforeEach(() => {
   fsRead.mockReset()
-  fsRead.mockResolvedValue({ kind: 'text', content: 'hello', truncated: false })
+  fsRead.mockResolvedValue({ kind: 'text', content: 'hello', size: 5 })
   // The registry is module-level: a previous test's draft must not leak in.
   for (const id of ['editor:/tmp/a.ts', 't1', 't2']) clearEditorDirty(id)
 })
