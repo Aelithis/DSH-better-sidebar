@@ -811,7 +811,11 @@ interface BetterSidebarService {
    *  消费插件不需要改任何代码。
    *  **指到不在屏的会话时写进它自己的布局**（v0.26.0+）：这类写入走定向通道
    *  （不发布、不通知），所以文件树的重命名调解同样覆盖**后台会话**底部工作台里的
-   *  页面，而当前会话继续走发布通道、界面照常重渲染。 */
+   *  页面，而当前会话继续走发布通道、界面照常重渲染。
+   *  **标题只在它本来就来自文件名时才跟着改名走**（v0.26.0+）：页签调解把**派生
+   *  自基名**的标题换成新基名，而 `openFile(scope, path, title)` 或 `openTab` 里
+   *  **作者自设的标题**（宿主的 agent-opens 推送就带一个）原样保留——名字是你标
+   *  的，就不该被一次文件改名换掉。 */
   updateTab(tabId: string, patch: { title?: string; path?: string; meta?: unknown }, sessionId?: string): void
   /** 激活一个已打开的 tab（tab 栏点击路径；触发 descriptor.onActivate；
    *  未知 id 严格 no-op）；scope（v0.12.0+）随回调传递，同 closeTab */

@@ -4,6 +4,8 @@
 
 ### Unreleased
 
+- 🏷 **改名只在标题本来就来自文件名时才跟着改**（[#915](https://github.com/omdsh-dev/DSH-better-sidebar/issues/915) 后续）：页签调解此前**无条件**把标题写成新的基名，于是**作者自设的标题**会被一次改名悄悄替换掉——宿主的 agent-opens 推送就带着模型自己给的名字（`use-host-feeds` → `openFile(scope, path, title)`），消费插件也可以自己标名字。现在只有标题**等于该页签路径的基名**（也就是打开时由文件名派生的那种）才跟着新名字走；目录改名本来就不动后代（后代基名没变），两处口径因此一致。原生承载面的 `SidebarSurface.pathTabs()` 随之交出每个记录的 `title`（`NativePathTab` 新增字段）。
+  - 🧪 测试：`tests/editor-unsaved-guard.spec.tsx` 新增 1 例（同一个文件的两个页签：派生标题跟着走、自设标题原样保留，底部工作台那一路一并断言）；`tests/native-surface.spec.ts` 的枚举断言带上 `title`。判别性实测：把判定换回无条件改写 → 该用例红。
 - 🧷 **改名 / 删除的页签调解覆盖后台会话的底部工作台**（[#915](https://github.com/omdsh-dev/DSH-better-sidebar/issues/915) 后续）：上一批（#912）让调解同时走**原生右侧栏**的记录，但底部工作台那一路仍只读**当前会话**的快照（`pathTabsOf` 吃 `store.getSnapshot()`），而底部工作台是**按会话**存的——后台会话里开着的文件页（`target: 'bottom'` 的打开、或在原生承载面之前持久化下来的布局）既不跟着改名、也不随删除关闭，切回去的下一次保存照样把改名掉的文件 / 删掉的文件重建出来。现在枚举走 `store.getSessionStates()`（**每个已缓存会话**都在内），每行都带上**自己的会话**；写入也不再落到「碰巧在屏」的那个会话上——`updateTab` / `closeTab` 遇到**不在屏的会话**改走定向通道（`store.reduceFor`，与定向 `openTab(seed, scope)` 同一条路：写进那个会话的自己的布局，不发布、不通知），当前会话继续走发布通道、界面照常重渲染。删除仍先问未保存的草稿，且问题问在**内容会话**里（草稿注册表的键是 `sessionId::tabId`）。
   - 🧪 测试：`tests/editor-unsaved-guard.spec.tsx` 新增 2 例（后台会话的底部页面在改名后跟着走、且当前会话既没被写也没被重新发布；删除时按**它自己的**草稿先问、关在它自己的布局里）。判别性实测：把枚举收回「只看当前会话」→ 2 条红；把定向写入换回发布通道 → 2 条红；把草稿确认的会话换成当前会话 → 删除那条红。
 
