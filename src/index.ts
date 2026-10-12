@@ -29,7 +29,7 @@ import {
   type SidebarConfig,
   type SidebarPrefs,
 } from './config.ts'
-import { listDirectory, messageOf, parentOf, requireAbsolute, rootLabel, type SidebarFsEntry } from './fs-tree.ts'
+import { createProbeGate, listDirectory, messageOf, parentOf, requireAbsolute, rootLabel, type SidebarFsEntry } from './fs-tree.ts'
 import { resolveSessionPath } from './session-path.ts'
 import { createWorkspaceFile, mkdirWorkspaceEntry, renameWorkspaceEntry, removeWorkspaceEntry, writeWorkspaceText, writeWorkspaceUpload } from './fs-operations.ts'
 import { ensureWorkspacePath } from './path-security.ts'
@@ -709,6 +709,11 @@ function buildApi(
       // explorerExclude pref has to be compiled here too, or the exclude list
       // would simply not reach the only surface the explorer reads.
       const exclude = compileExcludePatterns(record?.exclude, cwd)
+      // ONE probe budget for the whole request: every level keeps its own
+      // per-level probe bound, but a batch of up to FS_TREES_MAX_PATHS levels
+      // shares one gate, so the bounds do not multiply (64 × 32 opendirs on a
+      // cold mount of a wide tree). Cache hits never touch the gate.
+      const gate = createProbeGate()
       const levels = await Promise.all(paths.map(async (raw): Promise<SidebarFsLevel> => {
         // A session-relative path is accepted here (the tree already carries
         // cwd-relative paths); `fs.tree` itself keeps requiring absolute
@@ -718,7 +723,7 @@ function buildApi(
         const homeRelative = raw === '~' || raw.startsWith('~/') || raw.startsWith('~\\')
         const requested = isAbsolute(raw) || homeRelative ? raw : `${cwd}${sep}${raw}`
         try {
-          return await listDirectory(await ensureWorkspacePath(cwd, requested), resolved.listLimit, exclude)
+          return await listDirectory(await ensureWorkspacePath(cwd, requested), resolved.listLimit, exclude, gate)
         } catch (error) {
           // Per-level failure: the batch itself stays a success (one unreadable
           // directory must not blank the whole tree).
