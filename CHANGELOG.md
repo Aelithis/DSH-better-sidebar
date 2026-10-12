@@ -4,6 +4,9 @@
 
 ### Unreleased
 
+- 🧷 **改名 / 删除的页签调解覆盖后台会话的底部工作台**（[#915](https://github.com/omdsh-dev/DSH-better-sidebar/issues/915) 后续）：上一批（#912）让调解同时走**原生右侧栏**的记录，但底部工作台那一路仍只读**当前会话**的快照（`pathTabsOf` 吃 `store.getSnapshot()`），而底部工作台是**按会话**存的——后台会话里开着的文件页（`target: 'bottom'` 的打开、或在原生承载面之前持久化下来的布局）既不跟着改名、也不随删除关闭，切回去的下一次保存照样把改名掉的文件 / 删掉的文件重建出来。现在枚举走 `store.getSessionStates()`（**每个已缓存会话**都在内），每行都带上**自己的会话**；写入也不再落到「碰巧在屏」的那个会话上——`updateTab` / `closeTab` 遇到**不在屏的会话**改走定向通道（`store.reduceFor`，与定向 `openTab(seed, scope)` 同一条路：写进那个会话的自己的布局，不发布、不通知），当前会话继续走发布通道、界面照常重渲染。删除仍先问未保存的草稿，且问题问在**内容会话**里（草稿注册表的键是 `sessionId::tabId`）。
+  - 🧪 测试：`tests/editor-unsaved-guard.spec.tsx` 新增 2 例（后台会话的底部页面在改名后跟着走、且当前会话既没被写也没被重新发布；删除时按**它自己的**草稿先问、关在它自己的布局里）。判别性实测：把枚举收回「只看当前会话」→ 2 条红；把定向写入换回发布通道 → 2 条红；把草稿确认的会话换成当前会话 → 删除那条红。
+
 - 🛡 **三处静默数据问题**（[#898](https://github.com/omdsh-dev/DSH-better-sidebar/issues/898) / [#899](https://github.com/omdsh-dev/DSH-better-sidebar/issues/899) / [#900](https://github.com/omdsh-dev/DSH-better-sidebar/issues/900)）：① 编辑器草稿守卫的记账键从**裸 tab id** 改成 **`会话::tab id`**——原生右栏每个会话的 id 都从 `tab1` 重新计数、底部工作台对同一路径在各会话复用 `editor:<path>`，两套身份原先挤在同一个键上，**另一个会话打开编辑器就会把本会话的草稿记录一并删掉**（刷新时静默丢失）；② 面包屑折叠行（`a/b/c` 压成一行）的重命名此前提交的是**链头**目录、与预填名不一致——不改字直接回车等于把父目录改名，现在落到链尾；③ 无 BOM 的 16 位小端数据（低幅采样表 / 未压缩音频数据段这类）不再被判成 UTF-16 文本打开、保存后整份改写（奇数长度还会丢尾字节）：新的文本闸门要求 ≥90% 的单元是合法文本单元。同批还带了 dev 新增代码的一轮去重（内部导出 `runGitRaw` / `bottomTerminalKey` / `formatModelRoute` / `dirtyCountForSession` 收敛，仓内调用点同批改完）。（贡献者 PR [#901](https://github.com/omdsh-dev/DSH-better-sidebar/pull/901) @UNscientific-9）
   - 🧪 测试：`tests/editor-unsaved-guard.spec.tsx`（跨会话草稿：第二个会话挂同一个原生 id，既不能清掉、也不能确认掉第一个会话的草稿）、`tests/file-tree-compact-fold.spec.tsx`（折叠行重命名断言落到链尾：`/tmp/a/b/c` → `renamed`）、`tests/text-encoding.spec.ts`（uint16LE 采样表 / WAV `data` 段 / 奇数长度判二进制，真 UTF-16LE/BE 仍是文本）。
 
