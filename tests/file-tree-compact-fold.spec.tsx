@@ -19,6 +19,7 @@ import { createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { act } from 'react-dom/test-utils'
 import { FileTree } from '../src/client/FileTree.tsx'
+import { MAX_COMPACT_DEPTH } from '../src/client/file-tree-compact.ts'
 
 import { setupReactAct } from './test-utils.ts'
 setupReactAct()
@@ -234,6 +235,39 @@ describe('FileTree breadcrumb folding', () => {
     expect(requestedPaths().sort()).toEqual(['/tmp', '/tmp/a', '/tmp/a/b', '/tmp/a/b/c'].sort())
     // The sibling file is untouched by the fold.
     expect(harness.container.textContent).toContain('readme.md')
+  })
+
+  it('stops the preload at the render cap instead of requesting deeper links', async () => {
+    // A chain longer than a row can fold: every level is a singleton dir for
+    // MAX_COMPACT_DEPTH + 8 links. The breadcrumb stops folding at the cap, so
+    // the preload must stop asking there too — the every-loaded-level scan it
+    // replaced kept requesting link 33, 34, … (one serial POST plus one
+    // whole-tree render each) for a chain the renderer never drew.
+    const DEPTH = MAX_COMPACT_DEPTH + 8
+    const linkAt = (index: number): string => index === 0
+      ? '/tmp'
+      : `/tmp/${Array.from({ length: index }, (_, step) => `l${step + 1}`).join('/')}`
+    const depthOf = (path: string): number => path === '/tmp' ? 0 : path.split('/').length - 2
+    fsTrees.mockImplementation(async (_scope: unknown, paths: readonly string[]) => ({
+      levels: paths.map((path) => {
+        const depth = depthOf(path)
+        return {
+          path,
+          entries: depth < DEPTH ? [dir(linkAt(depth + 1), true)] : [file(`${path}/leaf.txt`)],
+          truncated: false,
+        }
+      }),
+    }))
+    harness = mountTree()
+    // One wave per link (each arrival reveals the next frontier link); a
+    // generous fixed bound keeps a regression that loops on the cap from
+    // hanging the run — it fails on the assertion below instead.
+    for (let wave = 0; wave < DEPTH * 4; wave += 1) await flush()
+
+    // The preload followed the chain all the way to the cap…
+    expect(Math.max(...requestedPaths().map(depthOf))).toBe(MAX_COMPACT_DEPTH)
+    // …and never asked for the link past it.
+    expect(new Set(requestedPaths()).has(linkAt(MAX_COMPACT_DEPTH + 1))).toBe(false)
   })
 
   it('toggles the WHOLE chain on a plain click, so the row closes as one', async () => {
