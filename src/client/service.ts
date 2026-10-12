@@ -561,6 +561,11 @@ export interface NativePathTab {
   /** The path the tab is bound to — a file path, or a browser tab's address
    *  (a url seed is stored on the same field). */
   path: string
+  /** The chip's current title. The rename reconciliation reads it to tell a
+   *  title the tree DERIVED from the file name (the basename it wrote on open)
+   *  from one its author chose — a model-driven open names its own title, and
+   *  that is not the tree's to rewrite. */
+  title: string
 }
 
 /**

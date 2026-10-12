@@ -46,6 +46,9 @@ interface PathTab {
    *  session (the guard then reads conservatively rather than missing the
    *  record and closing a live draft without asking). */
   scopeSessionId: string | undefined
+  /** The tab's current title — the rename reconciliation retitles a page only
+   *  when this is the file name the tree itself wrote there. */
+  title: string
   /** The session the tab is WRITTEN through: the native record's seat, or the
    *  bottom-workbench row's own session — every row names its session now, so a
    *  background conversation's pages are patched in place instead of resolving
@@ -140,6 +143,7 @@ function pathTabsOf(store: SidebarStore, native: readonly NativePathTab[]): Path
           key: pathTabKey(sessionId, tab.id),
           id: tab.id,
           path: tab.path,
+          title: tab.title,
           absolute: tab.path,
           scopeSessionId: sessionId,
           sessionId,
@@ -152,6 +156,7 @@ function pathTabsOf(store: SidebarStore, native: readonly NativePathTab[]): Path
       key: pathTabKey(tab.scopeSessionId, tab.id),
       id: tab.id,
       path: tab.path,
+      title: tab.title,
       // A chat link opens its tab with the ADDRESS's path, and `fileAddressFor`
       // spells that workspace-relative whenever it knows the cwd. Comparing it
       // raw against the tree's absolute paths skipped exactly those tabs, so the
@@ -182,13 +187,21 @@ function movedPath(path: string, oldPath: string, newPath: string): string | und
   return tail === '.' ? newPath : `${newPath}/${tail}`
 }
 
-/** Retarget tabs after `oldPath` became `newPath` (title follows the new
- *  base name, matching how openFile titles editor tabs).
+/** Retarget tabs after `oldPath` became `newPath`.
  *
  *  Files and anything under a renamed DIRECTORY are retargeted — the same
  *  subtree rule the delete path uses — in EVERY session the store has cached.
  *  The move is announced through {@link markRetargetedPath} so the editor keeps
- *  its document (and an unsaved draft) instead of reloading the new name. */
+ *  its document (and an unsaved draft) instead of reloading the new name.
+ *
+ *  The TITLE follows only when it was DERIVED from the file name — an editor
+ *  page opened the way the plugin opens one is titled with the basename, so a
+ *  rename has to carry it along; a title its author chose is not the tree's to
+ *  rewrite. The host's agent-opens push is the live case: the model asks for a
+ *  file with a title of its own (`use-host-feeds` → `openFile(scope, path,
+ *  title)`), and a consumer plugin may label a page itself. A directory rename
+ *  never retitles a descendant anyway (their basenames do not change), so this
+ *  is the same rule seen from the file side. */
 export function retargetPathTabs(ctx: Context, store: SidebarStore, oldPath: string, newPath: string): void {
   const service = ctx.get('betterSidebar')
   if (service === undefined) return
@@ -198,7 +211,13 @@ export function retargetPathTabs(ctx: Context, store: SidebarStore, oldPath: str
     // The announcement has to match what the editor will see: it compares the
     // path it holds (the tab's own spelling) with the one written here.
     markRetargetedPath(tab.key, tab.path, moved)
-    service.updateTab(tab.id, { path: moved, title: baseName(moved) }, tab.sessionId)
+    service.updateTab(tab.id, {
+      path: moved,
+      // Only a DERIVED title follows the new name: `baseName(tab.path)` is the
+      // spelling the opener would have written, so a title that differs is one
+      // somebody chose.
+      ...(tab.title === baseName(tab.path) ? { title: baseName(moved) } : {}),
+    }, tab.sessionId)
   }
 }
 

@@ -298,19 +298,20 @@ describe('tree rename/delete reconciliation', () => {
     return { store, service, records, close, context }
   }
 
-  /** One editor record bound to a file, as a native open would mint it. */
+  /** One editor record bound to a file, as a native open would mint it. The
+   *  title defaults to the file name, i.e. what an open derives on its own. */
   const openNativeFile = (
     records: ReturnType<typeof createNativeTabRecords>,
     id: string,
     path: string,
-    seat: { sessionId?: string; cwd?: string } = {},
+    seat: { sessionId?: string; cwd?: string; title?: string } = {},
   ): void => {
     const sessionId = seat.sessionId ?? 'native-scope'
     records.ensure({
       sessionId,
       id,
       kind: 'editor',
-      title: 'a.ts',
+      title: seat.title ?? path.slice(path.lastIndexOf('/') + 1),
       params: { path },
       scope: seat.cwd === undefined ? { sessionId } : { sessionId, cwd: seat.cwd },
     })
@@ -345,6 +346,28 @@ describe('tree rename/delete reconciliation', () => {
     expect(consumeRetargetedPath(key, '/ws/dir/a.ts', '/ws/dir/b.ts')).toBe(true)
     expect(consumeRetargetedPath(key, '/ws/dir/a.ts', '/ws/dir/b.ts')).toBe(false)
     expect(consumeRetargetedPath(key, '/ws/dir/a.ts', '/ws/elsewhere.ts')).toBe(false)
+  })
+
+  it('follows the new name in the title only when the title CAME from the name', () => {
+    // The host's agent-opens push carries a title of its own (the model asked
+    // for that file by a label it chose: `use-host-feeds` → `openFile(scope,
+    // path, title)`), and a consumer plugin may label a page itself. A rename
+    // carries along the title the opener DERIVED from the file name — the
+    // basename — and leaves a chosen one as it is. Both tab spaces obey it.
+    const { store, service, records, context } = mountNativeSession()
+    openNativeFile(records, 'tab1', '/ws/a.ts')
+    openNativeFile(records, 'tab2', '/ws/a.ts', { title: 'Plan draft' })
+    service.openTab({ type: 'editor', title: 'Plan draft', path: '/ws/a.ts', target: 'bottom' })
+
+    retargetPathTabs(context, store, '/ws/a.ts', '/ws/b.ts')
+
+    // Derived: the chip follows the file…
+    expect(records.get('native-scope', 'tab1')?.tab).toMatchObject({ path: '/ws/b.ts', title: 'b.ts' })
+    // …authored: the path moves, the label stays.
+    expect(records.get('native-scope', 'tab2')?.tab).toMatchObject({ path: '/ws/b.ts', title: 'Plan draft' })
+    const bottom = allLeaves(store.getSnapshot().state!.bottomSplits)
+      .flatMap(leaf => leaf.tabs).find(tab => tab.path !== undefined)
+    expect(bottom).toMatchObject({ path: '/ws/b.ts', title: 'Plan draft' })
   })
 
   it('retargets a tab opened from a CHAT LINK (its address stores a workspace-relative path)', () => {
