@@ -27,6 +27,15 @@ import { allLeaves, createSidebarStore, type SidebarTab } from '../src/client/st
 const treeAnswers = (): { calls: number; landedAt: number[] } =>
   ((globalThis as unknown as { __treeAnswers?: { calls: number; landedAt: number[] } }).__treeAnswers ??= { calls: 0, landedAt: [] })
 
+/**
+ * Test script for the tree seam, used by the dropped-answer case below:
+ * `slow` lists the 1-based call numbers that answer only after a beat (so a
+ * refresh tick can land while they are in flight) and `hang` those that never
+ * answer at all. On `globalThis` for the same hoisting reason as `treeAnswers`.
+ */
+const treeScript = (): { slow: number[]; hang: number[] } =>
+  ((globalThis as unknown as { __treeScript?: { slow: number[]; hang: number[] } }).__treeScript ??= { slow: [], hang: [] })
+
 // The tree mounts inside EditorHost in these scenarios, so the api seam must
 // answer without a host (the sibling FileTree specs mock it the same way).
 vi.mock('../src/client/api.ts', () => ({
@@ -35,6 +44,11 @@ vi.mock('../src/client/api.ts', () => ({
     fsTrees: async (_scope: unknown, paths: readonly string[]) => {
       const answers = treeAnswers()
       answers.calls += 1
+      // The call index must be read BEFORE any await: `calls` keeps moving.
+      const index = answers.calls
+      const script = treeScript()
+      if (script.slow.includes(index)) await new Promise(resolve => { setTimeout(resolve, 300) })
+      if (script.hang.includes(index)) await new Promise<never>(() => {})
       const answer = {
         levels: paths.map(path => ({
           path,
@@ -762,6 +776,37 @@ describe('EditorHost native-tab context-menu actions', { timeout: 35_000 }, () =
       // 3) The bottom workbench is untouched: the open went to the host.
       expect(tabCount(store)).toBe(before)
     } finally {
+      unmount()
+    }
+  })
+
+  it('a listing dropped by a refresh tick does not strand the level on "Loading…"', async () => {
+    // The tick arrives while the first listing is in flight, so that answer is
+    // stale and must be dropped — and the forced re-list the tick triggers is
+    // made to hang, so NOTHING else can settle the level. Before the fix the
+    // dropped answer left its `{}` placeholder behind and the level was never
+    // retried: the tree stayed on its loading row forever (this is the shape
+    // the ubuntu lane reported: answers delivered, `names=[]`, no row at all).
+    const script = treeScript()
+    script.slow = [1]
+    script.hang = [2]
+    const store = createSidebarStore()
+    const { service } = spyService(store)
+    service.registerTab({ id: 'editor', title: 'Editor', dedupeKey: (tab) => tab.path, component: () => null })
+    store.setSession('editor-home-session')
+    store.setPrefs({ ...store.getPrefs(), editorExplorer: false })
+    service.openTab({ type: 'editor', title: 'a.ts', path: '/tmp/a.ts', id: 'editor:/tmp/a.ts', meta: { treeOpen: true } })
+    const fileTab = (): SidebarTab =>
+      allLeaves(store.getSnapshot().state!.bottomSplits).flatMap(leaf => leaf.tabs)
+        .find(tab => tab.path === '/tmp/a.ts')!
+    const { container, unmount } = await mountHostWithTreeWithCwd(fakeCtx(service) as unknown as Context, store, fileTab)
+    try {
+      // The real trigger: TreePanel bumps its refresh tick on a window focus.
+      await act(async () => { window.dispatchEvent(new Event('focus')) })
+      await waitForTreeRow(container, 'a.ts')
+    } finally {
+      script.slow = []
+      script.hang = []
       unmount()
     }
   })
