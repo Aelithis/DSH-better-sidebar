@@ -35,7 +35,7 @@ import { allLeaves, createSidebarStore, openTabInBottomPane } from '../src/clien
 import { createBetterSidebarService, type TabDescriptor } from '../src/client/service.ts'
 import { builtinTabs } from '../src/client/builtins/tabs.tsx'
 import {
-  bottomTerminalContentId, bottomTerminalKey, nextTerminalMeta, terminalRunOf,
+  bottomTerminalContentId, nextTerminalMeta, terminalInstanceOf, terminalRunOf,
   type HostTerminalView, type HostTerminalViewState, type WebTerminalsFace,
 } from '../src/client/terminal-client.ts'
 import { TerminalBottomView } from '../src/client/TerminalView.tsx'
@@ -331,10 +331,10 @@ describe('terminal-bottom: the host terminal contract', () => {
     expect(terminals.viewCalls).toHaveLength(1)
     expect(terminals.viewCalls[0]).toEqual({
       sessionId: 's1',
-      key: bottomTerminalKey(0),
+      key: bottomTerminalContentId(0),
       contentId: bottomTerminalContentId(0),
     })
-    const view = terminals.views.get('s1\u0000' + bottomTerminalKey(0))!
+    const view = terminals.views.get('s1\u0000' + bottomTerminalContentId(0))!
     expect(view.mounted).toBe(1)
     expect(xterm.emulators).toHaveLength(1)
     expect(xterm.emulators[0]!.open).toHaveLength(1)
@@ -354,7 +354,7 @@ describe('terminal-bottom: the host terminal contract', () => {
     const first = render(ctx, bottomTab())
     await flush()
     const allocated = terminals.allocated
-    const view = terminals.views.get('s1\u0000' + bottomTerminalKey(0))!
+    const view = terminals.views.get('s1\u0000' + bottomTerminalContentId(0))!
     first.unmount()
 
     // A page reload looks exactly like this to the plugin: a fresh mount of
@@ -368,7 +368,7 @@ describe('terminal-bottom: the host terminal contract', () => {
       bottomTerminalContentId(0),
     ])
     expect(terminals.allocated, 'no second terminal was allocated').toBe(allocated)
-    expect(terminals.views.get('s1\u0000' + bottomTerminalKey(0))!.id).toBe(view.id)
+    expect(terminals.views.get('s1\u0000' + bottomTerminalContentId(0))!.id).toBe(view.id)
     second.unmount()
   })
 
@@ -377,7 +377,7 @@ describe('terminal-bottom: the host terminal contract', () => {
     const { ctx } = viewSetup(terminals)
     const { unmount } = render(ctx, bottomTab())
     await flush()
-    const view = terminals.views.get('s1\u0000' + bottomTerminalKey(0))!
+    const view = terminals.views.get('s1\u0000' + bottomTerminalContentId(0))!
 
     // Keystrokes go through the MODEL (it serializes them and refuses them
     // while the view is not writable), never straight to the remote.
@@ -407,7 +407,7 @@ describe('terminal-bottom: the host terminal contract', () => {
     const { ctx } = viewSetup(terminals)
     const { unmount } = render(ctx, bottomTab())
     await flush()
-    const view = terminals.views.get('s1\u0000' + bottomTerminalKey(0))!
+    const view = terminals.views.get('s1\u0000' + bottomTerminalContentId(0))!
 
     act(() => {
       view.patch({
@@ -458,7 +458,7 @@ describe('terminal-bottom: degradation and recovery', () => {
     const { ctx, order } = viewSetup(terminals)
     const { container, rerender, unmount } = render(ctx, bottomTab())
     await flush()
-    const first = terminals.views.get('s1\u0000' + bottomTerminalKey(0))!
+    const first = terminals.views.get('s1\u0000' + bottomTerminalContentId(0))!
 
     act(() => { first.patch({ phase: 'failed', writable: false, issue: 'missingTerminal' }) })
     const action = container.querySelector('button')
@@ -490,7 +490,7 @@ describe('terminal-bottom: degradation and recovery', () => {
     const { ctx } = viewSetup(terminals)
     const { container, unmount } = render(ctx, bottomTab())
     await flush()
-    const view = terminals.views.get('s1\u0000' + bottomTerminalKey(0))!
+    const view = terminals.views.get('s1\u0000' + bottomTerminalContentId(0))!
     act(() => {
       view.patch({
         info: { id: view.id, title: 'Terminal', cwd: '/w', cols: 80, rows: 24, state: 'exited', exitCode: 0 },
@@ -525,7 +525,7 @@ describe('terminal-bottom: degradation and recovery', () => {
     const { ctx } = viewSetup(terminals)
     const { container, unmount } = render(ctx, bottomTab())
     await flush()
-    const view = terminals.views.get('s1\u0000' + bottomTerminalKey(0))!
+    const view = terminals.views.get('s1\u0000' + bottomTerminalContentId(0))!
     act(() => { view.patch({ phase: 'disconnected', writable: false }) })
     const action = container.querySelector('button')!
     act(() => { action.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
@@ -556,7 +556,7 @@ describe('terminal-bottom: degradation and recovery', () => {
 
     const { container, unmount } = render(ctx, bottomTab())
     await flush()
-    const view = terminals.views.get('s1\u0000' + bottomTerminalKey(0))!
+    const view = terminals.views.get('s1\u0000' + bottomTerminalContentId(0))!
     act(() => { view.patch({ phase: 'failed', writable: false, issue: 'missingTerminal' }) })
     const action = container.querySelector('button')!
 
@@ -591,8 +591,6 @@ describe('terminal-bottom: degradation and recovery', () => {
 describe('terminal-bottom: identity helpers', () => {
   it('keeps run 0 stable and namespaces every later run', () => {
     expect(bottomTerminalContentId(0)).toBe('dsh-better-sidebar:terminal-bottom')
-    expect(bottomTerminalKey(0)).toBe(bottomTerminalContentId(0))
-    expect(bottomTerminalContentId(1)).toBe(bottomTerminalKey(1))
     expect(bottomTerminalContentId(1)).toContain('#1')
     // Distinct per run — the whole point of the generation.
     expect(bottomTerminalContentId(1)).not.toBe(bottomTerminalContentId(0))
@@ -608,6 +606,36 @@ describe('terminal-bottom: identity helpers', () => {
     expect(terminalRunOf(bottomTab([1, 2]))).toBe(0)
     expect(nextTerminalMeta(bottomTab({ terminalRun: 3 }))).toEqual({ terminalRun: 4 })
   })
+
+  it('carries the tab instance through a 「新建终端」 bump, and never invents one', () => {
+    // `patchTab` REPLACES `meta`, so the bump has to restate the instance:
+    // dropping it would send the tab to the legacy identity shared by every
+    // tab that bumped its run.
+    const instanced = bottomTab({ terminalInstance: 'a', terminalRun: 0 })
+    const bumped = nextTerminalMeta(instanced)
+    expect(bumped).toEqual({ terminalInstance: 'a', terminalRun: 1 })
+    expect(terminalInstanceOf({ meta: bumped })).toBe('a')
+    expect(bottomTerminalContentId(terminalRunOf({ meta: bumped }), terminalInstanceOf({ meta: bumped })))
+      .toBe('dsh-better-sidebar:terminal-bottom:a#1')
+    // A tab persisted BEFORE the multi-terminal follow-up has no instance and
+    // must not grow one — its identity stays byte-identical.
+    const legacy = nextTerminalMeta(bottomTab({ terminalRun: 3 }))
+    expect(legacy).toEqual({ terminalRun: 4 })
+    expect(terminalInstanceOf({ meta: legacy })).toBeUndefined()
+  })
+
+  it('keeps two bumped instances on different identities — no shared shell', () => {
+    const bumpedId = (instance: string): string => {
+      const meta = nextTerminalMeta(bottomTab({ terminalInstance: instance, terminalRun: 0 }))
+      return bottomTerminalContentId(terminalRunOf({ meta }), terminalInstanceOf({ meta }))
+    }
+    expect(bumpedId('a')).not.toBe(bumpedId('b'))
+    // Both bumped once, so without the instance they would collide here:
+    expect(bumpedId('a')).toBe('dsh-better-sidebar:terminal-bottom:a#1')
+    expect(bumpedId('b')).toBe('dsh-better-sidebar:terminal-bottom:b#1')
+    // The bare `#1` stays reserved for legacy tabs.
+    expect(bumpedId('a')).not.toBe(bottomTerminalContentId(1))
+  })
 })
 
 describe('terminal-bottom: the descriptor close hook', () => {
@@ -622,7 +650,35 @@ describe('terminal-bottom: the descriptor close hook', () => {
 
     descriptor?.onClose?.(bottomTab({ terminalRun: 2 }), scope)
     expect(terminals.closeCalls).toEqual([
-      { sessionId: 's1', key: bottomTerminalKey(2), contentId: bottomTerminalContentId(2) },
+      { sessionId: 's1', key: bottomTerminalContentId(2), contentId: bottomTerminalContentId(2) },
     ])
+    // An instanced tab ends ITS OWN terminal, not the legacy one.
+    descriptor?.onClose?.(bottomTab({ terminalInstance: 'a', terminalRun: 1 }), scope)
+    expect(terminals.closeCalls.at(-1)).toEqual({
+      sessionId: 's1',
+      key: bottomTerminalContentId(1, 'a'),
+      contentId: bottomTerminalContentId(1, 'a'),
+    })
+  })
+})
+
+describe('terminal-bottom: several terminals in one session (#774 follow-up)', () => {
+  it('gives two instances two host terminals — the instance is the key', async () => {
+    const terminals = new FakeTerminals()
+    const { ctx } = viewSetup(terminals)
+    const first = render(ctx, { ...bottomTab({ terminalInstance: 'a' }), id: 'terminal-bottom:a' })
+    await flush()
+    const second = render(ctx, { ...bottomTab({ terminalInstance: 'b' }), id: 'terminal-bottom:b' })
+    await flush()
+    const bounds = [...terminals.views.values()].map(view => view.id)
+    expect(bounds).toHaveLength(2)
+    expect(new Set(bounds).size).toBe(2)
+    // Both were asked for their own (session, key, contentId) triple.
+    expect(terminals.viewCalls.map(call => call.contentId)).toEqual([
+      bottomTerminalContentId(0, 'a'),
+      bottomTerminalContentId(0, 'b'),
+    ])
+    first.unmount()
+    second.unmount()
   })
 })

@@ -53,7 +53,7 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { SiCursor, SiZedindustries } from 'react-icons/si'
 import { VscFolderOpened, VscLinkExternal, VscPin, VscPinned } from 'react-icons/vsc'
-import { api, archiveBuild, archiveDownloadUrl, archiveStatus, downloadUrl, type FsEntry, type FsLevel } from './api.ts'
+import { api, archiveBuild, archiveDownloadUrl, archiveStatus, downloadUrl, SidebarApiError, type FsEntry, type FsLevel } from './api.ts'
 import { compactChain, compactLoadTargets } from './file-tree-compact.ts'
 import { DEFAULT_FILE_TREE_SORT, sortEntries, type FileTreeSort } from './file-tree-sort.ts'
 import { FS_TREES_MAX_PATHS } from '../fs-batch.ts'
@@ -142,12 +142,6 @@ function gitToneLabel(tone: GitTone): string {
 /** The badge tone for one git tone (the kit has no separate 'copied' ink). */
 function badgeToneOf(tone: GitTone): StatusTone {
   return tone === 'copied' ? 'added' : tone
-}
-
-/** The archive progress line's percentage (`0/0` — an empty selection — is 0%). */
-function archivePercent(progress: { done: number; total: number }): number {
-  if (progress.total <= 0) return 0
-  return Math.min(100, Math.round((progress.done / progress.total) * 100))
 }
 
 /**
@@ -1632,20 +1626,19 @@ export function FileTree(props: {
   /**
    * Zip the selection through the host's ASYNC archive route:
    *
-   *   archiveBuild(scope, paths, name) → { id, entries }
+   *   archiveBuild(scope, paths, stem) → { id, name }
    *   → poll archiveStatus(id) every 250ms (self-scheduling: one request in
-   *     flight) while the job builds, driving the `zipProgress` line
-   *   → state 'ready' → fetch(archiveDownloadUrl(scope, id)) → blob → hidden
-   *     `<a download>` (the bytes are fetched explicitly because a bare anchor
-   *     would save the route's JSON error envelope as a broken .zip)
-   *   → any failure (build / status / download) → `zipFailed` in the strip.
+   *     flight) while the system's zip/tar packs into a temp file; the strip
+   *     shows a plain "packing" line, because a child process reports no
+   *     per-entry progress
+   *   → state 'ready' → a plain `<a download>` on the route URL, which the
+   *     browser streams to disk (see saveArchive for why it is not a blob)
+   *   → any failure (tool missing / build / status) → `zipFailed` in the strip.
    *
-   * `archiveBusyRef` keeps a repeated pick from starting a second job (the
-   * visible progress line is the feedback), and `archiveProgress` carries the
-   * live `done/total` for the line and its percentage.
+   * `archiveBusyRef` keeps a repeated pick from starting a second job — the
+   * visible packing line is the feedback.
    */
   const [archiveBusy, setArchiveBusy] = useState(false)
-  const [archiveProgress, setArchiveProgress] = useState<{ done: number; total: number } | null>(null)
   const archiveBusyRef = useRef(false)
   /** The job being polled (state so the poller starts/stops with it). */
   const [archiveJobId, setArchiveJobId] = useState<string | null>(null)
@@ -1663,7 +1656,6 @@ export function FileTree(props: {
     archiveHandedOffRef.current = false
     setArchiveJobId(null)
     setArchiveBusy(false)
-    setArchiveProgress(null)
   }, [])
 
   // A session/cwd swap abandons the archive job with it — the progress strip
@@ -1680,37 +1672,33 @@ export function FileTree(props: {
     settleArchive()
   }, [settleArchive])
 
-  /** Save the finished archive as `name` through a hidden anchor. */
+  /**
+   * Save the finished archive through a plain anchor on the route URL.
+   *
+   * Deliberately NOT `fetch → blob → objectURL` any more, which is what the
+   * flow used to do: a Blob holds the whole archive in the TAB's memory, so a
+   * multi-gigabyte selection would kill the page — the very thing the host
+   * side was just changed to stop doing. A plain anchor hands the URL to the
+   * browser's download machinery, which streams it to disk.
+   *
+   * The cost, stated plainly: the route's JSON error envelope can no longer be
+   * inspected, so a failure at this point saves a JSON body under the archive's
+   * name. Everything that realistically fails — no tool installed, an
+   * unreadable selection, a tool that exited non-zero — is caught by the
+   * `archive.status` poll BEFORE this runs, so what is left is an
+   * already-consumed or expired task between the poll and the click.
+   */
   const saveArchive = useCallback((id: string, name: string): void => {
-    void fetch(archiveDownloadUrl({ sessionId, cwd }, id))
-      .then(async (response) => {
-        if (!response.ok) {
-          const envelope: { error?: { message?: string } } | null = await response.json().catch(() => null)
-          throw new Error(envelope?.error?.message ?? `HTTP ${response.status}`)
-        }
-        return await response.blob()
-      })
-      .then((blob) => {
-        setActionError(null)
-        const objectUrl = URL.createObjectURL(blob)
-        const anchor = document.createElement('a')
-        anchor.href = objectUrl
-        anchor.download = name
-        anchor.style.display = 'none'
-        document.body.appendChild(anchor)
-        anchor.click()
-        anchor.remove()
-        // Revoke on the next task, not synchronously: some engines have not
-        // committed the download when click() returns, and revoking the URL
-        // under them loses the file. One tick is enough and keeps the blob
-        // from outliving the download.
-        window.setTimeout(() => { URL.revokeObjectURL(objectUrl) }, 0)
-        settleArchive()
-      })
-      .catch((error: unknown) => {
-        failArchive(error instanceof Error ? error.message : String(error))
-      })
-  }, [cwd, failArchive, sessionId, settleArchive])
+    setActionError(null)
+    const anchor = document.createElement('a')
+    anchor.href = archiveDownloadUrl({ sessionId, cwd }, id)
+    anchor.download = name
+    anchor.style.display = 'none'
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    settleArchive()
+  }, [cwd, sessionId, settleArchive])
 
   /** The poller's callbacks, read through a ref so the polling TASK stays
    *  identity-stable (a churned task restarts the loop every render). */
@@ -1727,7 +1715,6 @@ export function FileTree(props: {
       // The transport may deliver a response after teardown; the signal is the
       // only reliable staleness guard (the route call takes no signal).
       if (signal.aborted) return
-      setArchiveProgress({ done: status.done, total: status.total })
       if (status.state === 'error') {
         archiveHandlersRef.current.fail(status.error ?? `HTTP ${status.state}`)
         return
@@ -1750,21 +1737,30 @@ export function FileTree(props: {
 
   const downloadArchive = (paths: readonly string[]): void => {
     if (archiveBusyRef.current) return
-    const name = paths.length === 1 ? `${baseName(paths[0]!)}.zip` : 'archive.zip'
+    // The client names a STEM, not a file name: the host picks the extension
+    // from the tool it actually has (a host with only `tar` produces a real
+    // .tar.gz), and returns the final name with the build id.
+    const stem = paths.length === 1 ? baseName(paths[0]!) : 'archive'
     const generation = scopeGenRef.current
     archiveBusyRef.current = true
     archiveHandedOffRef.current = false
     setArchiveBusy(true)
-    setArchiveProgress(null)
-    void archiveBuild({ sessionId, cwd }, paths, name)
-      .then(({ id, entries }) => {
+    void archiveBuild({ sessionId, cwd }, paths, stem)
+      .then(({ id, name }) => {
         if (generation !== scopeGenRef.current) return
+        setActionError(null)
         archiveJobRef.current = { id, name }
-        setArchiveProgress({ done: 0, total: entries })
         setArchiveJobId(id)
       })
       .catch((error: unknown) => {
         if (generation !== scopeGenRef.current) return
+        // `unavailable` is its own sentence: "this machine has neither zip nor
+        // tar" is something the user can act on, and the host's English wire
+        // message is not the place to say it.
+        if (error instanceof SidebarApiError && error.code === 'unavailable') {
+          failArchive(t('archiveToolMissing'))
+          return
+        }
         failArchive(error instanceof Error ? error.message : String(error))
       })
   }
@@ -1800,6 +1796,25 @@ export function FileTree(props: {
     }
   }, [data])
 
+  /**
+   * One level's rows in the caller's chosen order, resolved ONCE per
+   * level-cache revision and reused by both walkers below: `renderLevel` draws
+   * them and {@link visibleRows} ranges over them, so re-sorting per render
+   * would both repeat the comparison and hand the memoized rows a fresh array.
+   * `sortEntries` copies (the level cache keeps the host's own order and is
+   * never reordered in place).
+   */
+  const entriesFor = useMemo(() => {
+    const cache = new Map<string, readonly FsEntry[]>()
+    return (dir: string): readonly FsEntry[] => {
+      const cached = cache.get(dir)
+      if (cached !== undefined) return cached
+      const sorted = sortEntries(data[dir]?.entries ?? [], sort)
+      cache.set(dir, sorted)
+      return sorted
+    }
+  }, [data, sort])
+
   // The Shift range walks the rows the user can actually see: the level's
   // rows in the SAME order `renderLevel` draws them (the sort choice), then
   // depth-first, expanded state decides. Recomputed with the level cache,
@@ -1809,7 +1824,7 @@ export function FileTree(props: {
     const walk = (dir: string): void => {
       const level = data[dir]
       if (level?.entries === undefined) return
-      for (const entry of sortEntries(level.entries, sort)) {
+      for (const entry of entriesFor(dir)) {
         // A folded row IS one row: its identity is the chain head (the level
         // entry the walk is on), and it descends into the chain TAIL — the
         // same shape `renderLevel` draws, so a Shift range covers what the
@@ -1822,7 +1837,7 @@ export function FileTree(props: {
     }
     if (root !== undefined) walk(root)
     return rows
-  }, [chainFor, data, expandedSet, root, sort])
+  }, [chainFor, data, entriesFor, expandedSet, root])
   visibleRowsRef.current = visibleRows
 
   /**
@@ -1870,13 +1885,15 @@ export function FileTree(props: {
           if (isLikelyImeKey(event)) return
           if (event.key === 'Enter') {
             event.preventDefault()
-            commitRename(entry.path, renaming?.value ?? '')
+            // A folded row renders at the chain HEAD while its menu addressed
+            // the TAIL: commit the path the editor was opened for.
+            commitRename(renaming?.path ?? entry.path, renaming?.value ?? '')
           } else if (event.key === 'Escape') {
             event.preventDefault()
             setRenaming(null)
           }
         }}
-        onBlur={() => { commitRename(entry.path, renaming?.value ?? '') }}
+        onBlur={() => { commitRename(renaming?.path ?? entry.path, renaming?.value ?? '') }}
       />
     </div>
   )
@@ -1986,9 +2003,8 @@ export function FileTree(props: {
         </>
       )
     }
-    // The ORDER is the caller's choice (the header's sort control); the level
-    // cache keeps the host's own order and is never reordered in place.
-    const entries = sortEntries(level.entries ?? [], sort)
+    // The ORDER is the caller's choice (the header's sort control).
+    const entries = entriesFor(dir)
     return (
       <>
         {head}
@@ -2102,11 +2118,7 @@ export function FileTree(props: {
             <Notice kind="warn" tone="inline">{loadError}</Notice>
           )}
           {archiveBusy && (
-            <Notice kind="loading" tone="inline" role="status">
-              {archiveProgress === null
-                ? t('loading')
-                : `${t('zipProgress', { done: archiveProgress.done, total: archiveProgress.total })} · ${archivePercent(archiveProgress)}%`}
-            </Notice>
+            <Notice kind="loading" tone="inline" role="status">{t('loading')}</Notice>
           )}
           <RootRow
             path={root}
