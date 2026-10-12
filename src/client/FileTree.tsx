@@ -745,6 +745,45 @@ export function FileTree(props: {
   }, [])
 
   /**
+   * Which in-flight request owns each `{}` placeholder in the level cache.
+   *
+   * The placeholder is the tree's "Loading…" state for a level, and only the
+   * call that wrote it may settle it. Without this bookkeeping a DROPPED answer
+   * (the generation guard in `loadLevels`) left the placeholder behind forever:
+   * every later load treats a cached level as loaded — the empty `{}` marker
+   * included — so the level was never re-requested and that subtree sat on its
+   * loading row for the rest of the mount. Reproduced locally 2026-10-12 (the
+   * drop path fires on a refresh tick, an exclude change and unmount), and the
+   * shape matches the same day's CI failure: the listing answers arrived,
+   * `names=[]`, and no row rendered even 5s later.
+   */
+  const pendingRef = useRef(new Map<string, number>())
+
+  /**
+   * Drop the `{}` placeholders `generation` still owns, so the levels they cover
+   * become retryable again. Levels that already carry a listing (or an error)
+   * are left alone — a dropped answer must not blank rows that are on screen.
+   * @returns the paths actually released (empty when nothing was left pending).
+   */
+  const releasePlaceholders = useCallback((generation: number, paths: readonly string[]): string[] => {
+    const released: string[] = []
+    let next: Record<string, LevelData> | null = null
+    for (const path of paths) {
+      if (pendingRef.current.get(path) !== generation) continue
+      pendingRef.current.delete(path)
+      const level = dataRef.current[path]
+      if (level === undefined || level.entries !== undefined || level.error !== undefined) continue
+      next = { ...(next ?? dataRef.current) }
+      delete next[path]
+      released.push(path)
+    }
+    if (next === null) return released
+    dataRef.current = next
+    setData(next)
+    return released
+  }, [])
+
+  /**
    * The exclude list by VALUE. The caller owns the array identity (the prefs
    * store hands out one stable reference per document), but the level cache,
    * the request payload and the reload effect all key on the CONTENT: a
@@ -795,7 +834,7 @@ export function FileTree(props: {
     // A FORCED re-list (a refresh tick) keeps the listing on screen until the
     // fresh one arrives: no blank frame, and a failed refresh degrades to the
     // previous listing plus a hint instead of an empty tree.
-    if (!force) for (const path of wanted) storeLevel(path, {})
+    if (!force) for (const path of wanted) { pendingRef.current.set(path, generation); storeLevel(path, {}) }
     // The host rows ONE `fs.trees` request at FS_TREES_MAX_PATHS and refuses a
     // larger one OUTRIGHT (`too many paths`), which used to blank the WHOLE
     // tree for a session whose persisted expansion set reached the cap. Split
@@ -808,6 +847,8 @@ export function FileTree(props: {
     }
     // The route takes no signal: the GENERATION counter is the staleness guard
     // (a refresh tick or an unmount bumps it, so a late answer is dropped).
+    // `retried` bounds the self-heal below to one extra request per call.
+    let retried = false
     type BatchOutcome =
       | { batch: string[]; ok: true; levels: FsLevel[] }
       | { batch: string[]; ok: false; message: string }
@@ -818,7 +859,20 @@ export function FileTree(props: {
         return { batch, ok: false, message: error instanceof Error ? error.message : String(error) }
       }
     })).then((settled) => {
-      if (generation !== generationRef.current) return
+      if (generation !== generationRef.current) {
+        // The DATA is stale and is dropped — but the `{}` placeholders this call
+        // wrote are not stale at all: publishing them away is what keeps a
+        // dropped answer from freezing the level on "Loading…" forever (see
+        // pendingRef). Release what this call still owns and ask once more, so
+        // the drop self-heals instead of waiting for another refresh tick.
+        const released = releasePlaceholders(generation, wanted)
+        if (released.length > 0 && !retried) {
+          retried = true
+          loadLevels(released)
+        }
+        return
+      }
+      for (const path of wanted) pendingRef.current.delete(path)
       setLoadError(null)
       let failure = ''
       let keptListing = false
@@ -847,7 +901,7 @@ export function FileTree(props: {
       // fresher. With nothing to keep, the per-level rows already say it.
       if (failure !== '') setLoadError(keptListing ? failure : null)
     })
-  }, [sessionId, cwd, excludeKey, storeLevel])
+  }, [sessionId, cwd, excludeKey, storeLevel, releasePlaceholders])
 
   /**
    * Re-list one directory in place (a watch notice, or the parent of a landed

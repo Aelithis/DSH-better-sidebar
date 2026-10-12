@@ -19,21 +19,49 @@ import { api } from '../src/client/api.ts'
 import { createBetterSidebarService, type FileViewerProps } from '../src/client/service.ts'
 import { allLeaves, createSidebarStore, type SidebarTab } from '../src/client/state.ts'
 
+/**
+ * Diagnostics bag for the render wait below: how many `fs.trees` answers the
+ * seam has delivered, and when. Kept on `globalThis` because a `vi.mock`
+ * factory is hoisted above this module's own bindings.
+ */
+const treeAnswers = (): { calls: number; landedAt: number[] } =>
+  ((globalThis as unknown as { __treeAnswers?: { calls: number; landedAt: number[] } }).__treeAnswers ??= { calls: 0, landedAt: [] })
+
+/**
+ * Test script for the tree seam, used by the dropped-answer case below:
+ * `slow` lists the 1-based call numbers that answer only after a beat (so a
+ * refresh tick can land while they are in flight) and `hang` those that never
+ * answer at all. On `globalThis` for the same hoisting reason as `treeAnswers`.
+ */
+const treeScript = (): { slow: number[]; hang: number[] } =>
+  ((globalThis as unknown as { __treeScript?: { slow: number[]; hang: number[] } }).__treeScript ??= { slow: [], hang: [] })
+
 // The tree mounts inside EditorHost in these scenarios, so the api seam must
 // answer without a host (the sibling FileTree specs mock it the same way).
 vi.mock('../src/client/api.ts', () => ({
   api: {
     // The tree lists its visible set in ONE batched call.
-    fsTrees: async (_scope: unknown, paths: readonly string[]) => ({
-      levels: paths.map(path => ({
-        path,
-        entries: [
-          { name: 'sub', path: '/tmp/sub', isDir: true },
-          { name: 'a.ts', path: '/tmp/a.ts', isDir: false },
-        ],
-        truncated: false,
-      })),
-    }),
+    fsTrees: async (_scope: unknown, paths: readonly string[]) => {
+      const answers = treeAnswers()
+      answers.calls += 1
+      // The call index must be read BEFORE any await: `calls` keeps moving.
+      const index = answers.calls
+      const script = treeScript()
+      if (script.slow.includes(index)) await new Promise(resolve => { setTimeout(resolve, 300) })
+      if (script.hang.includes(index)) await new Promise<never>(() => {})
+      const answer = {
+        levels: paths.map(path => ({
+          path,
+          entries: [
+            { name: 'sub', path: '/tmp/sub', isDir: true },
+            { name: 'a.ts', path: '/tmp/a.ts', isDir: false },
+          ],
+          truncated: false,
+        })),
+      }
+      answers.landedAt.push(Date.now())
+      return answer
+    },
     // The shared git-status store polls this; a non-repo answer keeps rows plain.
     gitStatus: async () => ({ isRepo: false, entries: [] }),
     archiveBuild: async () => ({ id: 'ar-1', entries: 1 }),
@@ -72,11 +100,24 @@ setupReactAct()
  *
  * This is still a CONDITION wait, not the "bigger fixed slice of time" the
  * note below warns against: it returns the moment the row renders, and a tree
- * that can never list it still fails the case — just after 10s instead of 1s.
- * 10s sits under the suite's 15s `testTimeout`, so a genuinely missing row
- * still fails on the ASSERTION rather than on the test clock.
+ * that can never list it still fails the case — just after the budget instead
+ * of after 1s.
+ *
+ * Two raises so far, both the same cause: the ubuntu `ci` lane runs the whole
+ * suite in parallel, and a worker can be starved for many seconds while the
+ * wall clock keeps moving.
+ *  - 1s → 10s: 2026-10-08, the lane failed at 1026ms with the tree still on
+ *    its loading row (the macrotask boundary below came out of that one).
+ *  - 10s → 20s: 2026-10-12, three separate runs burned the WHOLE 10s — the
+ *    assertion read `expected false to be true` at 10008/10025ms while this
+ *    file takes ~1s locally. Same class that day: `tests/fs-watch.spec.ts`
+ *    hit the SUITE clock (15s, a real `fs.watch` + 150ms debounce) in a local
+ *    run under heap pressure — i.e. the worker, not the wait, ran out of
+ *    runway. The suite's own clock is now 30s (`vitest.config.ts`).
+ * The affected `describe` raises its clock to 35s, so a genuinely missing row
+ * still fails on the ASSERTION, never on the test clock.
  */
-const RENDER_WAIT_MS = 10_000
+const RENDER_WAIT_MS = 20_000
 
 /**
  * Wait until the tree has rendered the row for `name` — the precondition of
@@ -100,11 +141,37 @@ async function waitForTreeRow(container: HTMLElement, name: string): Promise<voi
   // unchanged; this just stops the budget from ticking before the deferred
   // work has had any chance to run.
   await act(async () => { await new Promise(resolve => { setTimeout(resolve, 0) }) })
-  await vi.waitFor(() => {
-    const found = [...container.querySelectorAll('[class*="explorerName"]')]
-      .some(el => el.textContent === name)
-    expect(found).toBe(true)
-  }, { timeout: RENDER_WAIT_MS })
+  const names = (): string[] => [...container.querySelectorAll('[class*="explorerName"]')]
+    .map(el => el.textContent ?? '')
+  const startedAt = Date.now()
+  try {
+    await vi.waitFor(() => {
+      const found = [...container.querySelectorAll('[class*="explorerName"]')]
+        .some(el => el.textContent === name)
+      expect(found).toBe(true)
+    }, { timeout: RENDER_WAIT_MS })
+  } catch (error) {
+    // This failure cost several CI runs to understand once; leave the evidence
+    // behind so the next occurrence needs no probe branch.
+    const answers = treeAnswers()
+    const panel = container.querySelector('[class*="explorer"]')
+    console.log(`[editor-host] "${name}" did not render within ${RENDER_WAIT_MS}ms`
+      + ` | names=${JSON.stringify(names())}`
+      + ` | fsTrees calls=${answers.calls} landedAtMs=${JSON.stringify(answers.landedAt.map(at => at - startedAt))}`
+      + ` | text=${JSON.stringify((container.textContent ?? '').slice(0, 200))}`
+      + ` | panel=${panel === null ? 'ABSENT' : panel.outerHTML.slice(0, 900)}`)
+    // Separate "the worker was starved and the flush landed late" from "the row
+    // never renders at all" — the two need different fixes.
+    for (let i = 0; i < 5; i += 1) {
+      await act(async () => { await new Promise(resolve => { setTimeout(resolve, 1000) }) })
+      if (names().includes(name)) {
+        console.log(`[editor-host] …but it DID render ${(i + 1) * 1000}ms after the budget: the wait was starved, not broken`)
+        break
+      }
+      if (i === 4) console.log('[editor-host] …and it never rendered, +5s after the budget')
+    }
+    throw error
+  }
 }
 
 /** A store with the seeded editor-home tab (default prefs: separate mode;
@@ -586,7 +653,9 @@ describe('EditorHost (files window)', () => {
  * launch must reach the tree's error strip (console-only feedback was the
  * reported "no reaction").
  */
-describe('EditorHost native-tab context-menu actions', () => {
+// 35s clock: the tree wait above budgets 20s (and reports for 5s more when it
+// expires), so the ASSERTION stays the thing that fails, not the test clock.
+describe('EditorHost native-tab context-menu actions', { timeout: 35_000 }, () => {
   /** A service whose openTab calls are recorded (surface undefined = native). */
   function spyService(store: ReturnType<typeof createSidebarStore>): {
     service: ReturnType<typeof createBetterSidebarService>
@@ -707,6 +776,37 @@ describe('EditorHost native-tab context-menu actions', () => {
       // 3) The bottom workbench is untouched: the open went to the host.
       expect(tabCount(store)).toBe(before)
     } finally {
+      unmount()
+    }
+  })
+
+  it('a listing dropped by a refresh tick does not strand the level on "Loading…"', async () => {
+    // The tick arrives while the first listing is in flight, so that answer is
+    // stale and must be dropped — and the forced re-list the tick triggers is
+    // made to hang, so NOTHING else can settle the level. Before the fix the
+    // dropped answer left its `{}` placeholder behind and the level was never
+    // retried: the tree stayed on its loading row forever (this is the shape
+    // the ubuntu lane reported: answers delivered, `names=[]`, no row at all).
+    const script = treeScript()
+    script.slow = [1]
+    script.hang = [2]
+    const store = createSidebarStore()
+    const { service } = spyService(store)
+    service.registerTab({ id: 'editor', title: 'Editor', dedupeKey: (tab) => tab.path, component: () => null })
+    store.setSession('editor-home-session')
+    store.setPrefs({ ...store.getPrefs(), editorExplorer: false })
+    service.openTab({ type: 'editor', title: 'a.ts', path: '/tmp/a.ts', id: 'editor:/tmp/a.ts', meta: { treeOpen: true } })
+    const fileTab = (): SidebarTab =>
+      allLeaves(store.getSnapshot().state!.bottomSplits).flatMap(leaf => leaf.tabs)
+        .find(tab => tab.path === '/tmp/a.ts')!
+    const { container, unmount } = await mountHostWithTreeWithCwd(fakeCtx(service) as unknown as Context, store, fileTab)
+    try {
+      // The real trigger: TreePanel bumps its refresh tick on a window focus.
+      await act(async () => { window.dispatchEvent(new Event('focus')) })
+      await waitForTreeRow(container, 'a.ts')
+    } finally {
+      script.slow = []
+      script.hang = []
       unmount()
     }
   })
