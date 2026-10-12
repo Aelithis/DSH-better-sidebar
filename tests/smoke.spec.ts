@@ -1189,8 +1189,9 @@ describe('session cwd resolution over the API route', () => {
       // ONE gate for the whole request: a per-level gate would let each level's
       // probe pool run at full width, which is the runaway this bounds.
       expect(probeGateCalls.length - before).toBe(1)
-      // The shared budget changed nothing about what the levels report.
-      const levels = (answer.value as {
+      // The shared budget changed nothing about what the levels report. (The
+      // local `invoke` types `value` as its cwd probe, hence the double cast.)
+      const levels = (answer.value as unknown as {
         levels: { path: string; entries: { compact?: boolean }[] }[]
       }).levels
       expect(levels.find(entry => entry.path === level)?.entries.filter(row => row.compact === true)).toHaveLength(3)
