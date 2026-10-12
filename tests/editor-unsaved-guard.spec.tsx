@@ -464,6 +464,62 @@ describe('tree rename/delete reconciliation', () => {
     expect(records.has('native-scope', 'tab4')).toBe(false)
     expect(records.has('native-scope', 'tab5')).toBe(true)
   })
+
+  /** The file paths one session's bottom workbench has open (tree order). */
+  const bottomPaths = (store: SidebarStore, sessionId: string): string[] => {
+    const state = store.getSessionStates().get(sessionId)
+    if (state === undefined) return []
+    return allLeaves(state.bottomSplits)
+      .flatMap(leaf => leaf.tabs)
+      .flatMap(tab => (tab.path === undefined ? [] : [tab.path]))
+  }
+
+  it('retargets a BACKGROUND session\'s bottom-workbench page (every cached session is walked)', () => {
+    // The bottom workbench is per session, and a file can live there on purpose
+    // (`target: 'bottom'`) or in a layout persisted back when files landed in
+    // the workbench. The reconciliation used to read the ACTIVE session's state
+    // alone, so a background conversation's page kept the old path and its next
+    // save recreated the renamed-away file — the same data problem, one
+    // conversation over.
+    const { store, service, context } = mountNativeSession()
+    service.openTab(
+      { type: 'editor', title: 'a.ts', path: '/ws/a.ts', target: 'bottom' },
+      { sessionId: 'other-scope' },
+    )
+    expect(bottomPaths(store, 'other-scope')).toEqual(['/ws/a.ts'])
+    expect(store.getSnapshot().sessionId).toBe('native-scope')
+
+    retargetPathTabs(context, store, '/ws/a.ts', '/ws/b.ts')
+
+    // The page follows the file in ITS session…
+    expect(bottomPaths(store, 'other-scope')).toEqual(['/ws/b.ts'])
+    // …while the session on screen is neither written to nor re-published: a
+    // targeted write never touches the snapshot the shell renders from.
+    expect(store.getSnapshot().sessionId).toBe('native-scope')
+    expect(bottomPaths(store, 'native-scope')).toEqual([])
+  })
+
+  it('closes a BACKGROUND session\'s page on delete, asking about ITS draft', () => {
+    const confirmSpy = vi.fn().mockReturnValue(true)
+    vi.stubGlobal('confirm', confirmSpy)
+    const { store, service, context } = mountNativeSession()
+    service.openTab(
+      { type: 'editor', title: 'a.ts', path: '/ws/a.ts', target: 'bottom' },
+      { sessionId: 'other-scope' },
+    )
+    const row = allLeaves(store.getSessionStates().get('other-scope')!.bottomSplits)
+      .flatMap(leaf => leaf.tabs).find(tab => tab.path === '/ws/a.ts')!
+    // The editor behind that page registered its draft in ITS session, so the
+    // question has to be asked there — read against the active session the
+    // record would not be found and the tab would close unprompted.
+    setEditorDirty(row.id, true, 'other-scope', '/ws/a.ts')
+
+    closePathTabs(context, store, '/ws/a.ts', 'discard?')
+
+    expect(confirmSpy).toHaveBeenCalledWith('discard?')
+    expect(bottomPaths(store, 'other-scope')).toEqual([])
+    expect(store.getSnapshot().sessionId).toBe('native-scope')
+  })
 })
 
 describe('EditorHost dirty registration', () => {
