@@ -4,6 +4,9 @@
 
 ### Unreleased
 
+- 🖥️ **底部工作台可以同时开多个终端 Tab（[#926](https://github.com/omdsh-dev/DSH-better-sidebar/pull/926)）**：`terminal-bottom` 去掉 `single: true` 改为提供 `createTab`——每开一个 mint 一个 `terminal-bottom:<uuid>` 的 id，并在 `meta.terminalInstance` 里记下自己的实例；宿主侧的出现键与内容身份都带上它（`dsh-better-sidebar:terminal-bottom:<instance>[#run]`），于是两个 tab **各自一个 shell**、刷新后各回各的进程，关掉一个只结束它自己那条。**旧 tab（`meta` 里没有 `terminalInstance`）读出来仍是 `undefined`，身份与改造前逐字节相同**，恢复绑定不丢。**维护者收尾**：`nextTerminalMeta()` 必须把实例一起带过去——`patchTab` 是**整份替换 `meta`**，只回 `terminalRun` 会让「新建终端」之后的 tab 掉回旧命名空间，于是两个都换过进程的 tab 撞在同一个 `…terminal-bottom#1` 上、被宿主（按 `(sessionId, key)` 记忆一个 model）发成**同一个 shell**。设计文档 `docs/plans/2026-10-05-bottom-terminal-tab.md` 的「一个终端」限制随之标注放开。
+  - 🧪 测试：`tests/terminal-tab.spec.tsx` +3（实例随「新建终端」保留、旧 tab 不长出实例；两个实例各自 `#1` 不撞、且都不等于旧的裸 `#1`；两个实例渲染出两个宿主终端与两条不同的 `(session,key,contentId)`），描述符关闭钩子补一条「带实例的 tab 只结束自己的终端」。判别性：把 `nextTerminalMeta` 退回只回 `terminalRun`，前两条当场红。
+
 - 🛡 **三处静默数据问题**（[#898](https://github.com/omdsh-dev/DSH-better-sidebar/issues/898) / [#899](https://github.com/omdsh-dev/DSH-better-sidebar/issues/899) / [#900](https://github.com/omdsh-dev/DSH-better-sidebar/issues/900)）：① 编辑器草稿守卫的记账键从**裸 tab id** 改成 **`会话::tab id`**——原生右栏每个会话的 id 都从 `tab1` 重新计数、底部工作台对同一路径在各会话复用 `editor:<path>`，两套身份原先挤在同一个键上，**另一个会话打开编辑器就会把本会话的草稿记录一并删掉**（刷新时静默丢失）；② 面包屑折叠行（`a/b/c` 压成一行）的重命名此前提交的是**链头**目录、与预填名不一致——不改字直接回车等于把父目录改名，现在落到链尾；③ 无 BOM 的 16 位小端数据（低幅采样表 / 未压缩音频数据段这类）不再被判成 UTF-16 文本打开、保存后整份改写（奇数长度还会丢尾字节）：新的文本闸门要求 ≥90% 的单元是合法文本单元。同批还带了 dev 新增代码的一轮去重（内部导出 `runGitRaw` / `bottomTerminalKey` / `formatModelRoute` / `dirtyCountForSession` 收敛，仓内调用点同批改完）。（贡献者 PR [#901](https://github.com/omdsh-dev/DSH-better-sidebar/pull/901) @UNscientific-9）
   - 🧪 测试：`tests/editor-unsaved-guard.spec.tsx`（跨会话草稿：第二个会话挂同一个原生 id，既不能清掉、也不能确认掉第一个会话的草稿）、`tests/file-tree-compact-fold.spec.tsx`（折叠行重命名断言落到链尾：`/tmp/a/b/c` → `renamed`）、`tests/text-encoding.spec.ts`（uint16LE 采样表 / WAV `data` 段 / 奇数长度判二进制，真 UTF-16LE/BE 仍是文本）。
 

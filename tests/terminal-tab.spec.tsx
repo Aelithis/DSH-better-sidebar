@@ -35,7 +35,7 @@ import { allLeaves, createSidebarStore, openTabInBottomPane } from '../src/clien
 import { createBetterSidebarService, type TabDescriptor } from '../src/client/service.ts'
 import { builtinTabs } from '../src/client/builtins/tabs.tsx'
 import {
-  bottomTerminalContentId, nextTerminalMeta, terminalRunOf,
+  bottomTerminalContentId, nextTerminalMeta, terminalInstanceOf, terminalRunOf,
   type HostTerminalView, type HostTerminalViewState, type WebTerminalsFace,
 } from '../src/client/terminal-client.ts'
 import { TerminalBottomView } from '../src/client/TerminalView.tsx'
@@ -267,15 +267,19 @@ afterEach(() => {
 })
 
 describe('terminal-bottom: carrier surface', () => {
-  it('registers as a bottom-only, single-instance, service-gated built-in tab', () => {
+  it('registers as a bottom-only, multi-instance, service-gated built-in tab', () => {
     const tabs = builtinTabs(ctxWith({ webTerminals: new FakeTerminals() }))
     const terminal = tabs.find(tab => tab.id === 'terminal-bottom')
     expect(terminal).toBeDefined()
     expect(terminal?.bottomOnly).toBe(true)
-    expect(terminal?.single).toBe(true)
+    expect(terminal?.single).not.toBe(true)
     expect(terminal?.hidden).not.toBe(true)
-    // No createTab: the id safety net keeps ONE bottom terminal per session.
-    expect(terminal?.createTab).toBeUndefined()
+    // createTab mints a FRESH tab per open: the old id safety net used to
+    // collapse them into one, which is exactly what this follow-up removes.
+    expect(typeof terminal?.createTab).toBe('function')
+    const first = terminal?.createTab?.({} as never)
+    const second = terminal?.createTab?.({} as never)
+    expect(first?.tab.id).not.toBe(second?.tab.id)
   })
 
   it('the + menu row is disabled when the host provides no terminal service', () => {
@@ -309,7 +313,11 @@ describe('terminal-bottom: carrier surface', () => {
     const state = store.getSnapshot().state!
     expect(state.bottomOpen).toBe(true)
     const tabs = state.bottomSplits.kind === 'leaf' ? state.bottomSplits.tabs : []
-    expect(tabs.map(tab => tab.id)).toEqual(['terminal-bottom'])
+    // Multi-instance since the #774 follow-up: the id is minted per open,
+    // so pin the TYPE and that exactly one tab landed.
+    expect(tabs).toHaveLength(1)
+    expect(tabs[0]?.type).toBe('terminal-bottom')
+    expect(tabs[0]?.id.startsWith('terminal-bottom:')).toBe(true)
   })
 })
 
@@ -598,6 +606,36 @@ describe('terminal-bottom: identity helpers', () => {
     expect(terminalRunOf(bottomTab([1, 2]))).toBe(0)
     expect(nextTerminalMeta(bottomTab({ terminalRun: 3 }))).toEqual({ terminalRun: 4 })
   })
+
+  it('carries the tab instance through a 「新建终端」 bump, and never invents one', () => {
+    // `patchTab` REPLACES `meta`, so the bump has to restate the instance:
+    // dropping it would send the tab to the legacy identity shared by every
+    // tab that bumped its run.
+    const instanced = bottomTab({ terminalInstance: 'a', terminalRun: 0 })
+    const bumped = nextTerminalMeta(instanced)
+    expect(bumped).toEqual({ terminalInstance: 'a', terminalRun: 1 })
+    expect(terminalInstanceOf({ meta: bumped })).toBe('a')
+    expect(bottomTerminalContentId(terminalRunOf({ meta: bumped }), terminalInstanceOf({ meta: bumped })))
+      .toBe('dsh-better-sidebar:terminal-bottom:a#1')
+    // A tab persisted BEFORE the multi-terminal follow-up has no instance and
+    // must not grow one — its identity stays byte-identical.
+    const legacy = nextTerminalMeta(bottomTab({ terminalRun: 3 }))
+    expect(legacy).toEqual({ terminalRun: 4 })
+    expect(terminalInstanceOf({ meta: legacy })).toBeUndefined()
+  })
+
+  it('keeps two bumped instances on different identities — no shared shell', () => {
+    const bumpedId = (instance: string): string => {
+      const meta = nextTerminalMeta(bottomTab({ terminalInstance: instance, terminalRun: 0 }))
+      return bottomTerminalContentId(terminalRunOf({ meta }), terminalInstanceOf({ meta }))
+    }
+    expect(bumpedId('a')).not.toBe(bumpedId('b'))
+    // Both bumped once, so without the instance they would collide here:
+    expect(bumpedId('a')).toBe('dsh-better-sidebar:terminal-bottom:a#1')
+    expect(bumpedId('b')).toBe('dsh-better-sidebar:terminal-bottom:b#1')
+    // The bare `#1` stays reserved for legacy tabs.
+    expect(bumpedId('a')).not.toBe(bottomTerminalContentId(1))
+  })
 })
 
 describe('terminal-bottom: the descriptor close hook', () => {
@@ -614,5 +652,33 @@ describe('terminal-bottom: the descriptor close hook', () => {
     expect(terminals.closeCalls).toEqual([
       { sessionId: 's1', key: bottomTerminalContentId(2), contentId: bottomTerminalContentId(2) },
     ])
+    // An instanced tab ends ITS OWN terminal, not the legacy one.
+    descriptor?.onClose?.(bottomTab({ terminalInstance: 'a', terminalRun: 1 }), scope)
+    expect(terminals.closeCalls.at(-1)).toEqual({
+      sessionId: 's1',
+      key: bottomTerminalContentId(1, 'a'),
+      contentId: bottomTerminalContentId(1, 'a'),
+    })
+  })
+})
+
+describe('terminal-bottom: several terminals in one session (#774 follow-up)', () => {
+  it('gives two instances two host terminals — the instance is the key', async () => {
+    const terminals = new FakeTerminals()
+    const { ctx } = viewSetup(terminals)
+    const first = render(ctx, { ...bottomTab({ terminalInstance: 'a' }), id: 'terminal-bottom:a' })
+    await flush()
+    const second = render(ctx, { ...bottomTab({ terminalInstance: 'b' }), id: 'terminal-bottom:b' })
+    await flush()
+    const bounds = [...terminals.views.values()].map(view => view.id)
+    expect(bounds).toHaveLength(2)
+    expect(new Set(bounds).size).toBe(2)
+    // Both were asked for their own (session, key, contentId) triple.
+    expect(terminals.viewCalls.map(call => call.contentId)).toEqual([
+      bottomTerminalContentId(0, 'a'),
+      bottomTerminalContentId(0, 'b'),
+    ])
+    first.unmount()
+    second.unmount()
   })
 })
