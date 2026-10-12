@@ -36,6 +36,11 @@ const OPTIONS = {
 };
 const COLORS = ['BLUE', 'GREEN', 'YELLOW', 'ORANGE', 'RED', 'PINK', 'PURPLE', 'GRAY'];
 const promoted = JSON.parse(fs.readFileSync(path.join(HERE, '..', 'references', 'promoted.json'), 'utf8')).R1 ?? [];
+// Issues whose fix is already on `dev` but not in a release: no development is
+// left, so their Status is pinned to Done (the queue state for everything else
+// is derived from labels + open PRs). Kept in a file so the value survives a
+// re-run — a manual `Status=Done` would be recomputed away by this very script.
+const fixedPendingRelease = JSON.parse(fs.readFileSync(path.join(HERE, '..', 'references', 'fixed-pending-release.json'), 'utf8')).done ?? [];
 
 const gql = (query) => {
   const out = execFileSync('gh', ['api', 'graphql', '-f', 'query=' + query], { encoding: 'utf8', maxBuffer: 1 << 28 });
@@ -127,7 +132,9 @@ for (const i of openIssues) {
   desired.set(`issue:${i.number}`, {
     prio,
     batch,
-    status: !prio ? STATUS.todo : hasOpenPR.has(i.number) ? STATUS.review : STATUS.dev,
+    status: fixedPendingRelease.includes(i.number)
+      ? STATUS.done
+      : !prio ? STATUS.todo : hasOpenPR.has(i.number) ? STATUS.review : STATUS.dev,
   });
 }
 for (const p of openPRs) {
