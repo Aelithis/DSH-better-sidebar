@@ -3,7 +3,8 @@
  * catalog walking, workflow run attachment + member re-parenting, team
  * enrichment, and the per-parent settled-leaf fold.
  */
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { attachLocale } from '../src/client/locales.ts'
 import {
   buildTasksModel,
   tasksEdges,
@@ -510,6 +511,10 @@ describe('buildTasksModel: duplicate workflow members', () => {
 })
 
 describe('shared task status rule (taskBlocked / taskStatusLabel / taskTone)', () => {
+  // These assertions use English, regardless of the runner's browser/OS locale.
+  beforeEach(() => { attachLocale({ getSnapshot: () => ({ active: 'en' }) }) })
+  afterEach(() => { attachLocale(undefined) })
+
   const facts = (status: 'pending' | 'in_progress' | 'completed', ready: boolean) => ({ status, ready })
 
   it('calls a queued task with an open blocker blocked', () => {

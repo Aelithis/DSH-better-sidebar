@@ -7,7 +7,7 @@
  * Every lane consumes the same contract:
  * - `PAGE_URL` / `pageUrl({...})` for page.goto (the token URL performs the
  *   browser's token→cookie exchange),
- * - `sidebarApi(path)` for the plugin's own public routes,
+ * - `sidebarApi(path)` for the plugin's own authenticated routes,
  * - `createHostApi()` for an APIRequestContext carrying the auth cookie,
  * - `hostRpc(api, 'workspace.create', {...})` for the host's unary RPC.
  */
@@ -36,7 +36,7 @@ export function pageUrl(extra: Record<string, string>): string {
   return pageUrlWith(RAW_URL, extra)
 }
 
-/** Absolute URL for the plugin's own (public, unauthenticated) API route. */
+/** Absolute URL for the plugin API; native Connection admission requires authentication. */
 export function sidebarApi(path: string): string {
   return `${ORIGIN}/sidebar/api/${path}`
 }

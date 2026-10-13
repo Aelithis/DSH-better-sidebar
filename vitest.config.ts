@@ -46,6 +46,7 @@ export default defineConfig({
     // node_modules/dist/etc. excludes must be restated here.
     exclude: [
       'tests/e2e/**',
+      'soruce/vscode/**', // Pinned upstream reference, not this plugin's tests.
       // Local dev worktrees (pnpm/DSH-style task branches) may carry stale
       // code against this checkout's node_modules — never collect them.
       '**/.worktrees/**',

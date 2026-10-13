@@ -21,6 +21,7 @@ export default tseslint.config(
       'test-results/',
       'node_modules/',
       '.worktrees/',
+      'soruce/vscode/', // Pinned upstream reference checkout, not plugin source.
     ],
   },
 

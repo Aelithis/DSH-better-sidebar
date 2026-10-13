@@ -17,7 +17,7 @@
 import { appendFileSync, existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
 import { PAGE_URL, createHostApi, hostRpc, sendFirstMessage } from './host'
 
@@ -344,27 +344,27 @@ test('the explorer keeps its state across a tab switch and a conversation round 
   await expect(page.locator(GUIDE)).toBeVisible({ timeout: 30_000 })
   await page.locator('[data-sidebar-right-panel]:visible [data-sidebar-right-guide-entry="git"]').click()
   const commitBox = page.locator('[data-sidebar-right-panel]:visible')
-    .getByRole('textbox', { name: /Commit message/i }).first()
+    .locator('[data-message-box] textarea').first()
   await expect(commitBox, 'the changes tab must render its commit box').toBeVisible({ timeout: 30_000 })
   await commitBox.fill(COMMIT_MSG)
   await expect(commitBox).toHaveValue(COMMIT_MSG)
 
   // ── A CHOSEN WORKTREE (the third painted-state loss #712 covered) ─────────
   // The lane's linked checkout is the non-auto choice: picking it must survive
-  // the round trip, not be re-derived from the inventory. Paths are compared
-  // through `realpathSync` because macOS /var is a symlink to /private/var and
-  // git reports the resolved form.
+  // the round trip, not be re-derived from the inventory. Match the menu's
+  // branch/path-leaf label; `realpathSync` follows Git's canonical path.
   const linkedPath = realpathSync(join(WORKSPACE_PATH, 'linked-checkout'))
-  const worktreeSelect = page.locator('[data-sidebar-right-panel]:visible select')
-    .filter({ has: page.locator('option') }).first()
-  await expect(worktreeSelect, 'the changes tab must offer its worktree selector').toBeVisible({ timeout: 30_000 })
-  const linkedOption = await worktreeSelect.locator('option').evaluateAll(
-    (options, path) => options.some(option => (option as HTMLOptionElement).value === path),
-    linkedPath,
-  )
-  expect(linkedOption, 'the linked worktree must appear in the selector').toBe(true)
-  await worktreeSelect.selectOption(linkedPath)
-  await expect(worktreeSelect).toHaveValue(linkedPath)
+  await page.locator('[data-sidebar-right-panel]:visible').getByRole('button', { name: 'More Actions', exact: true }).click()
+  await page.getByRole('menuitem', { name: 'Worktree', exact: true }).click()
+  const linkedOption = page.getByRole('menuitem', { name: `lane-linked · ${basename(linkedPath)}` })
+  await expect(linkedOption, 'the linked worktree must appear in the menu').toBeVisible({ timeout: 30_000 })
+  await linkedOption.click()
+  await expect(page.locator('[data-sidebar-right-panel]:visible [data-git-footer]'), 'the linked checkout must be selected')
+    .toContainText('lane-linked', { timeout: 30_000 })
+  // Drafts are checkout-scoped: the primary draft must not leak into linked.
+  await expect(commitBox).toHaveValue('')
+  await commitBox.fill(COMMIT_MSG)
+  await expect(commitBox).toHaveValue(COMMIT_MSG)
 
   // Back to the Files window and RE-BUILD the scroll offset: opening the file
   // swapped this tab's content, so the tree remounted at the top (by design,
@@ -414,16 +414,16 @@ test('the explorer keeps its state across a tab switch and a conversation round 
   await expect(changesTab, 'the changes tab survives the round trip').toHaveCount(1, { timeout: 30_000 })
   await changesTab.first().click()
   const backCommitBox = page.locator('[data-sidebar-right-panel]:visible')
-    .getByRole('textbox', { name: /Commit message/i }).first()
+    .locator('[data-message-box] textarea').first()
   await expect(backCommitBox, 'the changes tab still renders its commit box').toBeVisible({ timeout: 30_000 })
   await expect(
     backCommitBox,
     'an unsaved commit message survives the conversation round trip',
   ).toHaveValue(COMMIT_MSG)
   await expect(
-    page.locator('[data-sidebar-right-panel]:visible select').first(),
+    page.locator('[data-sidebar-right-panel]:visible [data-git-footer]'),
     'the chosen worktree survives the conversation round trip',
-  ).toHaveValue(linkedPath)
+  ).toContainText('lane-linked', { timeout: 30_000 })
   // And the tree's own tab is still there too.
   await expect(
     page.locator('[data-sidebar-right-panel]:visible [role="tab"]').filter({ hasText: /Files|文件/ }),
