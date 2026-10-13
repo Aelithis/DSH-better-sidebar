@@ -52,6 +52,27 @@ it('orders distinct conflict/index/worktree groups, folds independently, and kee
     expect([...container.querySelectorAll('[data-group] > header [data-count], [data-group] > div:first-child [data-count]')].map(el => el.textContent)).toEqual(['1', '1', '2'])
     expect(container.querySelector('[data-group="staged"] [data-path="src/partial.ts"] [data-tone]')!.textContent).toBe('M')
     expect(container.querySelector('[data-group="unstaged"] [data-path="src/partial.ts"] [data-tone]')!.textContent).toBe('D')
+    const group = (name: string): HTMLElement => container.querySelector<HTMLElement>(`[data-group="${name}"]`)!
+    const disclosure = (name: string): HTMLButtonElement => group(name).querySelector<HTMLButtonElement>(':scope > div:first-child > button[aria-expanded]')!
+    for (const [name, count] of [['merge', '1'], ['staged', '1'], ['unstaged', '2']] as const) {
+      expect(group(name).firstElementChild!.lastElementChild!.getAttribute('data-count')).toBe(count)
+      expect(disclosure(name).getAttribute('aria-label')).toContain(count)
+    }
+    await click(disclosure('staged'))
+    expect(disclosure('staged').getAttribute('aria-expanded')).toBe('false')
+    expect(group('staged').querySelector('[data-path]')).toBeNull()
+    expect(group('staged').firstElementChild!.lastElementChild!.getAttribute('data-count')).toBe('1')
+    expect(group('unstaged').querySelector('[data-path="src/partial.ts"]')).not.toBeNull()
+    await click(disclosure('unstaged'))
+    expect(disclosure('unstaged').getAttribute('aria-expanded')).toBe('false')
+    expect(group('unstaged').querySelector('[data-path]')).toBeNull()
+    expect(group('merge').querySelector('[data-path="conflict.ts"]')).not.toBeNull()
+    await click(disclosure('staged'))
+    expect(disclosure('staged').getAttribute('aria-expanded')).toBe('true')
+    expect(group('staged').querySelector('[data-path="src/partial.ts"]')).not.toBeNull()
+    expect(disclosure('unstaged').getAttribute('aria-expanded')).toBe('false')
+    await click(disclosure('unstaged'))
+    expect(disclosure('unstaged').getAttribute('aria-expanded')).toBe('true')
     const footer = container.querySelector('[data-git-footer]')!
     expect(footer.textContent).toContain('main*+!')
     expect(container.querySelector('[data-git-scroll]')!.contains(footer)).toBe(false)
@@ -69,6 +90,75 @@ it('orders distinct conflict/index/worktree groups, folds independently, and kee
     await click(container.querySelector<HTMLButtonElement>(`[data-group="unstaged"] button[aria-label="${t('stageAll')}"]`)!)
     expect(stage.mock.calls.map(call => call[1])).toEqual(['src/partial.ts', 'new.ts'])
     expect(changes.getAttribute('aria-expanded')).toBe('true')
+    expect(disclosure('unstaged').getAttribute('aria-expanded')).toBe('true')
+    expect(group('unstaged').querySelector('[data-path="src/partial.ts"]')).not.toBeNull()
+  } finally { view.unmount() }
+})
+
+it('keeps directory/all actions inside their group, including Merge directory folding', async () => {
+  const snapshot = { ...tracked(), entries: [
+    { path: 'src/conflict.ts', xy: 'UU' }, { path: 'src/partial.ts', xy: 'MM' }, { path: 'new.ts', xy: '??' },
+  ] }
+  const stage = vi.spyOn(api, 'gitStage').mockResolvedValue({ ok: true })
+  const unstage = vi.spyOn(api, 'gitUnstage').mockResolvedValue({ ok: true })
+  const view = await mount(() => snapshot)
+  const group = (name: string): HTMLElement => view.container.querySelector<HTMLElement>(`[data-group="${name}"]`)!
+  const dir = (name: string): HTMLButtonElement => group(name).querySelector<HTMLButtonElement>('[data-dir="src"]')!
+  const dirAction = (name: string): HTMLButtonElement => dir(name).parentElement!.querySelector<HTMLButtonElement>(`button[aria-label="${t('stageAll')}"]`)!
+  try {
+    const rows = [...view.container.querySelectorAll('[data-row]')]
+    expect(rows).toHaveLength(7)
+    for (const directory of view.container.querySelectorAll('[data-dir]')) expect(directory.closest('[data-row]')!.querySelector('[data-count]')).toBeNull()
+    for (const row of rows) {
+      const action = row.querySelector<HTMLButtonElement>(':scope > button[aria-label]')!
+      expect(row.lastElementChild).toBe(action)
+      expect(action.querySelector('svg')!.getAttribute('width')).toBe('12')
+      expect(action.querySelector('svg')!.getAttribute('height')).toBe('12')
+      expect(action.querySelector('svg path')!.getAttribute('d')).toBe('M2 8H14')
+    }
+    for (const name of ['merge', 'staged', 'unstaged']) {
+      const headerAction = group(name).firstElementChild!.querySelector<HTMLButtonElement>(`button[aria-label="${t(name === 'staged' ? 'unstageAll' : 'stageAll')}"]`)!
+      expect(headerAction.querySelector('svg')!.getAttribute('width')).toBe('12')
+      expect(headerAction.querySelector('svg')!.getAttribute('height')).toBe('12')
+      expect([...headerAction.querySelectorAll('svg path')].map(path => path.getAttribute('d')))
+        .toEqual(name === 'staged' ? ['M2 8H14'] : ['M8 2V14', 'M2 8H14'])
+    }
+    await click(dir('merge'))
+    expect(dir('merge').getAttribute('aria-expanded')).toBe('false')
+    expect(group('merge').querySelector('[data-path="src/conflict.ts"]')).toBeNull()
+    expect(group('unstaged').querySelector('[data-path="src/partial.ts"]')).not.toBeNull()
+    await click(dirAction('unstaged'))
+    expect(stage.mock.calls.map(call => call[1])).toEqual(['src/partial.ts'])
+    expect(dir('unstaged').getAttribute('aria-expanded')).toBe('true')
+    expect(group('unstaged').querySelector('[data-path="src/partial.ts"]')).not.toBeNull()
+    await click(dirAction('merge'))
+    expect(stage.mock.calls.map(call => call[1])).toEqual(['src/partial.ts', 'src/conflict.ts'])
+    expect(dir('merge').getAttribute('aria-expanded')).toBe('false')
+    expect(group('merge').querySelector('[data-path="src/conflict.ts"]')).toBeNull()
+    await click(group('staged').querySelector<HTMLButtonElement>(`button[aria-label="${t('unstageAll')}"]`)!)
+    expect(unstage.mock.calls.map(call => call[1])).toEqual(['src/partial.ts'])
+    expect(group('staged').querySelector('button[aria-expanded]')!.getAttribute('aria-expanded')).toBe('true')
+    expect(dir('staged').getAttribute('aria-expanded')).toBe('true')
+    expect(group('staged').querySelector('[data-path="src/partial.ts"]')).not.toBeNull()
+    await click(group('staged').querySelector<HTMLButtonElement>(`[data-row="src/partial.ts"] > button[aria-label="${t('unstage')}"]`)!)
+    expect(unstage.mock.calls.map(call => call[1])).toEqual(['src/partial.ts', 'src/partial.ts'])
+    expect(dir('staged').getAttribute('aria-expanded')).toBe('true')
+    expect(group('staged').querySelector('button[aria-expanded]')!.getAttribute('aria-expanded')).toBe('true')
+  } finally { view.unmount() }
+})
+
+it('does not erase a newer draft when an old commit finishes after a scope round trip', async () => {
+  let done!: (value: { ok: true }) => void
+  vi.spyOn(api, 'gitCommit').mockReturnValueOnce(new Promise(resolve => { done = resolve }))
+  const view = await mount(() => tracked())
+  try {
+    await write(input(view.container), 'old A')
+    await enter(input(view.container))
+    await view.switchTo('scm-B')
+    await view.switchTo('scm-A')
+    await write(input(view.container), 'new A')
+    await act(async () => { done({ ok: true }); await Promise.resolve() })
+    expect(input(view.container).value).toBe('new A')
   } finally { view.unmount() }
 })
 

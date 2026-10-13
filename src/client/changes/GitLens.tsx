@@ -24,7 +24,7 @@ import { isZh, t } from '../locales.ts'
 import { GitGraph } from './GitGraph.tsx'
 import type { SidebarDiffRef, SidebarStore } from '../state.ts'
 import {
-  ConfirmDialog, IconButton, Notice, SectionHeader, StatusBadge, invalidateGitStatus, statusOfXY,
+  ConfirmDialog, IconButton, Notice, StatusBadge, invalidateGitStatus, statusOfXY,
   useGitStatus, type GitFileStatus, type GitTone, type StatusTone,
 } from '../ui/index.ts'
 import { buildChangeTree, sumLineCounts, type ChangeDir, type ChangeFile, type ChangeNode } from './change-tree.ts'
@@ -93,15 +93,18 @@ const LOG_BATCH = 20
  *  within ~30s, without a second git process per status tick. */
 const WORKTREE_POLL_MS = 30_000
 
-/** Commit-box growth contract: one line is 18px with 6px of padding above and
- *  below (mirrored by `changes.module.css`), and it scrolls past six lines. */
-const COMMIT_BOX_LINE_HEIGHT = 18
-const COMMIT_BOX_PADDING_Y = 6
+/** Desktop's official Input typography, with a six-line SCM cap. */
+const COMMIT_BOX_LINE_HEIGHT = 22
 const COMMIT_BOX_MAX_ROWS = 6
 
 /** A stable empty entry list: the tree memo must not rebuild on every render
  *  just because `snapshot?.entries ?? []` minted a new array. */
 const NO_ENTRIES: readonly GitStatusEntry[] = []
+
+// The horizontal half of the host's Plus artwork (no public Minus icon).
+const MINUS_ICON = <svg width={12} height={12} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+  <path d="M2 8H14" stroke="currentColor" strokeWidth={1} />
+</svg>
 
 /**
  * A CONTENT key for one status answer. The shared store mints a brand-new
@@ -176,6 +179,7 @@ function worktreeRefOf(
  *  specs use — an idle poll must not resolve a single icon. */
 const FileRow = memo(function FileRow(props: {
   row: ChangeFile
+  depth: number
   glyph: (path: string) => ReactNode
   staged: boolean
   busy: boolean
@@ -187,7 +191,7 @@ const FileRow = memo(function FileRow(props: {
   const { row: node, staged, busy, selected } = props
   const action = staged ? t('unstage') : t('stage')
   return (
-    <div className={css.row} data-row={node.path} data-selected={selected ? 'true' : undefined}>
+    <div className={css.row} style={{ paddingLeft: props.depth * 12 + 8 }} data-row={node.path} data-selected={selected ? 'true' : undefined}>
       <button
         type="button"
         className={css.rowMain}
@@ -209,7 +213,7 @@ const FileRow = memo(function FileRow(props: {
         className={css.rowAction}
         disabled={busy}
         label={action}
-        icon={staged ? <IconTrashOutlineRegular size={14} /> : <IconPlusOutlineRegular size={14} />}
+        icon={MINUS_ICON}
         onClick={() => { props.onToggleStage(node.path, staged) }}
       />
     </div>
@@ -219,24 +223,25 @@ const FileRow = memo(function FileRow(props: {
 /** One directory row: the disclosure chevron + folder artwork + the label
  *  (a compressed chain reads as one 'a/b/c' line) + how much changed below,
  *  plus the SAME trailing action a file row carries — applied to the whole
- *  subtree (`git add -A -- <dir>` / `git reset -q -- <dir>`, both of which
- *  take a directory pathspec). The action is a sibling of the disclosure
- *  button, so a click can never fold the row; it stops propagation anyway so
+ *  subtree (only this group's paths when conflicts exist). The action is a
+ *  sibling of the disclosure button, so a click can never fold the row; it stops propagation anyway so
  *  the intent survives a future nesting change. Memoized like {@link FileRow}. */
 const DirRow = memo(function DirRow(props: {
   row: ChangeDir
+  depth: number
   folderGlyph: (path: string, open: boolean) => ReactNode
   staged: boolean
   open: boolean
   busy: boolean
+  merge: boolean
   onToggle: (key: string) => void
-  onToggleStage: (path: string, staged: boolean) => void
+  onToggleStage: (path: string, staged: boolean, merge?: boolean) => void
 }): ReactNode {
-  const { row: node, staged, open, busy } = props
-  const key = `${staged ? 's' : 'u'}:${node.path}`
+  const { row: node, staged, open, busy, merge } = props
+  const key = `${merge ? 'm' : staged ? 's' : 'u'}:${node.path}`
   const action = staged ? t('unstageAll') : t('stageAll')
   return (
-    <div className={css.row} data-row={node.path}>
+    <div className={css.row} style={{ paddingLeft: props.depth * 12 + 8 }} data-row={node.path}>
       <button
         type="button"
         className={css.dirRow}
@@ -250,17 +255,16 @@ const DirRow = memo(function DirRow(props: {
         </span>
         <span className={css.rowIcon} aria-hidden="true">{props.folderGlyph(node.path, open)}</span>
         <span className={css.dirName}>{node.name}</span>
-        <span className={css.countPill} data-count={node.changes}>{node.changes}</span>
       </button>
       <IconButton
         size="sm"
         className={css.rowAction}
         disabled={busy}
         label={action}
-        icon={staged ? <IconTrashOutlineRegular size={14} /> : <IconPlusOutlineRegular size={14} />}
+        icon={MINUS_ICON}
         onClick={(event) => {
           event.stopPropagation()
-          props.onToggleStage(node.path, staged)
+          props.onToggleStage(node.path, staged, merge)
         }}
       />
     </div>
@@ -279,15 +283,13 @@ export interface GitLensProps {
   selectedRef: SidebarDiffRef | null
   /** Poll the inventory only while the tab is actually visible. */
   visible: boolean
-  /** Bumped by the tab header's refresh action (0 = never asked). */
-  refreshTick?: number
   /** The tab's context, for the registered file/folder icon chain (absent →
    *  the host's built-in artwork, exactly like the file tree falls back). */
   ctx?: Context
 }
 
 export function GitLens(props: GitLensProps) {
-  const { scope, onOpenFile, onPreview, selectedRef, visible, refreshTick = 0, ctx } = props
+  const { scope, onOpenFile, onPreview, selectedRef, visible, ctx } = props
 
   const service = ctx?.get('betterSidebar')
   /** The file row's artwork: a registered icon wins, else the host's own
@@ -349,7 +351,7 @@ export function GitLens(props: GitLensProps) {
     const box = commitBoxRef.current
     // A layout-less environment (tests) reports 0: leave the CSS height alone.
     if (box === null || box.scrollHeight === 0) return
-    const max = COMMIT_BOX_LINE_HEIGHT * COMMIT_BOX_MAX_ROWS + COMMIT_BOX_PADDING_Y * 2
+    const max = COMMIT_BOX_LINE_HEIGHT * COMMIT_BOX_MAX_ROWS
     // Reset first: a scrollHeight measured against the current height can only
     // ever grow, so a deleted line would leave the box too tall.
     box.style.height = 'auto'
@@ -518,8 +520,10 @@ export function GitLens(props: GitLensProps) {
     }
     const targetChanged = target !== chosenPathRef.current
     if (targetChanged) {
+      const checkoutChanged = chosenPathRef.current !== undefined || target !== current?.path
       selectWorktree(target)
-      clearDerived()
+      // First inventory merely names the already-active primary checkout.
+      if (checkoutChanged) clearDerived()
     }
     // A silent tick only keeps the inventory (and its change counts) fresh.
     if (silent && !targetChanged) return
@@ -594,16 +598,6 @@ export function GitLens(props: GitLensProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible])
 
-  // The header's refresh action: re-read the inventory and derived surfaces,
-  // and force the SHARED status of this session (the file tree's colors too).
-  useEffect(() => {
-    if (refreshTick === 0) return
-    void refresh(false)
-    invalidateGitStatus(scope.sessionId)
-    // Only the tick drives this effect.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshTick])
-
   /** The inventory poll: a linked checkout created mid-session shows up
    *  without a manual refresh (the status poll itself belongs to the store). */
   const pollInventory = useCallback((signal: AbortSignal): Promise<void> => refresh(true, signal), [refresh])
@@ -624,7 +618,7 @@ export function GitLens(props: GitLensProps) {
     setActionError(null)
     try {
       await action()
-      onSuccess?.()
+      if (generation === scopeGen.current) onSuccess?.()
     } catch (reason) {
       if (generation === scopeGen.current) setActionError(failure(reason))
     } finally {
@@ -646,24 +640,24 @@ export function GitLens(props: GitLensProps) {
   const pushError = (reason: unknown): string => `${t('pushError')}: ${errorMessage(reason)}`
   const pullError = (reason: unknown): string => `${t('pullError')}: ${errorMessage(reason)}`
 
-  const stageEntry = (path: string, staged: boolean): void => {
-    void runAction(
-      () => (staged ? api.gitUnstage(gitScopeNow(), path, selectedWorktree) : api.gitStage(gitScopeNow(), path, selectedWorktree)),
-      stageError,
-    )
-  }
-
-  const stageAll = (staged: boolean, merge = false): void => {
+  const stageEntry = (path: string | undefined, staged: boolean, merge = false): void => {
     const gitScope = gitScopeNow()
     const target = selectedWorktree
+    // With conflicts, directory/all actions must only touch their own group:
+    // git add/reset on the whole directory would silently resolve/reset Merge.
+    const rows = staged ? stagedEntries : merge || mergeEntries.some(entry => entry.path === path) ? mergeEntries : unstagedEntries
+    const paths = mergeEntries.length === 0 ? [path] : rows
+      .filter(entry => path === undefined || entry.path === path || entry.path.startsWith(`${path}/`))
+      .map(entry => entry.path)
     void runAction(async () => {
-      if (!staged && mergeEntries.length > 0) {
-        // Separate Merge/Changes groups must not stage each other's files.
-        for (const entry of merge ? mergeEntries : unstagedEntries) await api.gitStage(gitScope, entry.path, target)
-      } else if (staged) await api.gitUnstage(gitScope, undefined, target)
-      else await api.gitStage(gitScope, undefined, target)
+      for (const selectedPath of paths) {
+        if (staged) await api.gitUnstage(gitScope, selectedPath, target)
+        else await api.gitStage(gitScope, selectedPath, target)
+      }
     }, stageError)
   }
+
+  const stageAll = (staged: boolean, merge = false): void => { stageEntry(undefined, staged, merge) }
 
   const commit = (): void => {
     const message = commitMsg.trim()
@@ -727,8 +721,8 @@ export function GitLens(props: GitLensProps) {
     const gitScope = gitScopeNow()
     const target = selectedWorktree
     void runAction(async () => {
-      try { await api.gitPull(gitScope, target) } catch (reason) { throw new Error(pullError(reason)) }
-      try { await api.gitPush(gitScope, target) } catch (reason) { throw new Error(pushError(reason)) }
+      try { await api.gitPull(gitScope, target) } catch (reason) { throw new Error(pullError(reason), { cause: reason }) }
+      try { await api.gitPush(gitScope, target) } catch (reason) { throw new Error(pushError(reason), { cause: reason }) }
     })
   }
 
@@ -906,14 +900,14 @@ export function GitLens(props: GitLensProps) {
    *  current closures through the ref instead of closing over them. */
   const rowActions = useRef({
     preview: (_node: ChangeFile, _staged: boolean): void => { /* replaced below */ },
-    stage: (_path: string, _staged: boolean): void => { /* replaced below */ },
+    stage: (_path: string, _staged: boolean, _merge?: boolean): void => { /* replaced below */ },
   })
   useEffect(() => {
     rowActions.current = {
       preview: (node, staged) => {
         onPreview(worktreeRefOf(node.path, isUntrackedStatus(node.status), staged, chosenPathRef.current, repoRootRef.current))
       },
-      stage: (path, staged) => { stageEntry(path, staged) },
+      stage: (path, staged, merge) => { stageEntry(path, staged, merge) },
     }
   })
 
@@ -921,8 +915,8 @@ export function GitLens(props: GitLensProps) {
   const previewFile = useCallback((node: ChangeFile, staged: boolean): void => {
     rowActions.current.preview(node, staged)
   }, [])
-  const stagePath = useCallback((path: string, staged: boolean): void => {
-    rowActions.current.stage(path, staged)
+  const stagePath = useCallback((path: string, staged: boolean, merge = false): void => {
+    rowActions.current.stage(path, staged, merge)
   }, [])
   const openRowMenu = useCallback((event: MouseEvent, node: ChangeFile, staged: boolean): void => {
     event.preventDefault()
@@ -930,11 +924,12 @@ export function GitLens(props: GitLensProps) {
     setFileMenu({ path: node.path, staged, untracked: isUntrackedStatus(node.status), x: event.clientX, y: event.clientY })
   }, [])
 
-  /** One file row of a group's tree (the single file-row renderer). */
-  const renderFile = (node: ChangeFile, staged: boolean): ReactNode => (
+  /** Indent the content, not its container: hover and selection stay full-width. */
+  const renderFile = (node: ChangeFile, staged: boolean, depth = 0): ReactNode => (
     <FileRow
       key={`file:${staged ? 's' : 'u'}:${node.path}`}
       row={node}
+      depth={depth}
       glyph={fileGlyph}
       staged={staged}
       busy={busy || suggesting}
@@ -945,36 +940,48 @@ export function GitLens(props: GitLensProps) {
     />
   )
 
-  /** One directory row plus its (default-expanded) subtree. */
-  const renderDir = (node: ChangeDir, staged: boolean): ReactNode => {
-    const key = `${staged ? 's' : 'u'}:${node.path}`
+  const renderDir = (node: ChangeDir, staged: boolean, merge: boolean, depth = 0): ReactNode => {
+    const key = `${merge ? 'm' : staged ? 's' : 'u'}:${node.path}`
     const open = !collapsed.has(key)
     return (
       <div key={`dir:${key}`}>
-        <DirRow
-          row={node}
-          folderGlyph={folderGlyph}
-          staged={staged}
-          open={open}
-          busy={busy || suggesting}
-          onToggle={toggleDir}
-          onToggleStage={stagePath}
-        />
-        {open && (
-          <div className={css.treeChildren}>
-            {node.children.map(child => (child.kind === 'dir' ? renderDir(child, staged) : renderFile(child, staged)))}
-          </div>
-        )}
+        <DirRow row={node} depth={depth} folderGlyph={folderGlyph} staged={staged}
+          open={open} busy={busy || suggesting} merge={merge} onToggle={toggleDir} onToggleStage={stagePath} />
+        {open && node.children.map(child => child.kind === 'dir'
+          ? renderDir(child, staged, merge, depth + 1) : renderFile(child, staged, depth + 1))}
       </div>
     )
   }
 
-  /** One group's whole tree. */
-  const renderTree = (nodes: readonly ChangeNode[], staged: boolean): ReactNode => (
+  const renderTree = (nodes: readonly ChangeNode[], staged: boolean, merge = false): ReactNode => (
     <div className={css.tree}>
-      {nodes.map(node => (node.kind === 'dir' ? renderDir(node, staged) : renderFile(node, staged)))}
+      {nodes.map(node => (node.kind === 'dir' ? renderDir(node, staged, merge) : renderFile(node, staged)))}
     </div>
   )
+
+  const renderGroup = (id: string, label: string, rows: readonly GitStatusEntry[], nodes: readonly ChangeNode[], staged: boolean, merge = false): ReactNode => {
+    if (rows.length === 0) return null
+    const key = `group:${id}`
+    const open = !collapsed.has(key)
+    const totals = staged ? stagedTotal : merge ? undefined : unstagedTotal
+    return (
+      <div className={css.group} data-group={id}>
+        <div className={`${css.scmHeader} ${css.groupHeader}`}>
+          <button type="button" className={css.scmDisclosure} aria-expanded={open} aria-label={`${label} (${rows.length})`} onClick={() => { toggleDir(key) }}>
+            <span className={css.chevron} data-open={open ? 'true' : undefined} aria-hidden="true"><IconChevronRightOutlineRegular size={12} /></span>
+            {label}
+            {totals !== undefined && totals.files > 0 && <PlusMinus additions={totals.additions} deletions={totals.deletions} note="group" />}
+          </button>
+          <IconButton className={css.headerAction} size="sm" disabled={busy || suggesting}
+            label={staged ? t('unstageAll') : t('stageAll')}
+            icon={staged ? MINUS_ICON : <IconPlusOutlineRegular size={12} />}
+            onClick={() => { stageAll(staged, merge) }} />
+          <span className={css.countPill} data-count={rows.length}>{rows.length}</span>
+        </div>
+        {open && renderTree(nodes, staged, merge)}
+      </div>
+    )
+  }
 
   return (
     <div className={css.git} data-git-root>
@@ -1006,8 +1013,8 @@ export function GitLens(props: GitLensProps) {
                   anchor={<IconButton size="sm" icon={<IconEllipsisOutlineRegular size={14} />} label={t('gitMoreActions')}
                     active={moreOpen} onClick={() => { setMoreOpen(open => !open) }} />}
                   items={[
-                    { id: 'push', label: t('push'), disabled: busy || suggesting || snapshot?.detached === true },
                     { id: 'pull', label: t('pull'), disabled: busy || suggesting || snapshot?.detached === true },
+                    { id: 'push', label: t('push'), disabled: busy || suggesting || snapshot?.detached === true },
                     ...(repoChoices.length > 1 ? [{ id: 'repos', label: t('gitRepository'),
                       submenu: repoChoices.map(root => ({ id: `repo:${root}`, label: baseName(root), disabled: busy || suggesting })),
                     }] : []),
@@ -1053,32 +1060,9 @@ export function GitLens(props: GitLensProps) {
                 </span>
               </div>
               {clean && <Notice kind="empty">{t('changesClean')}</Notice>}
-              {mergeEntries.length > 0 && <div className={css.group} data-group="merge">
-                <SectionHeader className={css.groupHeader} label={t('gitMergeChanges')}
-                  action={<IconButton className={css.headerAction} size="sm" disabled={busy || suggesting}
-                    label={t('stageAll')} icon={<IconPlusOutlineRegular size={14} />} onClick={() => { stageAll(false, true) }} />}>
-                  <span className={css.countPill} data-count={mergeEntries.length}>{mergeEntries.length}</span>
-                </SectionHeader>
-                {renderTree(mergeTree, false)}
-              </div>}
-              {stagedEntries.length > 0 && <div className={css.group} data-group="staged">
-                <SectionHeader className={css.groupHeader} label={t('gitStagedChanges')}
-                  action={<IconButton className={css.headerAction} size="sm" disabled={busy || suggesting}
-                    label={t('unstageAll')} icon={<IconTrashOutlineRegular size={14} />} onClick={() => { stageAll(true) }} />}>
-                  <span className={css.countPill} data-count={stagedEntries.length}>{stagedEntries.length}</span>
-                  {stagedTotal.files > 0 && <PlusMinus additions={stagedTotal.additions} deletions={stagedTotal.deletions} note="group" />}
-                </SectionHeader>
-                {renderTree(stagedTree, true)}
-              </div>}
-              {unstagedEntries.length > 0 && <div className={css.group} data-group="unstaged">
-                <SectionHeader className={css.groupHeader} label={t('gitChanges')}
-                  action={<IconButton className={css.headerAction} size="sm" disabled={busy || suggesting}
-                    label={t('stageAll')} icon={<IconPlusOutlineRegular size={14} />} onClick={() => { stageAll(false) }} />}>
-                  <span className={css.countPill} data-count={unstagedEntries.length}>{unstagedEntries.length}</span>
-                  {unstagedTotal.files > 0 && <PlusMinus additions={unstagedTotal.additions} deletions={unstagedTotal.deletions} note="group" />}
-                </SectionHeader>
-                {renderTree(unstagedTree, false)}
-              </div>}
+              {renderGroup('merge', t('gitMergeChanges'), mergeEntries, mergeTree, false, true)}
+              {renderGroup('staged', t('gitStagedChanges'), stagedEntries, stagedTree, true)}
+              {renderGroup('unstaged', t('gitChanges'), unstagedEntries, unstagedTree, false)}
             </div>}
           </section>
         )}
@@ -1126,7 +1110,7 @@ export function GitLens(props: GitLensProps) {
             onSelect={name => { setBranchOpen(false); void checkout(name) }} />
           <button type="button" className={css.syncButton} aria-label={syncLabel} title={syncLabel}
             disabled={!canSync} onClick={sync}>
-            <IconRefreshOutlineRegular size={14} />
+            <IconRefreshOutlineRegular size={11} />
             <span>{snapshot?.upstream !== undefined && snapshot.ahead !== undefined && snapshot.behind !== undefined
               ? `${snapshot.behind}↓ ${snapshot.ahead}↑` : syncLabel}</span>
           </button>

@@ -25,6 +25,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
+  padding-top: 6px;
 }
 
 /* The inner scroll body: the change groups + the history. It owns both scroll
@@ -67,24 +68,25 @@
    class keeps the opaque fill above the kit's transparent band no matter which
    sheet lands first in the bundle. */
 .group .groupHeader {
+  gap: 4px;
   position: sticky;
   top: 0;
   z-index: 2;
   background: var(--dsw-alias-bg-base);
 }
 
-/* The group's change count, as a small capsule on the label's baseline. */
+/* Group counts match the action height; directory rows need no badge. */
 .countPill {
   flex: none;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 5px;
-  border-radius: 999px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-secondary);
   font: var(--dsw-font-xxxs-strong-11);
-  line-height: 16px;
+  line-height: 20px;
   text-align: center;
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -98,17 +100,8 @@
   .group .headerAction { opacity: 1; }
 }
 
-/* The tree body: rows are flush bands, the gutter lives here. */
-.tree { display: flex; flex-direction: column; padding: 0 6px; }
-
-/* One nesting level: 12px of indent, with the guide line drawn at its edge so
-   the depth stays readable without a second colour. */
-.treeChildren {
-  display: flex;
-  flex-direction: column;
-  margin-left: 11px;
-  border-left: 1px solid var(--dsw-alias-border-l1);
-}
+/* Indent row contents only; hover bands span the full panel. */
+.tree { display: flex; flex-direction: column; }
 
 /* A directory row's disclosure button. It shares the `.row` band with a file
    row (the band owns the hover/selected fill and the trailing action), so this
@@ -142,8 +135,7 @@
   gap: 6px;
   position: relative;
   min-height: 28px;
-  padding: 0 2px;
-  border-radius: 4px;
+  padding: 0 6px;
   animation: dsh-row-in 150ms var(--ds-ease-in-out);
 }
 .row:hover { background: var(--dsw-alias-interactive-bg-hover); }
@@ -215,6 +207,9 @@
   white-space: nowrap;
 }
 
+/* Match both glyphs and keep their hover boxes smaller than the 28px row. */
+.row .rowAction, .group .headerAction { width: 20px; height: 20px; }
+
 /* The row action is invisible until its row is hovered or holds focus (a
    keyboard tab lands on it and reveals it). The three-class form outranks the
    kit's own disabled rule, which would otherwise pin every button to a dim but
@@ -228,42 +223,39 @@
 
 .messageBox { display: flex; padding: 4px 8px 8px; }
 
-/* The commit-message box and its busy overlay: the input keeps its own
-   flex sizing through a wrapper so the overlay can sit exactly on top of it
-   while the host generates or commits. */
+/* Desktop's official Input frame, with a growing textarea instead of input. */
 .commitInputWrap {
   position: relative;
   display: flex;
+  align-items: center;
+  gap: 6px;
   flex: 1;
   min-width: 0;
+  min-height: 32px;
+  box-sizing: border-box;
+  padding: 0 4px 0 8px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-layer-1);
 }
+.commitInputWrap:focus-within { border-color: var(--dsw-alias-state-business-primary); }
 
-/* The multiline commit box: a native textarea styled to match the primitives
-   Input (layer fill, hairline border, brand focus ring). Flex sizing keeps it
-   inside the row — `width: 100%` would overflow its own padding/border. */
 .commitInput {
   flex: 1;
   min-width: 0;
-  box-sizing: border-box;
-  /* One line by default; GitLens grows it with the text (18px per line,
-     6px vertical padding, six lines before it scrolls). The bounds here are
-     the stylesheet's half of that contract. */
-  min-height: 30px;
-  max-height: 120px;
-  padding: 6px 32px 6px 8px;
-  border: 0.5px solid var(--dsw-alias-border-l4);
-  border-radius: 3px;
-  background: var(--dsw-alias-bg-layer-1);
+  height: 22px;
+  min-height: 22px;
+  max-height: 132px;
+  padding: 0;
+  margin: 4px 0;
+  border: none;
+  background: transparent;
   color: var(--dsw-alias-label-primary);
-  font: var(--dsw-font-s-13);
-  line-height: 18px;
+  font: var(--dsw-font-s-14);
+  line-height: 22px;
   resize: none;
   overflow-y: hidden;
-}
-
-.commitInput:focus {
   outline: none;
-  border-color: var(--dsw-alias-brand-primary);
 }
 
 .commitInput::placeholder {
@@ -280,13 +272,14 @@
    is cleared while busy, so the two never overlap. */
 .commitBusyText {
   position: absolute;
-  inset: 0;
+  inset: 0 38px 0 0;
   display: flex;
   align-items: center;
-  /* Matches the textarea's own padding so the label sits where the text would. */
-  padding: 6px 8px;
+  /* Match the frame's inset while keeping the generate button unobscured. */
+  padding: 0 8px;
   pointer-events: none;
-  font: var(--dsw-font-xxs-12);
+  font: var(--dsw-font-s-14);
+  line-height: 22px;
   background-image: linear-gradient(
     90deg,
     var(--dsw-alias-label-tertiary) 0%,
@@ -311,20 +304,19 @@
 
 /* Generate fills the draft only. Inline on the input's right edge. */
 .suggestButton {
-  position: absolute;
-  top: 2px;
-  right: 2px;
   flex: none;
+  align-self: flex-start;
+  margin-top: 3px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: none;
-  border-radius: 3px;
+  border-radius: 8px;
   background: transparent;
-  color: var(--dsw-alias-label-secondary);
+  color: var(--dsw-alias-label-tertiary);
   cursor: pointer;
 }
 
