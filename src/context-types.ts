@@ -109,16 +109,6 @@ export interface SidebarSessionStore {
   } | undefined
 }
 
-/**
- * The web runtime service face (mirror of @deepseek-ai/dsh-web-app's
- * WebRuntimeValues): the bind-derived trust list the /api gateway's fence
- * accepts — LAN IP literals sampled when the server binds all interfaces,
- * plus explicit `--trusted-host` authorities.
- */
-export interface SidebarWebRuntime {
-  trustedHosts: readonly string[]
-}
-
 /** Registration options the sidebar passes to `ctx.slots.register` (subset of the real options). */
 export interface SidebarSlotRegisterOptions {
   name: string
@@ -799,8 +789,6 @@ export interface SidebarContextShape {
   webServer: SidebarWebServer
   /** The session store (host `.get`) and the client list feed (`.list`) faces. */
   sessions: SidebarSessionStore & SidebarSessionsService
-  /** The web runtime trust list (bind-derived). */
-  webRuntime: SidebarWebRuntime
   /** The client slot registry (register/inject). */
   slots: SidebarSlotsService
   /** The settings service face (prefs persistence + namespace reads). */
@@ -840,12 +828,13 @@ export interface SidebarContextShape {
   /** The host session-persistence service (optional; side chat cold resume). */
   sessionPersistence: SidebarSessionPersistenceService
   /**
-   * The client connection lifecycle (DSH 0.1.2-alpha.2+; optional so older
-   * hosts and test fakes simply hide the disconnect banner): the observable
-   * recovery state of the Remote transport (`undefined` before the first
-   * connection outcome) and an immediate-reconnect request.
+   * Host request admission plus the client transport recovery face. The host
+   * injects Connection before mounting; clients use its observable recovery
+   * state and immediate-reconnect request.
    */
   connection?: {
+    /** Public Host/Origin and authentication policy (DSH 0.2.0-rc.2+). */
+    requestRejection(request: { headers: Record<string, string | string[] | undefined> }): 401 | 403 | undefined
     state: {
       getSnapshot(): 'connected' | 'disconnected' | 'connecting' | undefined
       subscribe(listener: () => void): () => void
