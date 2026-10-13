@@ -9,7 +9,7 @@
  * only, no editor chrome); file tabs keep the full chrome in both modes.
  */
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createElement, useEffect, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { act } from 'react-dom/test-utils'
@@ -35,6 +35,20 @@ const treeAnswers = (): { calls: number; landedAt: number[] } =>
  */
 const treeScript = (): { slow: number[]; hang: number[] } =>
   ((globalThis as unknown as { __treeScript?: { slow: number[]; hang: number[] } }).__treeScript ??= { slow: [], hang: [] })
+
+// Layout persistence is process-global: `setSession` hydrates whatever the
+// previous case persisted for the same session id, so one case's `treeOpen:
+// false` silently decides whether the next case mounts its tree at all. The
+// tree seam's call numbers are per-case scripting for the same reason.
+beforeEach(() => {
+  localStorage.clear()
+  const answers = treeAnswers()
+  answers.calls = 0
+  answers.landedAt = []
+  const script = treeScript()
+  script.slow = []
+  script.hang = []
+})
 
 // The tree mounts inside EditorHost in these scenarios, so the api seam must
 // answer without a host (the sibling FileTree specs mock it the same way).

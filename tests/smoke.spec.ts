@@ -170,13 +170,19 @@ describe('host plugin smoke', () => {
     const cwd = process.cwd()
     const status = await git.status(cwd)
     expect(status.isRepo).toBe(true)
-    expect(typeof status.branch).toBe('string')
+    // PR checkouts have a detached HEAD; compare the native ref rather than invent a branch.
+    const head = gitRun(cwd, ['rev-parse', '--symbolic-full-name', 'HEAD']).trim()
+    const branch = head === 'HEAD' ? undefined : head.replace(/^refs\/heads\//, '')
+    expect(status.detached).toBe(head === 'HEAD')
+    expect(status.branch).toBe(branch)
     expect(Array.isArray(status.entries)).toBe(true)
     const log = await git.log(cwd)
     expect(log.length).toBeGreaterThan(0)
     expect(log[0]!.hash).toMatch(/^[0-9a-f]{7,}$/)
     const branches = await git.branches(cwd)
-    expect(branches.names).toContain(branches.current)
+    expect(branches.current).toBe(branch ?? '')
+    expect(Array.isArray(branches.names)).toBe(true)
+    if (branch !== undefined) expect(branches.names).toContain(branch)
   })
 
   it('enriches the log (full hash + refs) and renders commit diffs', async () => {
