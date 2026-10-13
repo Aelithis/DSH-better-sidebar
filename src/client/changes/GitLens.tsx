@@ -10,7 +10,8 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import {
   Button, IconBranchOutlineRegular, IconCheckOutlineRegular, IconChevronRightOutlineRegular,
-  IconCodeOutlineRegular, IconCopyOutlineRegular, IconEllipsisOutlineRegular, IconPlusOutlineRegular,
+  IconCloseFillRegular, IconCodeOutlineRegular, IconCopyOutlineRegular, IconEllipsisOutlineRegular,
+  IconPlusOutlineRegular,
   IconRefreshOutlineRegular, IconSparkleRegular, IconTrashOutlineRegular, Menu, writeClipboard,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { Context } from '../../context-types.ts'
@@ -1090,7 +1091,11 @@ export function GitLens(props: GitLensProps) {
 
       {/* A sibling of the scroller: usable even with both sections folded. */}
       {isRepo && <div className={css.gitFooter} data-git-footer>
-        {actionError !== null && <Notice kind="error" tone="inline" role="alert">{actionError}</Notice>}
+        {actionError !== null && <Notice kind="error" tone="inline" role="alert" className={css.actionError}>
+          <span className={css.actionErrorText}>{actionError}</span>
+          <IconButton size="sm" icon={<IconCloseFillRegular size={12} />} label={t('dismiss')}
+            onClick={() => { setActionError(null) }} />
+        </Notice>}
         <div className={css.footerRow} data-footer-row>
           <Menu open={branchOpen} onClose={() => { setBranchOpen(false) }} portal compact side="top" autoFocus
             className={css.branchMenu}

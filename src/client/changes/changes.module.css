@@ -51,6 +51,12 @@
    tab — the branch control must never leave the bottom of the pane. */
 .gitFooter { flex: none; min-width: 0; position: sticky; bottom: 0; z-index: 1; border-top: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-base); }
 .footerRow { display: flex; align-items: center; min-width: 0; min-height: 28px; }
+
+/* A failed remote op reports above the branch row and git's stderr can be long:
+   it keeps its own height (never truncated) but gets a dismiss control instead
+   of living in the docked footer until the next action. */
+.actionError { display: flex; align-items: flex-start; gap: 6px; white-space: normal; }
+.actionErrorText { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .branchMenu { display: flex; flex: 1; min-width: 0; }
 .branchButton, .syncButton { display: flex; align-items: center; gap: 5px; min-width: 0; min-height: 28px; padding: 3px 8px; border: none; background: transparent; color: var(--dsw-alias-label-secondary); font: var(--dsw-font-xxxs-11); cursor: pointer; }
 .branchButton { flex: 1; text-align: left; }
