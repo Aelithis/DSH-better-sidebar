@@ -102,10 +102,25 @@ const COMMIT_BOX_MAX_ROWS = 6
  *  just because `snapshot?.entries ?? []` minted a new array. */
 const NO_ENTRIES: readonly GitStatusEntry[] = []
 
-// The horizontal half of the host's Plus artwork (no public Minus icon).
+// The horizontal half of the host's Plus artwork (no public Minus icon): the
+// unstage affordance. The stage side reuses the host's own Plus, so the two
+// directions never read as the same action (VS Code's `$(remove)` / `$(add)`).
 const MINUS_ICON = <svg width={12} height={12} viewBox="0 0 16 16" fill="none" aria-hidden="true">
   <path d="M2 8H14" stroke="currentColor" strokeWidth={1} />
 </svg>
+
+/** The tree's indent guides: one hairline per level ABOVE the row (the group's
+ *  own column carries no line), drawn in the same 12px column the old nested
+ *  tree used to draw at — 17px for the first level, +12 per level — so a deep
+ *  path reads as deep as it did before the SCM rewrite. The lines are absolutely
+ *  placed (no part in the flex row's metrics) and span the whole 28px band, so
+ *  they stay continuous across every sibling and every hover/selected fill. */
+function IndentGuides(props: { depth: number }): ReactNode {
+  return <>{Array.from({ length: props.depth }, (_, index) => (
+    <span key={index} className={css.guide} data-guide="" aria-hidden="true"
+      style={{ left: (index + 1) * 12 + 5 }} />
+  ))}</>
+}
 
 /**
  * A CONTENT key for one status answer. The shared store mints a brand-new
@@ -188,6 +203,7 @@ const FileRow = memo(function FileRow(props: {
   const action = staged ? t('unstage') : t('stage')
   return (
     <div className={css.row} style={{ paddingLeft: props.depth * 12 + 8 }} data-row={node.path} data-selected={selected ? 'true' : undefined}>
+      <IndentGuides depth={props.depth} />
       <button
         type="button"
         className={css.rowMain}
@@ -209,7 +225,7 @@ const FileRow = memo(function FileRow(props: {
         className={css.rowAction}
         disabled={busy}
         label={action}
-        icon={MINUS_ICON}
+        icon={staged ? MINUS_ICON : <IconPlusOutlineRegular size={12} />}
         onClick={() => { props.onToggleStage(node.path, staged) }}
       />
     </div>
@@ -238,6 +254,7 @@ const DirRow = memo(function DirRow(props: {
   const action = staged ? t('unstageAll') : t('stageAll')
   return (
     <div className={css.row} style={{ paddingLeft: props.depth * 12 + 8 }} data-row={node.path}>
+      <IndentGuides depth={props.depth} />
       <button
         type="button"
         className={css.dirRow}
@@ -257,7 +274,7 @@ const DirRow = memo(function DirRow(props: {
         className={css.rowAction}
         disabled={busy}
         label={action}
-        icon={MINUS_ICON}
+        icon={staged ? MINUS_ICON : <IconPlusOutlineRegular size={12} />}
         onClick={(event) => {
           event.stopPropagation()
           props.onToggleStage(node.path, staged, merge)

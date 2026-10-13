@@ -27,6 +27,9 @@ setupReactAct()
 
 const MAIN = 'C:/repo/main'
 
+/** The unstage artwork the SCM rows draw (the horizontal half of the host's Plus). */
+const MINUS_GLYPH = 'M2 8H14'
+
 /** One synthetic tool/call + tool/result pair (write of one file). */
 function writeEvents(seq: number, path: string): Array<{ type: string; seq: number; time: number; data: Record<string, unknown> }> {
   return [
@@ -351,6 +354,60 @@ describe('ChangesTab', () => {
       expect(alert!.parentElement).toBe(footer)
       expect(alert!.nextElementSibling).toBe(footer!.querySelector('[data-footer-row]'))
       expect(container.querySelector('[data-git-scroll]')!.contains(alert!)).toBe(false)
+    } finally {
+      act(() => { root.unmount() })
+      container.remove()
+    }
+  })
+
+  it('draws stage as a plus and unstage as a minus, like the Source Control view', async () => {
+    mockGit([{ path: 'src/a.ts', xy: ' M' }, { path: 'src/b.ts', xy: 'M ' }])
+
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root: Root = createRoot(container)
+    try {
+      mount(root)
+      await flushEffects()
+
+      const iconOf = (label: string): string => {
+        const button = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)
+        expect(button, label).not.toBeNull()
+        return button!.querySelector('svg')!.innerHTML
+      }
+      // A stage affordance that drew the unstage glyph is the #941 regression:
+      // the two directions must not share artwork (vscode: $(add) vs $(remove)).
+      // Unstage is the horizontal half alone; staging adds the vertical stroke
+      // (the host's Plus) — the two directions must not share one glyph.
+      const stage = iconOf(t('stage'))
+      const unstage = iconOf(t('unstage'))
+      expect(unstage).toContain(MINUS_GLYPH)
+      expect(unstage).not.toContain('M8 2V14')
+      expect(stage).toContain('M8 2V14')
+    } finally {
+      act(() => { root.unmount() })
+      container.remove()
+    }
+  })
+
+  it('hangs every tree row on the Source Control indent guides', async () => {
+    mockGit([{ path: 'src/a.ts', xy: ' M' }])
+
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root: Root = createRoot(container)
+    try {
+      mount(root)
+      await flushEffects()
+
+      const guides = (row: string): string[] => [...container.querySelector(`[data-row="${row}"]`)!
+        .querySelectorAll<HTMLElement>('[data-guide]')].map(node => node.style.left)
+      // A group's own column carries no line; each level below adds one, in the
+      // column the pre-SCM nested tree drew it (17px, +12 per level).
+      expect(guides('src')).toEqual([])
+      expect(guides('src/a.ts')).toEqual(['17px'])
+      // The guides are decoration: the row's own indent is untouched.
+      expect(container.querySelector<HTMLElement>('[data-row="src/a.ts"]')!.style.paddingLeft).toBe('20px')
     } finally {
       act(() => { root.unmount() })
       container.remove()

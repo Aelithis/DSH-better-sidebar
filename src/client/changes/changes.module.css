@@ -173,6 +173,18 @@
   background: var(--dsw-alias-state-business-primary);
 }
 
+/* The tree's indent guides: the same 1px `border-l1` edge the old nested
+   `.treeChildren` wrapper drew (`margin-left: 11px` boundaries become the
+   absolutely placed columns in `IndentGuides`), one per level above the row and
+   spanning the whole band, so the flex metrics never move. */
+.guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px solid var(--dsw-alias-border-l1);
+}
+
 .rowMain {
   flex: 1;
   min-width: 0;

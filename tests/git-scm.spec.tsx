@@ -114,7 +114,11 @@ it('keeps directory/all actions inside their group, including Merge directory fo
       expect(row.lastElementChild).toBe(action)
       expect(action.querySelector('svg')!.getAttribute('width')).toBe('12')
       expect(action.querySelector('svg')!.getAttribute('height')).toBe('12')
-      expect(action.querySelector('svg path')!.getAttribute('d')).toBe('M2 8H14')
+      // Staging and unstaging must not share artwork: a staged row's action
+      // unstages (the minus), every other row's stages (the host's Plus).
+      const glyphs = [...action.querySelectorAll('svg path')].map(path => path.getAttribute('d'))
+      const stagedRow = row.closest('[data-group]')!.getAttribute('data-group') === 'staged'
+      expect(glyphs).toEqual(stagedRow ? ['M2 8H14'] : ['M8 2V14', 'M2 8H14'])
     }
     for (const name of ['merge', 'staged', 'unstaged']) {
       const headerAction = group(name).firstElementChild!.querySelector<HTMLButtonElement>(`button[aria-label="${t(name === 'staged' ? 'unstageAll' : 'stageAll')}"]`)!
