@@ -50,6 +50,11 @@ export default defineConfig({
       // Local dev worktrees (pnpm/DSH-style task branches) may carry stale
       // code against this checkout's node_modules — never collect them.
       '**/.worktrees/**',
+      // Same hazard, different directory: the DSH worktree lanes keep their
+      // checkouts under `.delta/`, which `.git/info/exclude` ignores but this
+      // list is the only thing vitest reads. Left out, `pnpm test` collects
+      // those stale copies and reports THEIR failures as ours.
+      '**/.delta/**',
       '**/node_modules/**',
       '**/dist/**',
       '**/cypress/**',

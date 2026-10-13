@@ -3,7 +3,7 @@
  * exercises the real integrations — route registration, git against the
  * actual repository, and a real directory listing. Runs with `pnpm test`.
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
@@ -17,6 +17,25 @@ import { downloadUrl, htmlUrl } from '../src/client/api.ts'
 import * as git from '../src/git.ts'
 import { listDirectory } from '../src/fs-tree.ts'
 import type { SidebarLoaderEntry, SidebarWebRoute, SidebarWebUpgradeRoute } from '../src/context-types.ts'
+
+/**
+ * The probe-budget factory is spied on so a batch's gate SHARING is asserted
+ * rather than assumed: `fs.trees` lists many levels at once and must build ONE
+ * gate per request, or the per-level probe bounds multiply. Everything else
+ * about the module stays real, so this file's own `listDirectory` calls (and
+ * every other route) behave exactly as before.
+ */
+const probeGateCalls = vi.hoisted(() => [] as unknown[][])
+vi.mock('../src/fs-tree.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/fs-tree.ts')>()
+  return {
+    ...actual,
+    createProbeGate: (...args: Parameters<typeof actual.createProbeGate>) => {
+      probeGateCalls.push(args)
+      return actual.createProbeGate(...args)
+    },
+  }
+})
 
 /** Symlink creation may require elevated privileges on Windows. */
 const canCreateSymlink = (() => {
@@ -1154,6 +1173,34 @@ describe('session cwd resolution over the API route', () => {
         paths: Array.from({ length: FS_TREES_MAX_PATHS + 1 }, () => workspace),
       })
       expect(tooMany).toMatchObject({ ok: false, status: 400, error: { code: 'bad-request' } })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('fs.trees shares ONE probe gate across the batch levels', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-sidebar-fs-trees-gate-'))
+    const workspace = join(root, 'workspace')
+    const level = join(workspace, 'level')
+    mkdirSync(level, { recursive: true })
+    for (let index = 0; index < 3; index += 1) {
+      mkdirSync(join(level, `only-${index}`))
+      writeFileSync(join(level, `only-${index}`, 'child.txt'), 'x')
+    }
+    try {
+      const route = mount({ sessions: { get: () => ({ header: { cwd: workspace } }) } })
+      const before = probeGateCalls.length
+      const answer = await invoke(route, 'fs.trees', { sessionId: 's-tree-gate', paths: [workspace, level] })
+      expect(answer.ok).toBe(true)
+      // ONE gate for the whole request: a per-level gate would let each level's
+      // probe pool run at full width, which is the runaway this bounds.
+      expect(probeGateCalls.length - before).toBe(1)
+      // The shared budget changed nothing about what the levels report. (The
+      // local `invoke` types `value` as its cwd probe, hence the double cast.)
+      const levels = (answer.value as unknown as {
+        levels: { path: string; entries: { compact?: boolean }[] }[]
+      }).levels
+      expect(levels.find(entry => entry.path === level)?.entries.filter(row => row.compact === true)).toHaveLength(3)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

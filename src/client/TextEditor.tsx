@@ -153,7 +153,17 @@ export function TextEditor(props: FileViewerProps) {
     () => ({ scope: { sessionId: scope.sessionId, cwd: scope.cwd, repoRoot: scope.repoRoot }, path }),
     [scope.sessionId, scope.cwd, scope.repoRoot, path],
   )
-  const gitKinds = useEditorGitGutter({ enabled: gitGutterEnabled, scope, path, content, revision: gitRevision })
+  const gitKinds = useEditorGitGutter({
+    enabled: gitGutterEnabled,
+    // A parked native tab stays MOUNTED (`keepMounted`), so the tab's own
+    // visibility is what decides whether the gutter does git work at all: a
+    // hidden editor holds no status subscription and no timer.
+    visible: props.visible !== false,
+    scope,
+    path,
+    content,
+    revision: gitRevision,
+  })
   /** Preview scroll position across the preview<->edit toggle. The preview
    *  container re-mounts on every mode switch and its scrollTop lives on that
    *  element, so capture it on scroll and restore after each remount. Seeded

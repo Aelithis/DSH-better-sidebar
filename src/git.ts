@@ -640,6 +640,23 @@ async function listedWorktrees(cwd: string): Promise<GitWorktreeRecord[]> {
   return parseWorktreeList(raw).filter(entry => !entry.prunable)
 }
 
+/**
+ * How many entries `git status` reports for one checkout, as ONE cheap command.
+ *
+ * The inventory below used to call the full `status()`, which spawns four
+ * processes — including the `--untracked-files=all` walk and two whole-repo
+ * `--numstat` diffs — just to read `.entries.length`, per linked checkout, on a
+ * 30 s poll. This asks the same question with a single process and without the
+ * untracked walk. The number differs in exactly one way, deliberately: an
+ * untracked DIRECTORY counts as one entry instead of as every file inside it,
+ * which is what "this checkout has changes" should read as anyway (and the old
+ * number was silently capped at `GIT_STATUS_LIMIT` regardless).
+ */
+async function countChanges(cwd: string): Promise<number> {
+  const raw = await runGit(cwd, ['status', '--porcelain=v1', '-z', '--untracked-files=normal'])
+  return parsePorcelainZ(raw).length
+}
+
 /** All linked checkouts of the repository containing `cwd`, enriched with a
  * live change count. The current checkout is first so a single-worktree repo
  * preserves the old UI ordering. */
@@ -653,7 +670,7 @@ export async function worktrees(cwd: string): Promise<GitWorktree[]> {
     current: pathIdentity(entry.path) === pathIdentity(currentRoot),
     // One stale/permission-raced linked checkout must not hide the valid
     // current repository from the panel. Targeted operations still fail loud.
-    changes: await status(entry.path).then(result => result.entries.length, () => 0),
+    changes: await countChanges(entry.path).catch(() => 0),
   })))
   return rows.sort((left, right) => Number(right.current) - Number(left.current))
 }

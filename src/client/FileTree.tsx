@@ -1006,9 +1006,15 @@ export function FileTree(props: {
     // levels are loaded ahead of any expansion (without them the breadcrumb
     // label would grow one segment at a time as the user clicks). Each arrival
     // can reveal the next link, hence the rescan on every cache update;
-    // loadLevels skips what is already loaded, so this settles.
+    // loadLevels skips what is already loaded, so this settles. The roots are
+    // read LIVE through `propsRef`, keeping this effect's dependencies at
+    // [cwd, data, loadLevels]: the level cache is the real trigger (an arrival
+    // reveals the next link), and an expansion is always accompanied by the
+    // visible-set effect above loading (or having loaded) that level. The walk
+    // itself stops at the render cap, so a chain the row stopped folding at
+    // MAX_COMPACT_DEPTH never keeps pulling deeper levels.
     if (cwd === undefined) return
-    loadLevels(compactLoadTargets(dataRef.current))
+    loadLevels(compactLoadTargets(dataRef.current, [cwd, ...propsRef.current.expanded]))
   }, [cwd, data, loadLevels])
 
   // A torn-down tree must not write the answer of an in-flight batch into a
