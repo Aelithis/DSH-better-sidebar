@@ -16,7 +16,7 @@ import { encodeText } from '../src/text-encoding.ts'
 import { downloadUrl, htmlUrl } from '../src/client/api.ts'
 import * as git from '../src/git.ts'
 import { listDirectory } from '../src/fs-tree.ts'
-import type { SidebarWebRoute, SidebarWebUpgradeRoute } from '../src/context-types.ts'
+import type { SidebarLoaderEntry, SidebarWebRoute, SidebarWebUpgradeRoute } from '../src/context-types.ts'
 
 /** Symlink creation may require elevated privileges on Windows. */
 const canCreateSymlink = (() => {
@@ -1324,7 +1324,9 @@ const createFakeSettings = (pre?: Record<string, Record<string, unknown>>) => {
  * @param home - a harness home holding a retired `settings.yaml`, when the test wants the legacy import to run.
  * @returns the mounted `/sidebar/api` route.
  */
-const mountWithSettings = (settings?: unknown, home?: string): SidebarWebRoute => {
+const mountWithSettings = (settings?: unknown, home?: string, entries: SidebarLoaderEntry[] = [
+  { options: { id: ENTRY_ID, name: 'dsh-better-sidebar' }, fiber: PLUGIN_FIBER },
+]): SidebarWebRoute => {
   const routes: SidebarWebRoute[] = []
   lastMountedRoutes = routes
   const ctx = {
@@ -1348,7 +1350,7 @@ const mountWithSettings = (settings?: unknown, home?: string): SidebarWebRoute =
     // The plugin discovers its own settings entry id from the loader, so a
     // fake without these entries has NO settings face at all.
     loader: {
-      entries: () => [{ options: { id: ENTRY_ID, name: 'dsh-better-sidebar' }, fiber: PLUGIN_FIBER }],
+      entries: () => entries,
           // The real loader settles before a form is addressable; the fake
           // resolves immediately so the import runs on the same tick.
           await: () => Promise.resolve(),
@@ -1435,6 +1437,28 @@ describe('side card settings routes', () => {
     expect(after.value.agentOpenTools).toBe(true)
     expect(after.value.customCss).toBe('')
     expect(after.revision).toBe(1)
+  })
+
+  it('uses its exact fiber for file/alias mounts before the enabled bare-package fallback', async () => {
+    const aliasId = 'sidebar-dev-file'
+    const entries: SidebarLoaderEntry[] = [
+      { options: { id: 'disabled-sidebar', name: 'dsh-better-sidebar' }, disabled: true },
+      { options: { id: ENTRY_ID, name: 'dsh-better-sidebar' }, fiber: {} },
+      { options: { id: '', name: 'file:///plugins/sidebar.js' }, fiber: PLUGIN_FIBER },
+      { options: { id: aliasId, name: 'file:///plugins/sidebar.js' }, fiber: PLUGIN_FIBER },
+    ]
+    const settings = createFakeSettings({ [aliasId]: { editorExplorer: true } })
+    const route = mountWithSettings(settings, undefined, entries)
+    expect(await invoke(route, 'settings.get', {})).toMatchObject({
+      ok: true, value: { value: { editorExplorer: true }, revision: 0 },
+    })
+    expect(await invoke(route, 'settings.update', { patch: { autoOpenJobs: false }, expectedRevision: 0 }))
+      .toMatchObject({ ok: true, value: { value: { autoOpenJobs: false }, revision: 1 } })
+    expect(settings.describe().find(row => row.ns === ENTRY_ID)?.value.autoOpenJobs).toBe(true)
+    const fallbackRoute = mountWithSettings(settings, undefined, entries.slice(0, 2))
+    expect(await invoke(fallbackRoute, 'settings.get', {})).toMatchObject({
+      ok: true, value: { value: { editorExplorer: false, autoOpenJobs: true }, revision: 0 },
+    })
   })
 
   it('imports a pre-0.1.7 settings.yaml section once, keeping only declared fields', async () => {

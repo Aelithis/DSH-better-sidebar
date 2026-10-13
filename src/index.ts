@@ -1176,9 +1176,8 @@ const LEGACY_SETTINGS_FILE = 'settings.yaml'
  * DSH 0.1.7 addresses settings forms by profile entry id, and that id is a
  * mount choice rather than a package property: this bundle's patch uses
  * `better-sidebar`, while an aggregate bundle mounts the same package under
- * its own id. The row is therefore identified by the package name plus fiber
- * identity, with an enabled same-name row as the fallback for the moment
- * before the fiber is attached.
+ * its own id. Fiber identity also covers aliases and absolute file URLs;
+ * an enabled same-package row is the fallback before the fiber is attached.
  * @param ctx - the plugin's own context.
  * @returns the row's configured id, or undefined when no row can be identified.
  */
@@ -1187,9 +1186,9 @@ function ownEntryId(ctx: Context): string | undefined {
   try {
     for (const entry of ctx.loader.entries()) {
       const id = entry.options.id
-      if (entry.options.name !== SIDEBAR_PACKAGE_NAME || typeof id !== 'string' || id === '') continue
+      if (typeof id !== 'string' || id === '') continue
       if (entry.fiber === ctx.fiber) return id
-      if (entry.disabled !== true && fallback === undefined) fallback = id
+      if (entry.options.name === SIDEBAR_PACKAGE_NAME && entry.disabled !== true && fallback === undefined) fallback = id
     }
   } catch {
     // A loader that does not expose its entries leaves the settings face

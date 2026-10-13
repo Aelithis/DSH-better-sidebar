@@ -1064,7 +1064,7 @@ interface SettingsDescriptor {
 
 四条必须记住的新规则：
 
-1. **命名空间 = 插件 Loader 行的 `entry.options.id`**，不是插件自选的字符串。聚合包会用别的 id 挂同一个包，所以**运行时自发现**（本插件 `src/index.ts` 的 `ownEntryId(ctx)`：按 `entry.options.name === '<包名>'` + `entry.fiber === ctx.fiber` 匹配，回退到第一个启用的同名行），**不要硬编码** id。
+1. **命名空间 = 插件 Loader 行的 `entry.options.id`**，不是插件自选的字符串。聚合包会用别的 id 挂同一个包，所以**运行时自发现**（本插件 `src/index.ts` 的 `ownEntryId(ctx)`：有效 id 的行优先按 `entry.fiber === ctx.fiber` 匹配，支持别名与 `file:` 挂载；未找到自己的 fiber 才回退到第一个启用的同包名行），**不要硬编码** id。
 2. **schema 来自插件模块导出的 `Config`**（`entry.fiber.runtime.Config`）。用户可见的字段必须**并进这个 `Config`**——本插件把 `PrefsSchema` 合并进 `Config`（`src/config.ts`），并把每个偏好字段标 `meta.volatile = true`；**这一个标记就是「改设置实时生效、不重挂插件」的全部机制**（Loader 的 `equalExceptVolatile` 跳过 volatile 字段，纯 volatile 变更提交进运行中的引用并发 `loader/volatile-update`，普通字段仍是重挂语义）。
 3. **自带设置页的插件要主动退出自动表单**：`ctx.effect(() => ctx.settings.configure({ auto: false }, ctx.fiber))`，否则 Settings 会把同一批字段渲染两遍（策略不影响读写）。
 4. **`settings/document-updated` 你监听不到，别写**：事件签名是 `'settings/document-updated'(ns, revision)`（语义是「该条目的表单值 / 可用性 / 页面策略变了，表单客户端重新读取 schema、解析值与 revision」），但它在 **settings 服务自己的 context 上 `emit`**，而 cordis 事件只向该 ctx 的**祖先**冒泡——插件 fiber 是兄弟，`ctx.on(...)` 永远不会触发。**替代做法：每次重新读取表单时重新求值**（本插件的 `settingsFace.get()` 在返回当前值前跑一遍门控同步；客户端侧另经 `remote` 服务的 `$on('settings/document-updated')` 镜像触发重新拉取）。**旧文档里的 `settings/updated` 事件在 0.1.7 已不存在**。
