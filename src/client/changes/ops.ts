@@ -184,21 +184,6 @@ export function extractFileOps(events: readonly SidebarSessionEvent[]): FileOp[]
 }
 
 /**
- * Group operations by path, newest op first per file, files ordered by their
- * most recent operation.
- */
-export function groupByFile(ops: readonly FileOp[]): Map<string, FileOp[]> {
-  const groups = new Map<string, FileOp[]>()
-  for (const op of ops) {
-    const list = groups.get(op.path) ?? []
-    list.push(op)
-    groups.set(op.path, list)
-  }
-  const ordered = [...groups.entries()].sort((a, b) => b[1][0]!.time - a[1][0]!.time)
-  return new Map(ordered)
-}
-
-/**
  * The last content known for a path before the given operation, synthesized
  * from earlier ops: a write's payload is authoritative, an edit implies its
  * old side. Best effort — a write with no known prior content diffs against
