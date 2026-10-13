@@ -569,7 +569,7 @@ describe('ChangesTab', () => {
     }
   })
 
-  it('keeps one inner scroller and docks the footer without sticky positioning (#194, #941)', () => {
+  it('keeps one inner scroller and pins the footer to the bottom (#194, #941)', () => {
     // jsdom has no layout engine, so the sheet itself is the docking evidence.
     const sheet = readFileSync('src/client/changes/changes.module.css', 'utf8')
     const rule = (selector: string): string => {
@@ -583,8 +583,12 @@ describe('ChangesTab', () => {
     expect(rule('.gitScroll')).toContain('overflow-y: auto')
     expect(rule('.gitScroll')).toContain('overflow-x: hidden')
     expect(rule('.gitScroll')).toContain('flex: 1')
+    // Docked by flex, and sticky so a host-scrolled tab body cannot carry the
+    // branch control off the bottom of the pane either.
     expect(rule('.gitFooter')).toContain('flex: none')
-    expect(rule('.gitFooter')).not.toMatch(/position|sticky|z-index|overflow/)
+    expect(rule('.gitFooter')).toContain('position: sticky')
+    expect(rule('.gitFooter')).toContain('bottom: 0')
+    expect(rule('.gitFooter')).not.toContain('overflow')
     expect(rule('.messageBox')).not.toMatch(/position|sticky|overflow/)
     expect(sheet).not.toMatch(/\.(?:selectors|select|branchLabel|commitBar|commitRow)\s*\{/)
     // The retained group headers still park on the inner body's top edge.

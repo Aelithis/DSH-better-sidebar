@@ -46,7 +46,10 @@
 .scmHeader:hover .scmActions, .scmHeader:focus-within .scmActions { opacity: 1; }
 @media (hover: none) { .scmActions { opacity: 1; } }
 
-.gitFooter { flex: none; min-width: 0; border-top: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-base); }
+/* Docked by the flex column above (a sibling of `.gitScroll`), plus sticky so
+   it also survives the case where the host tab body itself scrolls the whole
+   tab — the branch control must never leave the bottom of the pane. */
+.gitFooter { flex: none; min-width: 0; position: sticky; bottom: 0; z-index: 1; border-top: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-base); }
 .footerRow { display: flex; align-items: center; min-width: 0; min-height: 28px; }
 .branchMenu { display: flex; flex: 1; min-width: 0; }
 .branchButton, .syncButton { display: flex; align-items: center; gap: 5px; min-width: 0; min-height: 28px; padding: 3px 8px; border: none; background: transparent; color: var(--dsw-alias-label-secondary); font: var(--dsw-font-xxxs-11); cursor: pointer; }
@@ -75,12 +78,14 @@
   background: var(--dsw-alias-bg-base);
 }
 
-/* Group counts match the action height; directory rows need no badge. */
+/* Group counts match the action height and the neighbouring header controls'
+   corner radius (the host kit's `size="sm"` buttons use `--dsw-radius-sm`);
+   directory rows need no badge. */
 .countPill {
   flex: none;
   width: 20px;
   height: 20px;
-  border-radius: 50%;
+  border-radius: var(--dsw-radius-sm);
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-secondary);
   font: var(--dsw-font-xxxs-strong-11);

@@ -768,7 +768,7 @@ describe('GitLens (changes tab, git lens) change tree', () => {
       }
     })
 
-    it('says "new file" for an untracked entry and "binary" for a blob, inventing no numbers', async () => {
+    it('marks a binary blob and invents no numbers for what git never diffs', async () => {
       const { container, root } = makeRoot()
       try {
         await mountTree(container, root, [
@@ -776,10 +776,10 @@ describe('GitLens (changes tab, git lens) change tree', () => {
           { path: 'blob.bin', xy: ' M', counts: { binary: true } },
         ])
 
-        expect(container.querySelector('[data-path="new.txt"] [data-lines="new"]')?.textContent)
-          .toBe(t('changesNewFile'))
         expect(container.querySelector('[data-path="blob.bin"] [data-lines="binary"]')?.textContent)
           .toBe(t('diffBinary'))
+        // An untracked row already says so with its `U` badge — no second note.
+        expect(container.querySelector('[data-path="new.txt"] [data-lines]')).toBeNull()
         // Neither row claims a count...
         expect(container.querySelector('[data-path="new.txt"] [data-lines="count"]')).toBeNull()
         expect(container.querySelector('[data-path="blob.bin"] [data-lines="count"]')).toBeNull()

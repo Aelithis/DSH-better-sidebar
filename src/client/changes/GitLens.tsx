@@ -142,18 +142,13 @@ function PlusMinus(props: { additions: number; deletions: number; note?: string 
   )
 }
 
-/** One row's line counts (#131): the numbers for a text change, the binary
- *  mark when git has none for a blob, and "new file" for an untracked entry —
- *  git never diffs those, so there is no numstat row and `+0 −0` would be an
- *  invented number. An entry with no counts that is NOT untracked (a status
- *  answer whose numstat read failed) shows nothing at all. */
-function LineCounts(props: { counts?: GitLineCounts; untracked: boolean }): ReactNode {
+/** One row's line counts (#131): the numbers for a text change and the binary
+ *  mark when git has none for a blob. git never diffs an untracked entry (its
+ *  `U` badge already says so), and an entry whose numstat read failed must not
+ *  show an invented `+0 −0` — both render nothing. */
+function LineCounts(props: { counts?: GitLineCounts }): ReactNode {
   const { counts } = props
-  if (counts === undefined) {
-    return props.untracked
-      ? <span className={css.lineNote} data-lines="new">{t('changesNewFile')}</span>
-      : null
-  }
+  if (counts === undefined) return null
   if (!('additions' in counts)) return <span className={css.lineNote} data-lines="binary">{t('diffBinary')}</span>
   return <PlusMinus additions={counts.additions} deletions={counts.deletions} />
 }
@@ -206,7 +201,7 @@ const FileRow = memo(function FileRow(props: {
         <StatusBadge tone={BADGE_TONE[node.status.tone]} title={node.path}>{node.status.letter}</StatusBadge>
         {/* The row's own line counts (#131): read straight off the node, so a
             poll that answered different numbers re-renders this row with them. */}
-        <LineCounts counts={node.counts} untracked={node.status.tone === 'untracked'} />
+        <LineCounts counts={node.counts} />
       </button>
       <IconButton
         size="sm"
