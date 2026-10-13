@@ -18,12 +18,7 @@
 
 /* ── Git lens (the former git panel) ───────────────────────────────────── */
 
-/* The Git lens ROOT is not a scroller (#194): it is the fixed frame that holds
-   the non-scrolling head band (branch / repository / worktree pickers) above
-   the ONE inner scroll body and the commit bar below it. Everything that used
-   to scroll here — the change groups, the history, the state lines — now
-   scrolls inside `.gitScroll`, so the branch bar and the commit box stay on
-   screen while the list moves. */
+/* Changes and Graph share one scroll body; branch/sync stays outside it. */
 .git {
   flex: 1;
   min-height: 0;
@@ -44,24 +39,22 @@
   overflow-x: hidden;
 }
 
-/* The selector band: branch / repository / worktree pickers (only rendered
-   for real choices) and nothing else — the counts live in the section bands. */
-.selectors { flex: none; display: flex; align-items: center; gap: 6px; padding: 6px 12px 0; }
+.scmHeader { display: flex; align-items: center; min-height: 28px; padding: 0 6px; }
+.scmDisclosure { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 0; border: none; background: transparent; color: var(--dsw-alias-label-primary); font: var(--dsw-font-xxs-strong-12); text-align: left; cursor: pointer; }
+.scmActions { display: flex; align-items: center; gap: 2px; opacity: 0; }
+.scmHeader:hover .scmActions, .scmHeader:focus-within .scmActions { opacity: 1; }
+@media (hover: none) { .scmActions { opacity: 1; } }
 
-.select {
-  flex: 1;
-  min-width: 0;
-  height: 28px;
-  padding: 0 6px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 3px;
-  background: var(--dsw-alias-bg-base);
-  color: var(--dsw-alias-label-primary);
-  font: var(--dsw-font-xxs-12);
-}
-
-/* A single branch has nothing to choose: it reads as the row's label. */
-.branchLabel { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-secondary); font: var(--dsw-font-xxxs-11); }
+.gitFooter { flex: none; min-width: 0; border-top: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-base); }
+.footerRow { display: flex; align-items: center; min-width: 0; min-height: 28px; }
+.branchMenu { display: flex; flex: 1; min-width: 0; }
+.branchButton, .syncButton { display: flex; align-items: center; gap: 5px; min-width: 0; min-height: 28px; padding: 3px 8px; border: none; background: transparent; color: var(--dsw-alias-label-secondary); font: var(--dsw-font-xxxs-11); cursor: pointer; }
+.branchButton { flex: 1; text-align: left; }
+.syncButton { max-width: 55%; }
+.branchButton svg, .syncButton svg { flex: none; }
+.branchButton span, .syncButton span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.branchButton:hover:not(:disabled), .syncButton:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.branchButton:disabled, .syncButton:disabled { opacity: 0.45; cursor: default; }
 
 /* ── Change groups (one directory tree each) ───────────────────────────── */
 
@@ -194,7 +187,8 @@
 /* The row's icons are content at the plugin's own scale, not chrome. */
 .rowIcon { flex: none; display: inline-flex; align-items: center; }
 
-.rowName { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--dsw-font-xxs-12); color: var(--dsw-alias-label-primary); }
+.rowName { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--dsw-font-xxs-12); color: var(--dsw-alias-label-primary); }
+.rowPath { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--dsw-font-xxxs-11); color: var(--dsw-alias-label-tertiary); }
 
 /* A row's / band's line counts (#131): `+N −M` in the diff pane's own ink (the
    `.statAdd` / `.statDel` atoms of `diff.module.css`, reused rather than
@@ -230,22 +224,9 @@
   .row:not(:hover):not(:focus-within) .rowAction { opacity: 1; }
 }
 
-/* ── Commit bar (docked below the scroll body, never inside it) ─────────── */
+/* ── Message draft (inside Changes) ─────────────────────────────────────── */
 
-/* Since #194 the bar is a SIBLING of `.gitScroll` in the lens root's column:
-   it is always on screen, so it needs neither `position: sticky` nor a
-   stacking order over the sticky group headers (they are inside the scroller,
-   which clips them). */
-.commitBar {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 8px 12px;
-  border-top: 1px solid var(--dsw-alias-border-l1);
-  background: var(--dsw-alias-bg-base);
-}
-.commitRow { display: flex; align-items: center; gap: 6px; }
+.messageBox { display: flex; padding: 4px 8px 8px; }
 
 /* The commit-message box and its busy overlay: the input keeps its own
    flex sizing through a wrapper so the overlay can sit exactly on top of it
@@ -269,9 +250,9 @@
      the stylesheet's half of that contract. */
   min-height: 30px;
   max-height: 120px;
-  padding: 6px 8px;
+  padding: 6px 32px 6px 8px;
   border: 0.5px solid var(--dsw-alias-border-l4);
-  border-radius: 8px;
+  border-radius: 3px;
   background: var(--dsw-alias-bg-layer-1);
   color: var(--dsw-alias-label-primary);
   font: var(--dsw-font-s-13);
@@ -292,6 +273,7 @@
 .commitInput:disabled {
   opacity: 0.5;
 }
+.commitInput[data-message-busy='true'] { color: transparent; caret-color: transparent; }
 
 /* Busy text in the input's place: the running-status sweep used by the side
    chat (gradient text scrolled by background-position). The real placeholder
@@ -327,9 +309,11 @@
   .commitBusyText { animation: none; }
 }
 
-/* The AI commit-message button: a quiet square secondary button beside the
-   input. While the host streams a suggestion it pulses. */
+/* Generate fills the draft only. Inline on the input's right edge. */
 .suggestButton {
+  position: absolute;
+  top: 2px;
+  right: 2px;
   flex: none;
   display: inline-flex;
   align-items: center;
@@ -337,8 +321,8 @@
   width: 26px;
   height: 26px;
   padding: 0;
-  border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 6px;
+  border: none;
+  border-radius: 3px;
   background: transparent;
   color: var(--dsw-alias-label-secondary);
   cursor: pointer;
@@ -500,36 +484,16 @@
   color: var(--dsw-alias-label-tertiary);
 }
 
-/* ── History ───────────────────────────────────────────────────────────── */
+/* ── Commit graph ──────────────────────────────────────────────────────── */
 
-/* A history row: line 1 = short-hash badge + subject, line 2 = ref pills +
-   author·time flushed right (the badges live on the second line so they never
-   crowd the subject, and the time never pushes the refs around). */
-.logRow {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 6px 10px;
-  margin: 0 6px;
-  border-radius: 4px;
-  cursor: pointer;
-}
+.logRow { position: relative; display: flex; align-items: center; min-width: 0; height: 22px; margin: 0 6px; cursor: pointer; }
 .logRow:hover { background: var(--dsw-alias-interactive-bg-hover); }
-
-.logLine1 { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.logHash {
-  flex: none;
-  padding: 1px 4px;
-  border-radius: 2px;
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-secondary);
-  font: var(--dsw-font-markdown-code-block-small);
-}
-.logLine2 { display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
-.logRef { flex: none; padding: 0 6px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 999px; font: var(--dsw-font-xxxs-strong-11); color: var(--dsw-alias-brand-primary); white-space: nowrap; }
-.logSubject { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--dsw-font-xxs-strong-12); color: var(--dsw-alias-label-primary); }
-.logMeta { margin-left: auto; font: var(--dsw-font-xxxs-11); color: var(--dsw-alias-label-tertiary); white-space: nowrap; }
+.graphSvg { flex: none; max-width: 40%; height: 22px; overflow: hidden; }
+.graphContent { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; padding-right: 4px; }
+.logRefs { display: inline-flex; gap: 3px; flex-shrink: 1; min-width: 0; max-width: 45%; overflow: hidden; }
+.logRef { flex: none; padding: 0 4px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 3px; font: var(--dsw-font-xxxs-strong-11); color: var(--dsw-alias-brand-primary); white-space: nowrap; }
+.logSubject { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--dsw-font-xxs-12); color: var(--dsw-alias-label-primary); }
+.logMeta { max-width: 28%; overflow: hidden; text-overflow: ellipsis; font: var(--dsw-font-xxxs-11); color: var(--dsw-alias-label-tertiary); white-space: nowrap; }
 
 .logMore {
   display: block;
@@ -604,7 +568,7 @@
 
 /* Keyboard focus rings match the shared sidebar convention (the kit atoms and
    the tree rows carry their own). */
-.logRow:focus-visible, .logMore:focus-visible, .select:focus-visible, .dragHandle:focus-visible {
+.logRow:focus-visible, .logMore:focus-visible, .scmDisclosure:focus-visible, .branchButton:focus-visible, .syncButton:focus-visible, .suggestButton:focus-visible, .dragHandle:focus-visible {
   outline: 2px solid var(--dsw-alias-interactive-bg-hover-accent);
   outline-offset: -1px;
 }

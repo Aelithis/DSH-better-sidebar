@@ -114,6 +114,8 @@ function sameCounts(left: GitLineCounts | undefined, right: GitLineCounts | unde
 function sameStatus(a: GitStatusResult, b: GitStatusResult): boolean {
   if (a === b) return true
   if (a.isRepo !== b.isRepo || a.branch !== b.branch || a.root !== b.root
+    || a.upstream !== b.upstream || a.ahead !== b.ahead || a.behind !== b.behind
+    || a.detached !== b.detached || a.operation !== b.operation
     || a.truncated !== b.truncated || a.entries.length !== b.entries.length) return false
   if (a.repositories?.length !== b.repositories?.length) return false
   if (a.repositories !== undefined && b.repositories !== undefined

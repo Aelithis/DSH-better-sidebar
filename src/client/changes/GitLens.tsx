@@ -1,35 +1,17 @@
 /**
- * The Git lens of the changes tab: repository truth — the changed files
- * (unstaged / staged) as a directory tree, stage/unstage, commit with a
- * message box, branch and checkout switching, and a VSCode-like history with
- * decorations, author and relative time. Clicking a changed file or a history
- * row previews it in the tab's shared bottom pane (see {@link DiffPane}); rows
- * carry right-click context menus with advanced operations (open in editor,
- * discard, revert, cherry-pick, copy paths/hashes).
+ * Source Control inside the unchanged changes-tab shell: independent Changes
+ * and Graph disclosures, a draft above the resource groups, and a sticky
+ * checkout/sync footer. Status still comes from the one shared Git poller;
+ * mutations, worktree inventory and history reuse the existing host routes.
  *
- * The change list is a TREE, not a flat list: {@link buildChangeTree} folds
- * each group's paths into directories (single-child chains compressed), so a
- * nested change reads as structure instead of as a wall of rows. Directory
- * rows disclose their subtree (`aria-expanded`); file rows carry the host's
- * own file artwork, the porcelain letter and the trailing stage action, which
- * only shows on hover/focus to keep the row quiet.
- *
- * The git status itself is NOT fetched here: it comes from the plugin's one
- * shared store (`ui/git-status.ts`), which the file tree also subscribes to,
- * so both surfaces color/lists the same answer from a single poller. This
- * component owns the checkout-derived surfaces a status call cannot answer
- * (worktree inventory, branch choices, history) and every mutation.
- *
- * Two error channels, one each: the commit bar owns its single status line
- * (commit / stage / discard / revert failures), and the lens owns the top
- * banner (refresh, branch switch, history paging). Branch and history
- * failures used to land under the commit box, which read as "your commit
- * failed" for an action the user never ran.
+ * UI semantics reference: VS Code 76f9f309edc0682f4ef9465be8d12af754b87236,
+ * extensions/git and src/vs/workbench/contrib/scm (not a runtime dependency).
  */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import {
-  Button, IconChevronRightOutlineRegular, IconCodeOutlineRegular, IconCopyOutlineRegular, IconPlusOutlineRegular,
-  IconSparkleRegular, IconTrashOutlineRegular, Menu, writeClipboard,
+  Button, IconBranchOutlineRegular, IconCheckOutlineRegular, IconChevronRightOutlineRegular,
+  IconCodeOutlineRegular, IconCopyOutlineRegular, IconEllipsisOutlineRegular, IconPlusOutlineRegular,
+  IconRefreshOutlineRegular, IconSparkleRegular, IconTrashOutlineRegular, Menu, writeClipboard,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { Context } from '../../context-types.ts'
 import type { GitLineCounts, GitLogEntry, GitStatusEntry, GitStatusResult, GitWorktree, SessionScope } from '../api.ts'
@@ -38,7 +20,8 @@ import { builtinFileIcon, builtinFolderIcon } from '../file-icons.tsx'
 import { usePolling } from '../use-polling.ts'
 import { baseName, relativeTo } from '../paths.ts'
 import { resolveSidebarPath } from '../paths.ts'
-import { isZh, relativeTime, t } from '../locales.ts'
+import { isZh, t } from '../locales.ts'
+import { GitGraph } from './GitGraph.tsx'
 import type { SidebarDiffRef, SidebarStore } from '../state.ts'
 import {
   ConfirmDialog, IconButton, Notice, SectionHeader, StatusBadge, invalidateGitStatus, statusOfXY,
@@ -75,18 +58,6 @@ const BADGE_TONE: Record<GitTone, StatusTone> = {
   renamed: 'renamed',
   copied: 'renamed',
   conflict: 'conflict',
-}
-
-/** The ref names of one log row's decorations (`HEAD -> main` → `main`), deduped. */
-function refNames(refs: string): string[] {
-  return [...new Set(
-    refs
-      .split(',')
-      .map(ref => ref.trim())
-      .filter(ref => ref !== '')
-      .map(ref => (ref.includes(' -> ') ? ref.slice(ref.indexOf(' -> ') + 4) : ref))
-      .map(ref => (ref.startsWith('tag: ') ? ref.slice(5) : ref)),
-  )]
 }
 
 /** One thrown value as display text (every error line here normalizes through
@@ -226,8 +197,9 @@ const FileRow = memo(function FileRow(props: {
         onContextMenu={(event) => { props.onContextMenu(event, node, staged) }}
       >
         <span className={css.rowIcon} aria-hidden="true">{props.glyph(node.path)}</span>
-        <StatusBadge tone={BADGE_TONE[node.status.tone]} title={node.path}>{node.status.letter}</StatusBadge>
         <span className={css.rowName}>{node.name}</span>
+        <span className={css.rowPath}>{node.path.slice(0, -node.name.length).replace(/[\\/]+$/, '') || '/'}</span>
+        <StatusBadge tone={BADGE_TONE[node.status.tone]} title={node.path}>{node.status.letter}</StatusBadge>
         {/* The row's own line counts (#131): read straight off the node, so a
             poll that answered different numbers re-renders this row with them. */}
         <LineCounts counts={node.counts} untracked={node.status.tone === 'untracked'} />
@@ -338,7 +310,12 @@ export function GitLens(props: GitLensProps) {
   const [logEntries, setLogEntries] = useState<GitLogEntry[]>([])
   /** Whether the history was fully paged (a batch shorter than LOG_BATCH). */
   const [logEnded, setLogEnded] = useState(false)
+  const [logLoading, setLogLoading] = useState(false)
   const [logLoadingMore, setLogLoadingMore] = useState(false)
+  const [changesOpen, setChangesOpen] = useState(true)
+  const [graphOpen, setGraphOpen] = useState(true)
+  const [moreOpen, setMoreOpen] = useState(false)
+  const [branchOpen, setBranchOpen] = useState(false)
   /** The history's own failure state: an empty list must not claim "no commits"
    *  when the log call failed. */
   const [logFailed, setLogFailed] = useState(false)
@@ -348,12 +325,16 @@ export function GitLens(props: GitLensProps) {
    *  kept-mounted tab shows a conversation its own message when it comes back
    *  (#712). */
   const [commitDrafts, setCommitDrafts] = useState<Record<string, string>>({})
-  const draftKey = `${scope.sessionId}\u0000${scope.cwd ?? ''}`
+  // Primary selection canonicalizes to "" so the initial inventory cannot
+  // move a just-typed draft to a different key; linked checkouts stay isolated.
+  const draftWorktree = selectedWorktree === worktrees.find(entry => entry.current)?.path ? '' : selectedWorktree ?? ''
+  const draftKey = `${scope.sessionId}\u0000${scope.cwd ?? ''}\u0000${repoRoot ?? ''}\u0000${draftWorktree}`
   const commitMsg = commitDrafts[draftKey] ?? ''
   const writeDraft = (text: string): void => {
     setCommitDrafts(prev => ({ ...prev, [draftKey]: text }))
   }
   const [busy, setBusy] = useState(false)
+  const actionLock = useRef<symbol | null>(null)
   /** Whether a commit-message suggestion is being generated host-side (the
    *  host streams the diff through the harness LLM — no agent is spawned). */
   const [suggesting, setSuggesting] = useState(false)
@@ -375,8 +356,8 @@ export function GitLens(props: GitLensProps) {
     const next = Math.min(box.scrollHeight, max)
     box.style.height = `${next}px`
     box.style.overflowY = box.scrollHeight > max ? 'auto' : 'hidden'
-  }, [commitMsg])
-  /** The commit bar's ONE status line (commit / stage / discard / revert). */
+  }, [commitMsg, changesOpen, visible])
+  /** One footer status channel for generation and Git mutations. */
   const [actionError, setActionError] = useState<string | null>(null)
   /** The lens-level error banner (refresh / branch switch / history paging). */
   const [viewError, setViewError] = useState<string | null>(null)
@@ -464,18 +445,30 @@ export function GitLens(props: GitLensProps) {
 
   /** Drop every checkout-derived surface before another one loads. */
   const clearDerived = (): void => {
+    scopeGen.current += 1
+    actionLock.current = null
+    setBusy(false)
+    setSuggesting(false)
+    setCommitting(false)
     setBranchNames([])
     setLogEntries([])
     setLogEnded(false)
+    setLogLoading(false)
     setLogLoadingMore(false)
     setLogFailed(false)
     setActionError(null)
+    setFileMenu(null)
+    setHistoryMenu(null)
+    setConfirm(null)
+    setMoreOpen(false)
+    setBranchOpen(false)
   }
 
   /** Load the branch choices and the first history page of one checkout. */
   const loadTarget = useCallback(async (target: string | undefined): Promise<void> => {
     const generation = scopeGen.current
     const gitScope = gitScopeNow()
+    setLogLoading(true)
     const [branchResult, logResult] = await Promise.all([
       api.gitBranch(gitScope, target).catch(() => ({ current: '', names: [] as string[] })),
       api.gitLog(gitScope, LOG_BATCH, 0, target).then(
@@ -483,7 +476,8 @@ export function GitLens(props: GitLensProps) {
         () => ({ entries: [] as GitLogEntry[], failed: true }),
       ),
     ])
-    if (generation !== scopeGen.current) return
+    if (generation !== scopeGen.current || target !== chosenPathRef.current) return
+    setLogLoading(false)
     setBranchNames(branchResult.names)
     setLogEntries(logResult.entries)
     setLogEnded(logResult.entries.length < LOG_BATCH)
@@ -615,25 +609,33 @@ export function GitLens(props: GitLensProps) {
   const pollInventory = useCallback((signal: AbortSignal): Promise<void> => refresh(true, signal), [refresh])
   usePolling(visible, pollInventory, { intervalMs: WORKTREE_POLL_MS, mode: 'self-scheduling' })
 
-  /** Run one mutating git action: lock the bar, refresh the shared status and
-   *  the derived surfaces on success, and report the failure in the commit
-   *  bar's single status line (never as an unhandled rejection). */
+  /** Lock one target's mutation and refresh even a partially failed sync. */
   const runAction = async (
     action: () => Promise<unknown>,
     failure: (reason: unknown) => string = errorMessage,
     onSuccess?: () => void,
   ): Promise<void> => {
+    if (actionLock.current !== null) return
+    const lock = Symbol()
+    actionLock.current = lock
+    const generation = scopeGen.current
+    const sessionId = scope.sessionId
     setBusy(true)
     setActionError(null)
     try {
       await action()
       onSuccess?.()
-      invalidateGitStatus(scope.sessionId)
-      await refresh(false)
     } catch (reason) {
-      setActionError(failure(reason))
+      if (generation === scopeGen.current) setActionError(failure(reason))
     } finally {
-      setBusy(false)
+      // A Pull can succeed before Push fails: refresh on failure too.
+      invalidateGitStatus(sessionId)
+      if (generation === scopeGen.current) await refresh(false)
+      if (actionLock.current === lock) {
+        actionLock.current = null
+        setBusy(false)
+        setCommitting(false)
+      }
     }
   }
 
@@ -651,22 +653,27 @@ export function GitLens(props: GitLensProps) {
     )
   }
 
-  const stageAll = (staged: boolean): void => {
-    void runAction(
-      () => (staged ? api.gitUnstage(gitScopeNow(), undefined, selectedWorktree) : api.gitStage(gitScopeNow(), undefined, selectedWorktree)),
-      stageError,
-    )
+  const stageAll = (staged: boolean, merge = false): void => {
+    const gitScope = gitScopeNow()
+    const target = selectedWorktree
+    void runAction(async () => {
+      if (!staged && mergeEntries.length > 0) {
+        // Separate Merge/Changes groups must not stage each other's files.
+        for (const entry of merge ? mergeEntries : unstagedEntries) await api.gitStage(gitScope, entry.path, target)
+      } else if (staged) await api.gitUnstage(gitScope, undefined, target)
+      else await api.gitStage(gitScope, undefined, target)
+    }, stageError)
   }
 
   const commit = (): void => {
     const message = commitMsg.trim()
-    if (message === '' || busy || suggesting) return
+    if (!canCommit || actionLock.current) return
     setCommitting(true)
     void runAction(
       () => api.gitCommit(gitScopeNow(), message, selectedWorktree),
       errorMessage,
       () => { writeDraft('') },
-    ).finally(() => { setCommitting(false) })
+    )
   }
 
   /** The generate button's label/tooltip: names the model when one resolves,
@@ -678,20 +685,27 @@ export function GitLens(props: GitLensProps) {
   /** Ask the host to draft a commit message from the pending changes, then
    *  fill the message box (still editable; regenerating is allowed). */
   const suggestMessage = async (): Promise<void> => {
-    if (busy || suggesting) return
+    if (actionLock.current !== null || entries.length === 0) return
+    const lock = Symbol()
+    actionLock.current = lock
+    const generation = scopeGen.current
     setSuggesting(true)
     setActionError(null)
     try {
       const { message } = await api.gitSuggestMessage(gitScopeNow(), isZh() ? 'zh' : 'en', selectedWorktree)
-      writeDraft(message)
+      if (generation === scopeGen.current) writeDraft(message)
     } catch (reason) {
+      if (generation !== scopeGen.current) return
       if (reason instanceof SidebarApiError && reason.code === 'git-suggest-empty') {
         setActionError(t('suggestCommitEmpty'))
       } else {
         setActionError(`${t('suggestCommitError')}: ${errorMessage(reason)}`)
       }
     } finally {
-      setSuggesting(false)
+      if (actionLock.current === lock) {
+        actionLock.current = null
+        setSuggesting(false)
+      }
     }
   }
 
@@ -706,6 +720,16 @@ export function GitLens(props: GitLensProps) {
   /** Pull into the selected checkout (fast-forward only host-side). */
   const pull = (): void => {
     void runAction(() => api.gitPull(gitScopeNow(), selectedWorktree), pullError)
+  }
+
+  const sync = (): void => {
+    if (!canSync) return
+    const gitScope = gitScopeNow()
+    const target = selectedWorktree
+    void runAction(async () => {
+      try { await api.gitPull(gitScope, target) } catch (reason) { throw new Error(pullError(reason)) }
+      try { await api.gitPush(gitScope, target) } catch (reason) { throw new Error(pushError(reason)) }
+    })
   }
 
   /** Switching the selected checkout changes which rows are legitimate to act
@@ -736,17 +760,23 @@ export function GitLens(props: GitLensProps) {
   }
 
   const checkout = async (branch: string): Promise<void> => {
-    if (branch === (snapshot?.branch ?? '') || busy) return
+    if (branch === (snapshot?.branch ?? '') || actionLock.current !== null) return
+    const lock = Symbol()
+    actionLock.current = lock
+    const generation = scopeGen.current
     setBusy(true)
     setViewError(null)
     try {
       await api.gitCheckout(gitScopeNow(), branch, selectedWorktree)
       invalidateGitStatus(scope.sessionId)
-      await refresh(false)
+      if (generation === scopeGen.current) await refresh(false)
     } catch (reason) {
-      setViewError(`${t('checkoutError')}: ${errorMessage(reason)}`)
+      if (generation === scopeGen.current) setViewError(`${t('checkoutError')}: ${errorMessage(reason)}`)
     } finally {
-      setBusy(false)
+      if (actionLock.current === lock) {
+        actionLock.current = null
+        setBusy(false)
+      }
     }
   }
 
@@ -819,14 +849,21 @@ export function GitLens(props: GitLensProps) {
   const contentKey = useMemo(() => entriesKey(entries), [entries])
   // One fold per group, rebuilt only when the change list's CONTENT changes —
   // never on a poll that answered the same files, however fresh its arrays are.
-  const { stagedEntries, unstagedEntries, stagedTree, unstagedTree } = useMemo(() => {
-    const staged = entries.filter(isStagedEntry)
-    const unstaged = entries.filter(isUnstagedEntry)
+  const { mergeEntries, stagedEntries, unstagedEntries, mergeTree, stagedTree, unstagedTree } = useMemo(() => {
+    const merge = entries.filter(entry => statusOfXY(entry.xy)?.tone === 'conflict')
+    const regular = entries.filter(entry => statusOfXY(entry.xy)?.tone !== 'conflict')
+    const staged = regular.filter(isStagedEntry)
+    const unstaged = regular.filter(isUnstagedEntry)
+    const sideEntries = (rows: GitStatusEntry[], index: number): GitStatusEntry[] => rows.map(entry => ({
+      ...entry, xy: entry.xy === '??' ? '??' : index === 0 ? `${entry.xy[0]} ` : ` ${entry.xy[1]}`,
+    }))
     return {
+      mergeEntries: merge,
       stagedEntries: staged,
       unstagedEntries: unstaged,
-      stagedTree: buildChangeTree(staged),
-      unstagedTree: buildChangeTree(unstaged),
+      mergeTree: buildChangeTree(merge),
+      stagedTree: buildChangeTree(sideEntries(staged, 0)),
+      unstagedTree: buildChangeTree(sideEntries(unstaged, 1)),
     }
     // The key stands in for `entries`: same content ⇒ same tree objects ⇒ the
     // memoized rows below keep their props and never re-render.
@@ -838,8 +875,20 @@ export function GitLens(props: GitLensProps) {
   const stagedTotal = useMemo(() => sumLineCounts(stagedTree), [stagedTree])
   const isRepo = snapshot?.isRepo === true
   const branch = snapshot?.branch ?? ''
-  const branchOptions = branch === '' ? branchNames : [branch, ...branchNames.filter(name => name !== branch)]
-  const clean = isRepo && stagedEntries.length === 0 && unstagedEntries.length === 0
+  const clean = isRepo && entries.length === 0
+  const canCommit = isRepo && !busy && !suggesting && mergeEntries.length === 0
+    && stagedEntries.length > 0 && commitMsg.trim() !== ''
+  const branchLabel = branch || t('gitDetached')
+  const branchMarkers = `${unstagedEntries.length > 0 ? '*' : ''}${stagedEntries.length > 0 ? '+' : ''}${snapshot?.operation !== undefined || mergeEntries.length > 0 ? '!' : ''}`
+  const shortcut = /Mac|iPhone|iPad/.test(globalThis.navigator?.platform ?? '') ? 'Cmd+Enter' : 'Ctrl+Enter'
+  const messagePlaceholder = t('commitPlaceholder', { branch: branchLabel, shortcut })
+  const canSync = isRepo && !busy && !suggesting && branch !== '' && snapshot?.detached !== true
+    && snapshot?.upstream !== undefined && snapshot.ahead !== undefined && snapshot.behind !== undefined
+    && snapshot.operation === undefined && mergeEntries.length === 0
+  const syncLabel = snapshot?.detached === true || branch === '' ? t('gitDetached')
+    : snapshot?.upstream === undefined ? t('gitNoUpstream')
+    : snapshot.ahead === undefined || snapshot.behind === undefined ? t('gitSyncUnavailable')
+    : `${t('gitSync')}: ${snapshot.upstream} · ${snapshot.behind}↓ ${snapshot.ahead}↑`
 
   /** Fold or unfold one directory row (keyed per group, see `collapsed`).
    *  Stable: it is a memoized row's prop. */
@@ -888,7 +937,7 @@ export function GitLens(props: GitLensProps) {
       row={node}
       glyph={fileGlyph}
       staged={staged}
-      busy={busy}
+      busy={busy || suggesting}
       selected={isPreviewedWorktree(node.path, staged)}
       onPreview={previewFile}
       onContextMenu={openRowMenu}
@@ -907,7 +956,7 @@ export function GitLens(props: GitLensProps) {
           folderGlyph={folderGlyph}
           staged={staged}
           open={open}
-          busy={busy}
+          busy={busy || suggesting}
           onToggle={toggleDir}
           onToggleStage={stagePath}
         />
@@ -929,55 +978,7 @@ export function GitLens(props: GitLensProps) {
 
   return (
     <div className={css.git} data-git-root>
-      {/* The non-scrolling head: the branch / repository / worktree band stays
-          on screen while the change list and the history scroll under it
-          (#194). */}
-      {(repoChoices.length > 1 || worktrees.length > 1 || branch !== '') && (
-        <div className={css.selectors} data-git-head>
-          {repoChoices.length > 1 && (
-            <select
-              className={css.select}
-              value={repoRoot ?? ''}
-              title={repoRoot}
-              disabled={busy}
-              onChange={(event) => { chooseRepo(event.target.value) }}
-            >
-              {repoChoices.map(root => <option key={root} value={root}>{baseName(root)}</option>)}
-            </select>
-          )}
-          {worktrees.length > 1 && (
-            <select
-              className={css.select}
-              value={selectedWorktree ?? ''}
-              title={selectedWorktree}
-              disabled={busy}
-              onChange={(event) => { chooseWorktree(event.target.value) }}
-            >
-              {worktrees.map(entry => (
-                <option key={entry.path} value={entry.path}>
-                  {entry.branch} · {baseName(entry.path)} ({entry.changes})
-                </option>
-              ))}
-            </select>
-          )}
-          {branch !== '' && (branchOptions.length > 1
-            ? (
-              <select
-                className={css.select}
-                value={branch}
-                title={t('branch')}
-                disabled={busy}
-                onChange={(event) => { void checkout(event.target.value) }}
-              >
-                {branchOptions.map(name => <option key={name} value={name}>{name}</option>)}
-              </select>
-            )
-            : <span className={css.branchLabel} title={`${t('branch')}: ${branch}`}>{branch}</span>)}
-        </div>
-      )}
-
-      {/* The ONE scroll body: the change groups and the history scroll here,
-          between the fixed head band and the fixed commit bar (#194). */}
+      {/* Changes and Graph scroll together; only the branch/sync footer docks. */}
       <div className={css.gitScroll} data-git-scroll>
         {viewError !== null && <Notice kind="error" role="alert">{viewError}</Notice>}
 
@@ -986,184 +987,151 @@ export function GitLens(props: GitLensProps) {
         {snapshot !== null && !isRepo && <Notice kind="empty" tone="page">{t('notRepo')}</Notice>}
         {snapshot?.truncated === true && <Notice kind="warn">{t('statusTruncated')}</Notice>}
 
-        {clean && <Notice kind="empty" tone="page">{t('changesClean')}</Notice>}
-
-        {isRepo && !clean && (
-          <>
-            {/* Each group is its own block so its sticky header is released (and
-                replaced) exactly when the group scrolls away. */}
-            <div className={css.group} data-group="unstaged">
-              <SectionHeader
-                className={css.groupHeader}
-                label={t('unstaged')}
-                action={unstagedEntries.length > 0
-                  ? (
-                    <IconButton
-                      className={css.headerAction}
-                      size="sm"
-                      disabled={busy}
-                      label={t('stageAll')}
-                      icon={<IconPlusOutlineRegular size={14} />}
-                      onClick={() => { stageAll(false) }}
-                    />
-                  )
-                  : undefined}
-              >
-                <span className={css.countPill} data-count={unstagedEntries.length}>{unstagedEntries.length}</span>
-                {/* The group's line total (#131): the sum of its file rows. */}
-                {unstagedTotal.files > 0 && (
-                  <PlusMinus additions={unstagedTotal.additions} deletions={unstagedTotal.deletions} note="group" />
-                )}
-              </SectionHeader>
-              {renderTree(unstagedTree, false)}
-            </div>
-            <div className={css.group} data-group="staged">
-              <SectionHeader
-                className={css.groupHeader}
-                label={t('staged')}
-                action={stagedEntries.length > 0
-                  ? (
-                    <IconButton
-                      className={css.headerAction}
-                      size="sm"
-                      disabled={busy}
-                      label={t('unstageAll')}
-                      icon={<IconTrashOutlineRegular size={14} />}
-                      onClick={() => { stageAll(true) }}
-                    />
-                  )
-                  : undefined}
-              >
-                <span className={css.countPill} data-count={stagedEntries.length}>{stagedEntries.length}</span>
-                {stagedTotal.files > 0 && (
-                  <PlusMinus additions={stagedTotal.additions} deletions={stagedTotal.deletions} note="group" />
-                )}
-              </SectionHeader>
-              {renderTree(stagedTree, true)}
-            </div>
-          </>
-        )}
-
         {isRepo && (
-          <>
-            <SectionHeader label={t('history')} count={logEntries.length > 0 ? logEntries.length : undefined} />
-            {logEntries.length === 0 && logFailed && <Notice kind="error">{t('historyLoadError')}</Notice>}
-            {logEntries.length === 0 && !logFailed && logEnded && <Notice kind="empty" tone="page">{t('changesNoHistory')}</Notice>}
-            {logEntries.map(entry => (
-              <div
-                key={entry.hashFull}
-                role="button"
-                tabIndex={0}
-                className={css.logRow}
-                data-selected={selectedRef?.kind === 'commit' && selectedRef.hashFull === entry.hashFull ? 'true' : undefined}
-                title={`${entry.author} · ${entry.date}\n${entry.hashFull}`}
-                onClick={() => { onPreview(commitRefOf(entry)) }}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault()
-                    onPreview(commitRefOf(entry))
-                  }
-                }}
-                onContextMenu={(event) => { openHistoryMenu(event, entry) }}
-              >
-                <span className={css.logLine1}>
-                  <span className={css.logHash}>{entry.hash}</span>
-                  <span className={css.logSubject}>{entry.subject}</span>
+          <section data-scm-section="changes">
+            <div className={css.scmHeader}>
+              <button type="button" className={css.scmDisclosure} aria-expanded={changesOpen}
+                onClick={() => { setChangesOpen(open => !open) }}>
+                <span className={css.chevron} data-open={changesOpen ? 'true' : undefined} aria-hidden="true">
+                  <IconChevronRightOutlineRegular size={12} />
                 </span>
-                <span className={css.logLine2}>
-                  {refNames(entry.refs).map(ref => (
-                    <span key={ref} className={css.logRef}>{ref}</span>
-                  ))}
-                  <span className={css.logMeta}>{entry.author} · {relativeTime(entry.date)}</span>
+                {t('gitChanges')}
+              </button>
+              <div className={css.scmActions}>
+                <IconButton size="sm" icon={<IconCheckOutlineRegular size={14} />} label={t('commit')}
+                  disabled={!canCommit} onClick={commit} />
+                <IconButton size="sm" icon={<IconRefreshOutlineRegular size={14} />} label={t('refresh')}
+                  disabled={busy || suggesting} onClick={() => { invalidateGitStatus(scope.sessionId); void refresh(false) }} />
+                <Menu open={moreOpen} onClose={() => { setMoreOpen(false) }} portal compact align="end" autoFocus
+                  anchor={<IconButton size="sm" icon={<IconEllipsisOutlineRegular size={14} />} label={t('gitMoreActions')}
+                    active={moreOpen} onClick={() => { setMoreOpen(open => !open) }} />}
+                  items={[
+                    { id: 'push', label: t('push'), disabled: busy || suggesting || snapshot?.detached === true },
+                    { id: 'pull', label: t('pull'), disabled: busy || suggesting || snapshot?.detached === true },
+                    ...(repoChoices.length > 1 ? [{ id: 'repos', label: t('gitRepository'),
+                      submenu: repoChoices.map(root => ({ id: `repo:${root}`, label: baseName(root), disabled: busy || suggesting })),
+                    }] : []),
+                    ...(worktrees.length > 1 ? [{ id: 'worktrees', label: t('worktree'),
+                      submenu: worktrees.map(entry => ({ id: `worktree:${entry.path}`,
+                        label: `${entry.branch || t('gitDetached')} · ${baseName(entry.path)} (${entry.changes})`, disabled: busy || suggesting,
+                      })),
+                    }] : []),
+                  ]}
+                  onSelect={id => {
+                    setMoreOpen(false)
+                    if (id === 'push') push()
+                    else if (id === 'pull') pull()
+                    else if (id.startsWith('repo:')) chooseRepo(id.slice(5))
+                    else if (id.startsWith('worktree:')) chooseWorktree(id.slice(9))
+                  }} />
+              </div>
+            </div>
+            {changesOpen && <div data-scm-changes>
+              <div className={css.messageBox} data-message-box>
+                <span className={css.commitInputWrap}>
+                  <textarea ref={commitBoxRef} className={css.commitInput}
+                    placeholder={busy || suggesting ? '' : messagePlaceholder}
+                    value={commitMsg} disabled={busy || suggesting} aria-busy={busy || suggesting}
+                    data-message-busy={suggesting || committing ? 'true' : undefined}
+                    aria-label={messagePlaceholder} rows={1}
+                    onChange={event => { writeDraft(event.currentTarget.value); setActionError(null) }}
+                    onKeyDown={event => {
+                      if (event.nativeEvent.isComposing) return
+                      if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); commit() }
+                      if ((event.ctrlKey || event.metaKey) && (event.key === 'g' || event.key === 'G')) {
+                        event.preventDefault(); void suggestMessage()
+                      }
+                    }} />
+                  {(suggesting || committing) && <span className={css.commitBusyText} role="status" aria-live="polite">
+                    {suggesting ? t('generatingCommitMessage') : t('committingMessage')}
+                  </span>}
+                  <button type="button" className={suggesting ? `${css.suggestButton} ${css.suggestBusy}` : css.suggestButton}
+                    aria-label={generateLabel} aria-busy={suggesting} title={generateLabel}
+                    disabled={busy || suggesting || entries.length === 0} onClick={() => { void suggestMessage() }}>
+                    <IconSparkleRegular size={14} />
+                  </button>
                 </span>
               </div>
-            ))}
-            {!logEnded && (
-              <button
-                type="button"
-                className={css.logMore}
-                disabled={logLoadingMore || busy}
-                onClick={() => { void loadMoreLog() }}
-              >
-                {logLoadingMore ? t('loading') : t('loadMore')}
-              </button>
-            )}
-          </>
+              {clean && <Notice kind="empty">{t('changesClean')}</Notice>}
+              {mergeEntries.length > 0 && <div className={css.group} data-group="merge">
+                <SectionHeader className={css.groupHeader} label={t('gitMergeChanges')}
+                  action={<IconButton className={css.headerAction} size="sm" disabled={busy || suggesting}
+                    label={t('stageAll')} icon={<IconPlusOutlineRegular size={14} />} onClick={() => { stageAll(false, true) }} />}>
+                  <span className={css.countPill} data-count={mergeEntries.length}>{mergeEntries.length}</span>
+                </SectionHeader>
+                {renderTree(mergeTree, false)}
+              </div>}
+              {stagedEntries.length > 0 && <div className={css.group} data-group="staged">
+                <SectionHeader className={css.groupHeader} label={t('gitStagedChanges')}
+                  action={<IconButton className={css.headerAction} size="sm" disabled={busy || suggesting}
+                    label={t('unstageAll')} icon={<IconTrashOutlineRegular size={14} />} onClick={() => { stageAll(true) }} />}>
+                  <span className={css.countPill} data-count={stagedEntries.length}>{stagedEntries.length}</span>
+                  {stagedTotal.files > 0 && <PlusMinus additions={stagedTotal.additions} deletions={stagedTotal.deletions} note="group" />}
+                </SectionHeader>
+                {renderTree(stagedTree, true)}
+              </div>}
+              {unstagedEntries.length > 0 && <div className={css.group} data-group="unstaged">
+                <SectionHeader className={css.groupHeader} label={t('gitChanges')}
+                  action={<IconButton className={css.headerAction} size="sm" disabled={busy || suggesting}
+                    label={t('stageAll')} icon={<IconPlusOutlineRegular size={14} />} onClick={() => { stageAll(false) }} />}>
+                  <span className={css.countPill} data-count={unstagedEntries.length}>{unstagedEntries.length}</span>
+                  {unstagedTotal.files > 0 && <PlusMinus additions={unstagedTotal.additions} deletions={unstagedTotal.deletions} note="group" />}
+                </SectionHeader>
+                {renderTree(unstagedTree, false)}
+              </div>}
+            </div>}
+          </section>
         )}
+
+        {isRepo && <section data-scm-section="graph">
+          <div className={css.scmHeader}>
+            <button type="button" className={css.scmDisclosure} aria-expanded={graphOpen}
+              onClick={() => { setGraphOpen(open => !open) }}>
+              <span className={css.chevron} data-open={graphOpen ? 'true' : undefined} aria-hidden="true">
+                <IconChevronRightOutlineRegular size={12} />
+              </span>
+              {t('gitGraph')}
+            </button>
+          </div>
+          {graphOpen && <div data-scm-graph>
+            {logLoading && <Notice kind="loading">{t('loading')}</Notice>}
+            {logEntries.length === 0 && logFailed && <Notice kind="error">
+              {t('historyLoadError')} <Button variant="ghost" size="sm" onClick={() => { void refresh(false) }}>{t('retry')}</Button>
+            </Notice>}
+            {logEntries.length === 0 && !logFailed && !logLoading && logEnded && <Notice kind="empty">{t('changesNoHistory')}</Notice>}
+            <GitGraph entries={logEntries} selectedHash={selectedRef?.kind === 'commit' ? selectedRef.hashFull : undefined}
+              onPreview={entry => { onPreview(commitRefOf(entry)) }} onContextMenu={openHistoryMenu} />
+            {!logEnded && !logLoading && <button type="button" className={css.logMore}
+              disabled={logLoadingMore || busy || suggesting} onClick={() => { void loadMoreLog() }}>
+              {logLoadingMore ? t('loading') : t('loadMore')}
+            </button>}
+          </div>}
+        </section>}
       </div>
 
-      {/* The commit bar is OUTSIDE the scroll body: it is the tab's persistent
-          action surface, so the message being written never scrolls away
-          (#194). */}
-      {isRepo && (
-        <div className={css.commitBar} data-commit-bar>
-          <div className={css.commitRow}>
-            <span className={css.commitInputWrap}>
-              {/* A native textarea (the primitives ship no multiline input):
-                  commit messages carry a subject AND a body, and Enter must
-                  insert a newline — submitting stays on Ctrl/Cmd+Enter. */}
-              <textarea
-                ref={commitBoxRef}
-                className={css.commitInput}
-                // While busy the placeholder steps aside for the sweep label.
-                placeholder={busy || suggesting ? '' : t('commitPlaceholder')}
-                value={commitMsg}
-                disabled={busy || suggesting}
-                aria-busy={busy || suggesting}
-                aria-label={t('commitPlaceholder')}
-                rows={1}
-                onChange={(event) => { writeDraft(event.currentTarget.value); setActionError(null) }}
-                onKeyDown={(event) => {
-                  if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') commit()
-                  // Ctrl/Cmd+G drafts the message, mirroring the button (the
-                  // placeholder advertises it).
-                  if ((event.ctrlKey || event.metaKey) && (event.key === 'g' || event.key === 'G')) {
-                    event.preventDefault()
-                    void suggestMessage()
-                  }
-                }}
-              />
-              {/* Only the two per-input operations get a label: other `busy`
-                  work (staging, checkout) disables the box silently. */}
-              {(suggesting || committing) && (
-                <span className={css.commitBusyText} role="status" aria-live="polite">
-                  {suggesting ? t('generatingCommitMessage') : t('committingMessage')}
-                </span>
-              )}
-            </span>
-            <button
-              type="button"
-              className={suggesting ? `${css.suggestButton} ${css.suggestBusy}` : css.suggestButton}
-              aria-label={generateLabel}
-              aria-busy={suggesting}
-              title={generateLabel}
-              disabled={busy || suggesting || (stagedEntries.length === 0 && unstagedEntries.length === 0)}
-              onClick={() => { void suggestMessage() }}
-            >
-              <IconSparkleRegular size={14} />
-            </button>
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={busy || suggesting || commitMsg.trim() === '' || stagedEntries.length === 0}
-              onClick={commit}
-            >
-              {t('commit')}
-            </Button>
-            {/* Shipping the commit without leaving the panel: the two remote
-                actions ride the SAME row and the SAME busy lock as commit /
-                stage, so their failures land on the bar's one status line
-                below instead of opening a second error channel. */}
-            <Button variant="ghost" size="sm" disabled={busy || suggesting} onClick={push}>{t('push')}</Button>
-            <Button variant="ghost" size="sm" disabled={busy || suggesting} onClick={pull}>{t('pull')}</Button>
-          </div>
-          {/* The bar's ONE status line stays directly under the message row it
-              belongs to (the placement `changes-tab.spec.tsx` pins), so it keeps
-              reading as "your commit/stage/push failed" rather than as a tab-level
-              banner. */}
-          {actionError !== null && <Notice kind="error" tone="inline" role="alert">{actionError}</Notice>}
+      {/* A sibling of the scroller: usable even with both sections folded. */}
+      {isRepo && <div className={css.gitFooter} data-git-footer>
+        {actionError !== null && <Notice kind="error" tone="inline" role="alert">{actionError}</Notice>}
+        <div className={css.footerRow} data-footer-row>
+          <Menu open={branchOpen} onClose={() => { setBranchOpen(false) }} portal compact side="top" autoFocus
+            className={css.branchMenu}
+            anchor={<button type="button" className={css.branchButton} aria-haspopup="menu" aria-expanded={branchOpen}
+              title={`${t('branch')}: ${branchLabel}${branchMarkers}`} disabled={busy || suggesting}
+              onClick={() => { setBranchOpen(open => !open) }}>
+              <IconBranchOutlineRegular size={14} /><span>{branchLabel}{branchMarkers}</span>
+            </button>}
+            items={branchNames.length === 0 ? [{ id: 'none', label: t('gitBranchesUnavailable'), disabled: true }]
+              : branchNames.map(name => ({ id: name, label: name, disabled: busy || suggesting }))}
+            selectedId={branch}
+            onSelect={name => { setBranchOpen(false); void checkout(name) }} />
+          <button type="button" className={css.syncButton} aria-label={syncLabel} title={syncLabel}
+            disabled={!canSync} onClick={sync}>
+            <IconRefreshOutlineRegular size={14} />
+            <span>{snapshot?.upstream !== undefined && snapshot.ahead !== undefined && snapshot.behind !== undefined
+              ? `${snapshot.behind}↓ ${snapshot.ahead}↑` : syncLabel}</span>
+          </button>
         </div>
-      )}
+      </div>}
 
       {/*
         The one shared file-row context menu, positioned at the right-click
@@ -1194,7 +1162,7 @@ export function GitLens(props: GitLensProps) {
           if (target === null) return
           setFileMenu(null)
           if (id === 'open') {
-            const resolved = resolveSidebarPath(repoRoot ?? selectedWorktree ?? scope.cwd, target.path)
+            const resolved = resolveSidebarPath(selectedWorktree ?? repoRoot ?? snapshot?.root ?? scope.cwd, target.path)
             // The host accepts any path now (no containment), so the open
             // guard that mirrored the old fence is gone with it.
             onOpenFile(resolved)
@@ -1214,10 +1182,10 @@ export function GitLens(props: GitLensProps) {
             return
           }
           if (id === 'relative') {
-            copy(relativeTo(repoRoot ?? selectedWorktree ?? scope.cwd ?? '', target.path))
+            copy(relativeTo(selectedWorktree ?? repoRoot ?? snapshot?.root ?? scope.cwd ?? '', target.path))
             return
           }
-          if (id === 'absolute') copy(resolveSidebarPath(repoRoot ?? selectedWorktree ?? scope.cwd, target.path))
+          if (id === 'absolute') copy(resolveSidebarPath(selectedWorktree ?? repoRoot ?? snapshot?.root ?? scope.cwd, target.path))
         }}
         portal
         compact

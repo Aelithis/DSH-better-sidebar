@@ -16,7 +16,7 @@ import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
 
-/** A parsed `git status --porcelain=v1 -z` entry. */
+/** A parsed porcelain status entry (v1 XY convention). */
 export interface GitStatusEntry {
   path: string
   /** Two-letter index/worktree status (X Y), e.g. 'M ', ' M', 'A ', '??'. */
@@ -36,7 +36,15 @@ export type GitLineCounts = { additions: number; deletions: number } | { binary:
 /** The source-control panel snapshot. */
 export interface GitStatusResult {
   isRepo: boolean
+  /** Absent when HEAD is detached; unborn branches keep their real name. */
   branch?: string
+  /** Native tracking ref (e.g. origin/main); never inferred from a remote. */
+  upstream?: string
+  /** Present only when Git can compare HEAD with the tracking ref. */
+  ahead?: number
+  behind?: number
+  detached?: boolean
+  operation?: 'merge' | 'rebase'
   entries: GitStatusEntry[]
   /** True when the working tree had more rows than `GIT_STATUS_LIMIT`; the
    *  panel shows a truncation notice instead of freezing on a huge untracked
@@ -65,6 +73,8 @@ export interface GitLogEntry {
   hash: string
   /** Full 40-char hash (advanced operations: revert / cherry-pick). */
   hashFull: string
+  /** Full parent hashes in Git's order; root commits have none. */
+  parents: string[]
   subject: string
   author: string
   /** ISO 8601 author date (`%ai`), e.g. `2024-01-01 10:00:00 +0800`. */
@@ -103,6 +113,38 @@ export function parsePorcelainZ(output: string): GitStatusEntry[] {
     }
   }
   return entries
+}
+
+/** Native branch metadata and rows from `git status --porcelain=v2 --branch -z`.
+ * Fixed metadata fields are split off; path spaces/newlines remain literal. */
+export function parseStatusPorcelainV2Z(output: string): GitStatusResult {
+  const result: GitStatusResult = { isRepo: true, entries: [] }
+  const tokens = output.split('\0')
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!
+    if (token.startsWith('# branch.head ')) {
+      const head = token.slice('# branch.head '.length)
+      result.detached = head === '(detached)'
+      if (!result.detached) result.branch = head
+    } else if (token.startsWith('# branch.upstream ')) {
+      result.upstream = token.slice('# branch.upstream '.length)
+    } else if (token.startsWith('# branch.ab ')) {
+      const counts = /^# branch\.ab \+(\d+) -(\d+)$/.exec(token)
+      if (counts !== null) {
+        result.ahead = Number(counts[1])
+        result.behind = Number(counts[2])
+      }
+    } else if (token.startsWith('? ')) {
+      result.entries.push({ xy: '??', path: token.slice(2) })
+    } else if (token.startsWith('1 ') || token.startsWith('2 ') || token.startsWith('u ')) {
+      const fields = token.startsWith('u ') ? 10 : token.startsWith('2 ') ? 9 : 8
+      const path = token.split(' ').slice(fields).join(' ')
+      // v2 uses '.' for the clean side; existing callers consume v1 spaces.
+      result.entries.push({ xy: token.slice(2, 4).replaceAll('.', ' '), path })
+      if (token.startsWith('2 ')) index += 1 // The origin path is the next NUL field.
+    }
+  }
+  return result
 }
 
 /**
@@ -224,12 +266,12 @@ export function parseWorktreeList(output: string): GitWorktreeRecord[] {
   return rows
 }
 
-/** Parse `git log --pretty=format:%h%x1f%s%x1f%an%x1f%ai%x1f%H%x1f%D` rows. */
+/** Parse `git log --pretty=format:%h%x1f%s%x1f%an%x1f%ai%x1f%H%x1f%D%x1f%P` rows. */
 export function parseLogLines(output: string): GitLogEntry[] {
   const rows: GitLogEntry[] = []
   for (const line of output.split('\n')) {
     if (line === '') continue
-    const [hash, subject, author, date, hashFull, refs] = line.split('\x1f')
+    const [hash, subject, author, date, hashFull, refs, parents] = line.split('\x1f')
     if (hash === undefined || subject === undefined) continue
     rows.push({
       hash,
@@ -238,6 +280,7 @@ export function parseLogLines(output: string): GitLogEntry[] {
       date: date ?? '',
       hashFull: hashFull ?? hash,
       refs: refs ?? '',
+      parents: parents?.split(' ').filter(Boolean) ?? [],
     })
   }
   return rows
@@ -475,10 +518,23 @@ export async function repoRoot(cwd: string, selected?: string): Promise<string> 
   return roots[0]!
 }
 
-/** The current branch name (`git rev-parse --abbrev-ref HEAD`; 'HEAD' when detached). */
+/** Symbolic HEAD's real branch, including an unborn branch; rejects when detached. */
 export async function currentBranch(cwd: string): Promise<string> {
-  const out = await runGit(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])
+  const out = await runGit(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'])
   return out.trim()
+}
+
+/** Operation markers live in THIS checkout's Git directory (not the common
+ * directory shared by linked worktrees). `git am` also uses rebase-apply, but
+ * only a rebase creates its `rebasing` marker. */
+async function currentOperation(cwd: string): Promise<GitStatusResult['operation']> {
+  const gitDir = (await runGit(cwd, ['rev-parse', '--absolute-git-dir'])).trim()
+  const names = await readdir(gitDir)
+  if (names.includes('rebase-merge')
+    || (names.includes('rebase-apply') && (await readdir(join(gitDir, 'rebase-apply')).catch((): string[] => [])).includes('rebasing'))) {
+    return 'rebase'
+  }
+  return names.includes('MERGE_HEAD') ? 'merge' : undefined
 }
 
 /** Upper bound on status rows shipped to the client. Beyond this the result
@@ -526,21 +582,22 @@ export async function status(cwd: string, selected?: string): Promise<GitStatusR
   const repositories = await repoRoots(cwd)
   if (repositories.length === 0) return { isRepo: false, entries: [], repositories: [] }
   const root = await repoRoot(cwd, selected)
-  const [branch, raw, unstagedNumstat, stagedNumstat] = await Promise.all([
-    currentBranch(root).catch(() => 'HEAD'),
-    runGit(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all']),
+  const [operation, raw, unstagedNumstat, stagedNumstat] = await Promise.all([
+    currentOperation(root).catch(() => undefined),
+    runGit(root, ['status', '--porcelain=v2', '--branch', '--ahead-behind', '-z', '--untracked-files=all']),
     runGit(root, ['diff', '--numstat', '-z']).catch(() => ''),
     runGit(root, ['diff', '--cached', '--numstat', '-z']).catch(() => ''),
   ])
-  const parsed = parsePorcelainZ(raw)
+  const snapshot = parseStatusPorcelainV2Z(raw)
+  const parsed = snapshot.entries
   const lineCounts = new Map<string, GitLineCounts>()
   addLineCounts(lineCounts, parseNumstat(stagedNumstat))
   addLineCounts(lineCounts, parseNumstat(unstagedNumstat))
   const truncated = parsed.length > GIT_STATUS_LIMIT
   const bounded = truncated ? parsed.slice(0, GIT_STATUS_LIMIT) : parsed
   return {
-    isRepo: true,
-    branch,
+    ...snapshot,
+    operation,
     // Paths git has no numstat row for (untracked files) keep their entry
     // untouched: the absence IS the information.
     entries: bounded.map((entry): GitStatusEntry => {
@@ -662,11 +719,11 @@ export async function commit(cwd: string, message: string, selected?: string): P
 export async function branches(cwd: string, selected?: string): Promise<{ current: string; names: string[] }> {
   const root = await repoRoot(cwd, selected)
   const [current, raw] = await Promise.all([
-    currentBranch(root).catch(() => 'HEAD'),
+    currentBranch(root).catch(() => ''),
     runGit(root, ['for-each-ref', '--format=%(refname:short)', 'refs/heads']),
   ])
   const names = raw.split('\n').filter(line => line !== '')
-  return { current, names: names.includes(current) ? names : [current, ...names] }
+  return { current, names: current !== '' && !names.includes(current) ? [current, ...names] : names }
 }
 
 /** Switch to an existing branch.
@@ -678,11 +735,12 @@ export async function checkout(cwd: string, branch: string, selected?: string): 
   await runGit(await repoRoot(cwd, selected), ['checkout', '--end-of-options', branch])
 }
 
-/** Recent commit history (newest first), lazily pageable via skip/count. */
+/** All refs plus HEAD in child-before-parent order for graph lanes, pageable
+ * via skip/count. `--all` also permits an empty history on an unborn HEAD. */
 export async function log(cwd: string, count = 30, skip = 0, selected?: string): Promise<GitLogEntry[]> {
   const raw = await runGit(await repoRoot(cwd, selected), [
-    'log', '-n', String(count), '--skip', String(skip), '--decorate=short',
-    '--pretty=format:%h%x1f%s%x1f%an%x1f%ai%x1f%H%x1f%D',
+    'log', '--all', '--topo-order', '-n', String(count), '--skip', String(skip), '--decorate=short',
+    '--pretty=format:%h%x1f%s%x1f%an%x1f%ai%x1f%H%x1f%D%x1f%P',
   ])
   return parseLogLines(raw)
 }
