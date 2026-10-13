@@ -18,7 +18,7 @@
   - 🧪 测试：`tests/editor-host.spec.tsx` 新增「a listing dropped by a refresh tick does not strand the level on Loading…」（首答延迟 300 ms、tick 在飞行中使其失效、tick 触发的强制重列人为挂死）；去掉本修复该用例当场红并打印现场。
 
 - 🖥️ **底部工作台可以同时开多个终端 Tab（[#927](https://github.com/omdsh-dev/DSH-better-sidebar/issues/927)，PR [#926](https://github.com/omdsh-dev/DSH-better-sidebar/pull/926)）**：`terminal-bottom` 去掉 `single: true` 改为提供 `createTab`——每开一个 mint 一个 `terminal-bottom:<uuid>` 的 id，并在 `meta.terminalInstance` 里记下自己的实例；宿主侧的出现键与内容身份都带上它（`dsh-better-sidebar:terminal-bottom:<instance>[#run]`），于是两个 tab **各自一个 shell**、刷新后各回各的进程，关掉一个只结束它自己那条。**旧 tab（`meta` 里没有 `terminalInstance`）读出来仍是 `undefined`，身份与改造前逐字节相同**，恢复绑定不丢。**维护者收尾**：`nextTerminalMeta()` 必须把实例一起带过去——`patchTab` 是**整份替换 `meta`**，只回 `terminalRun` 会让「新建终端」之后的 tab 掉回旧命名空间，于是两个都换过进程的 tab 撞在同一个 `…terminal-bottom#1` 上、被宿主（按 `(sessionId, key)` 记忆一个 model）发成**同一个 shell**。设计文档 `docs/plans/2026-10-05-bottom-terminal-tab.md` 的「一个终端」限制随之标注放开。
-  - 🧪 测试：`tests/terminal-tab.spec.tsx` +3（实例随「新建终端」保留、旧 tab 不长出实例；两个实例各自 `#1` 不撞、且都不等于旧的裸 `#1`；两个实例渲染出两个宿主终端与两条不同的 `(session,key,contentId)`），描述符关闭钩子补一条「带实例的 tab 只结束自己的终端」。判别性：把 `nextTerminalMeta` 退回只回 `terminalRun`，前两条当场红。
+  - 🧪 测试：`tests/terminal-tab.spec.tsx` +3（实例随「新建终端」保留、旧 tab 不长出实例；两个实例各自 `#1` 不撞、且都不等于旧的裸 `#1`；两个实例渲染出两个宿主终端与两条不同的 `(session,key,contentId)`），描述符关闭钩子补一条「带实例的 tab 只结束自己的终端」。判别性：把 `nextTerminalMeta` 退回只回 `terminalRun`，前两条当场红。（贡献者 PR [#926](https://github.com/omdsh-dev/DSH-better-sidebar/pull/926) @eleven-lings）
 
 - 💬 **侧边对话补齐到接近原生：实时推送 + 排队可见 + per-thread 模型选择 + 底栏重构**（PR [#925](https://github.com/omdsh-dev/DSH-better-sidebar/pull/925)；设计、真机证据与「哪些做不到」的清单见 [docs/plans/2026-10-12-sidechat-native-surface.md](docs/plans/2026-10-12-sidechat-native-surface.md)）：
   - **实时推送**：新增 `/sidebar/ws/sidechat`（`src/sidechat-push.ts`，客户端 `src/client/use-sidechat-push.ts`）。宿主把 `session/event`（60 ms 去抖）与 `agent/assistant-stream`（250 ms 去抖）压成**纯失效帧** `{threadId}`——不带事件体、客户端收到才带 `afterSeq` 增量重拉，协议面最小、单一事实源、断线自愈；每 socket 最多观察 64 个线程，空闲时**零帧**，重连指数退避 1→15 s，轮询降级为 15 s 兜底。
@@ -40,10 +40,10 @@
   - **落地没有光标，还会被预览的阅读位置覆盖**：落地只 `dispatch({ selection })`，而 CodeMirror **只在获焦的编辑器里画光标**、零长度选择本身什么都不画——文件短时一页装得下又没有光标，读者无从判断落在哪。且「进入编辑态按预览滚动位置恢复」那条副作用**声明在落地之后**，同一次提交里会把选择与滚动重新写回读者刚才预览的位置：先在预览里滚动、再点带行号的引用，跳转被静默抹掉。现在行号引用这条路上 `view.focus()`（普通打开不动读者焦点，他可能正从聊天输入框点链接），并在落地前清空 `previewSyncRef`。
   - 🧪 测试：新增 `tests/editor-line-nav-mode.spec.tsx`（4 例，**真 `TextEditor` 过真 `EditorHost`**：落地后能切回预览 / 页头刷新不回弹 / 同文件新行号仍落地 / 换文件不继承行号），`tests/text-editor-line-jump.spec.tsx` +6（落地获焦 / 普通打开不抢焦点 / markdown 翻转后仍获焦 / 消费契约两例 / 预览位置覆盖），`tests/markdown-surface.spec.tsx` +2（真实宿主 `MarkdownText` 下点 `#L42` 与 `#L20-L25` 进记录、标题锚点仍只走 parked 片段），`tests/native-tab-line.spec.ts` +2（换 path 清行号 / 只改 title 保留），`tests/markdown-navigation.spec.ts` +1（`lineOfHostFragment`），`tests/file-open-claim.spec.ts` +1（种子透传与「不传就不带这个键」）。判别性：去掉 `previewSyncRef` 清空 → 预览覆盖用例红（期望第 3 行的 offset 8、实得按比例算出的 14）；去掉两个记录层的清行号 → 对应两条红。（回归报告 [#914](https://github.com/omdsh-dev/DSH-better-sidebar/issues/914)；贡献者 PR [#916](https://github.com/omdsh-dev/DSH-better-sidebar/pull/916) @yanzhaohui1999）
 
-- 💾 **带基线保存时目标已不存在判冲突（[#911](https://github.com/omdsh-dev/DSH-better-sidebar/pull/911)）**：文件读进来之后被删掉或改名走，此前会当成「没有基线可比」直接写回，`mkdir -p` 于是把用户刚删掉的文件（连同父目录）**无提示重建出来**，界面还报「已保存」。数字基线只可能来自一次成功的读取，所以「读不到」是冲突而不是新建意图——现在同样回 409 `fs-conflict`，文案分成「已不存在」与「已在磁盘上被改过」两种；新建走 `fs.createFile`、上传走上传路径，都不受影响。
+- 💾 **带基线保存时目标已不存在判冲突（[#911](https://github.com/omdsh-dev/DSH-better-sidebar/pull/911)）**：文件读进来之后被删掉或改名走，此前会当成「没有基线可比」直接写回，`mkdir -p` 于是把用户刚删掉的文件（连同父目录）**无提示重建出来**，界面还报「已保存」。数字基线只可能来自一次成功的读取，所以「读不到」是冲突而不是新建意图——现在同样回 409 `fs-conflict`，文案分成「已不存在」与「已在磁盘上被改过」两种；新建走 `fs.createFile`、上传走上传路径，都不受影响。（贡献者 PR [#911](https://github.com/omdsh-dev/DSH-better-sidebar/pull/911) @UNscientific-9）
   - 🧪 测试：`tests/fs-write-route.spec.ts` +2（删文件后保存 → 409 且文件不复活、无临时残留；父目录被删 → 409 且目录不重建）。
 
-- 🧭 **改动块内以 `---` / `+++` 开头的正文不再被当成文件头（[#910](https://github.com/omdsh-dev/DSH-better-sidebar/pull/910)）**：删掉一行以 `-- ` 开头的源码（SQL / Lua / Haskell 注释、文档里的命令行参数行）在 git diff 里就是 `--- …`，与文件头分隔行**逐字节同形**——解析器据此把该文件**从这一行往后的改动整段丢掉**，而且不报错。现在两条头部分支只在**尚未进入 hunk** 时生效，并补了「真文件头跟在 hunk 之后仍能解析」的反证用例。
+- 🧭 **改动块内以 `---` / `+++` 开头的正文不再被当成文件头（[#910](https://github.com/omdsh-dev/DSH-better-sidebar/pull/910)）**：删掉一行以 `-- ` 开头的源码（SQL / Lua / Haskell 注释、文档里的命令行参数行）在 git diff 里就是 `--- …`，与文件头分隔行**逐字节同形**——解析器据此把该文件**从这一行往后的改动整段丢掉**，而且不报错。现在两条头部分支只在**尚未进入 hunk** 时生效，并补了「真文件头跟在 hunk 之后仍能解析」的反证用例。（贡献者 PR [#910](https://github.com/omdsh-dev/DSH-better-sidebar/pull/910) @UNscientific-9）
   - 🧪 测试：`tests/diff-rows.spec.ts` 3 例（删除的 `-- foo` 留在 hunk 内、新增的 `++ i;` 不改文件名、真文件头仍能开场）。
 
 - 📜 **超大文件的预览改成 VS Code 那种追加式滚动**：第一版做的是「上一页/下一页」的显式翻页（新页替换当前页），现在改为**滚到底自动取下一页并拼接**——读者读过的内容不会被抽走，行号跨页连续，「加载全部」就是一路追加到 EOF（必须串行：每一页的 `offset` 就是上一页响应的 `nextOffset`）。超限提示条最右侧新增「加载全部」按钮，加载中显示已读字节进度，到 EOF 后自动置灰。
@@ -85,7 +85,7 @@
 - 🎨 **树模式实时行的图标按活动类别取**：`tool-icons.tsx`（工具名映射，只有一处写死的调用）换成 `activity-icons.tsx` 的 `activityGlyph(kind)`——读文件 / 搜索 / 编辑 / 命令 / 网页 / 子代理 / 计划 / 提问 / 通用工具各用自己的宿主图标，尚未派发时是思考图标；`Record<ProcessActivity, …>` 让上游新增类别编译失败而不是静默兜底。
 - 🧪 测试：`tests/tasks-page.spec.tsx` 新增一个 `FakeChatLocale`（挂宿主 `chat` 命名空间，否则只能断言到 fallback 的 detail）并补 5 条（原生状态取代状态词、无数据回退、根卡真实状态、浮窗活动块位置与「无数据不渲染」、一次只开一组＋全局收起折回、徽标真实计数）；`tests/tasks-model.spec.ts` 补 4 条（按组展开的双向隔离、组 id、`expandedGroups` 盖过残留手工折叠、根节点带 live）；新增 `tests/activity-icons.spec.ts`（类别全覆盖 + 读/命令/搜索/网页互不同型 + `undefined` 走思考图标）。[设计文档](docs/plans/2026-10-11-tasks-status-and-group-fold.md)。
 
-- 🔌 **预览插件目录收录音频预览插件**：[`@huanlin/dsh-plugin-better-sidebar-plugin-audio`](https://github.com/HuanLinOTO/dsh-plugin-better-sidebar-plugin-audio)——设置页「添加插件」弹窗的预览插件目录里可一键复制安装命令（20 份词典同步 `pluginAudioName` / `pluginAudioDesc`，条目写进 `tests/plugin-list.spec.ts` 的目录断言，README 的预览插件表格 3 → 4）。
+- 🔌 **预览插件目录收录音频预览插件**：[`@huanlin/dsh-plugin-better-sidebar-plugin-audio`](https://github.com/HuanLinOTO/dsh-plugin-better-sidebar-plugin-audio)——设置页「添加插件」弹窗的预览插件目录里可一键复制安装命令（20 份词典同步 `pluginAudioName` / `pluginAudioDesc`，条目写进 `tests/plugin-list.spec.ts` 的目录断言，README 的预览插件表格 3 → 4）。（贡献者 PR [#881](https://github.com/omdsh-dev/DSH-better-sidebar/pull/881) @HuanLinOTO）
 
 ### v0.25.0
 
