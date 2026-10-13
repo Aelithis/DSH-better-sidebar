@@ -1,8 +1,17 @@
 # Changelog
 
 > Full release history of dsh-better-sidebar (see the [README](README_EN.md) for the latest release; also mirrored on [GitHub Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases)).
+>
+> 📝 The Chinese [CHANGELOG](./CHANGELOG.md) is the authoritative, item-by-item record; this file carries the English summaries and has historically lagged behind it. Where the two disagree, the Chinese one is current.
 
-### Unreleased
+### v0.26.0
+
+- ⚡ **git status polling no longer drags the UI down** (follow-up to [#212](https://github.com/omdsh-dev/DSH-better-sidebar/issues/212)): one fetch is `git status --untracked-files=all` plus two whole-repo `--numstat` diffs — four processes — and on a repository with a large UNIGNORED tree (a nested `node_modules`, a package-manager store) that measured **59,631 entries / 9.24 MB / 0.131 s**, with the 2,000-entry cap only applied AFTER the whole output had been produced and parsed. Three changes together:
+  - **the editor's gutter no longer owns the poll** — it passed the feature switch where the tab's visibility belongs, and that parameter is what starts the timer; with native tabs kept mounted, opening any file kept the scan running every 2.5 s for the rest of the page's life. It now reads the shared answer and refreshes only on a file switch or a save, and holds no subscription at all while its tab is parked.
+  - **the baseline is 30 s, with automatic back-off** — a round trip over 750 ms / 2 s / 5 s drops the slot to 60 s / 180 s / no automatic timer, a fast answer climbs straight back, and event-driven refreshes (stage, commit, discard, save, manual refresh) stay immediate.
+  - **idle polls notify nobody** — the store's version counter is the `useSyncExternalStore` snapshot, so bumping it on every tick re-rendered every consumer once per cadence even when nothing had changed.
+  - Linked-checkout inventory counts now use a single cheap command instead of a full `status()` per checkout; an untracked DIRECTORY counts as one entry there (it used to expand to every file, and the number was silently capped anyway).
+- 🚀 Plus everything else in v0.26.0: fully streamed transfers with the three deployment caps removed, a read-only paged preview for very large files, a fourth built-in viewer for `.jsonl` / `.ndjson`, Side Chat live push + visible queue + per-thread model selection, multiple bottom-workbench terminal tabs, the rebuilt Tasks panel, native-right-sidebar rename/delete reconciliation, and several silent data fixes. See the [Chinese CHANGELOG](./CHANGELOG.md#v0260) for the full list.
 
 - **Oversized-file preview is now append-on-scroll, the way VS Code's log view works**: the first cut used explicit previous/next paging (each new page REPLACED the current one). Now reaching the bottom pulls the next window and keeps everything already read — line numbers continue across page boundaries, and "load all" is simply append-until-EOF. The walk has to be sequential: each page's `offset` IS the previous response's `nextOffset`. The too-large notice grew a "load all" button (showing byte progress while it works, disabled once EOF is reached).
 
@@ -32,6 +41,12 @@
 - New guards: `tests/file-stream-route.spec.ts`, `tests/fs-read-page.spec.ts`, `tests/jsonl.spec.ts`, `tests/jsonl-language.spec.ts`, `tests/archive-tools.spec.ts`, `tests/archive.spec.ts`, `tests/editor-large-file.spec.tsx`. `tests/zip.spec.ts` was rewritten as `tests/archive.spec.ts` alongside the writer it tested; the single real-binary case self-probes and skips when neither tool is installed (so the Windows CI runner without `zip` does not go red).
 
 - Design notes, the comparison against VS Code Web (including the correction that **VS Code does not paginate** — its model is threshold + confirmation + turning tokenization off) and the record of implementation deviations live in [docs/plans/2026-10-11-streaming-transfer-jsonl-preview.md](docs/plans/2026-10-11-streaming-transfer-jsonl-preview.md).
+
+### v0.25.0
+
+> 📦 **Support line moved: DSH `0.2.0-rc.2+` only** (peer floor `^0.2.0-rc.2`). npm's `latest` for DSH is exactly 0.2.0-rc.2 now, and this release pins it. **Hosts on 0.2.0-rc.1 or older (including the 0.1.7 line) should pin v0.24.1** — `^0.2.0-rc.2` evaluates false against rc.1, so the host's startup compatibility preflight disables the whole row silently. Declaration and pin change only: zero runtime changes.
+>
+> 🙏 Carries work from several contributors (listed in merge order in the [Chinese CHANGELOG](./CHANGELOG.md#v0250)). This English file was not updated for v0.25.0 at the time.
 
 ### v0.24.1
 
