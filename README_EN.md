@@ -64,7 +64,7 @@ What this plugin adds on top of DSH's stock sidebar:
 **Supported DSH versions**:
 <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="Supported DSH versions (v0.26.0): 0.2.0-rc.2+" src="https://img.shields.io/badge/DSH-0.2.0--rc.2%2B-4d6bfe" /></a>
 
-> 📌 **Channel and support line**: `v0.26.0` targets DSH **0.2.0-rc.2+** (both `latest` and `next` on npm are `0.2.0-rc.2`). **Pin the DSH version exactly**: `npm i -g @deepseek-ai/dsh@0.2.0-rc.2` — the `alpha` channel is already at `0.2.1-alpha.2`, and this release is **not usable there yet** (the host dropped the `webRuntime` service, so the plugin's host half stays `pending`; the fix is PR [#905](https://github.com/omdsh-dev/DSH-better-sidebar/pull/905)). **Hosts on the 0.1.7 line should pin `dsh-better-sidebar@0.22.1`**: 0.2.0 is a host minor bump, and caret ranges such as `^0.1.7-rc.1` fail the host's startup compatibility preflight on 0.2.0, which disables the whole profile row silently.
+> 📌 **Channel and support line**: `v0.26.0` targets DSH **0.2.0-rc.2+** (both `latest` and `next` on npm are `0.2.0-rc.2`). **Pin the DSH version exactly**: `npm i -g @deepseek-ai/dsh@0.2.0-rc.2` (the `alpha` channel's `0.2.1-alpha.x` is outside this release's support line). **Hosts on the 0.1.7 line should pin `dsh-better-sidebar@0.22.1`**: 0.2.0 is a host minor bump, and caret ranges such as `^0.1.7-rc.1` fail the host's startup compatibility preflight on 0.2.0, which disables the whole profile row silently.
 
 > 🧭 **Pick the plugin version that matches your DSH**:
 >

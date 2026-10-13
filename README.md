@@ -64,7 +64,7 @@
 **支持的 DSH 版本**：
 <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="支持的 DSH 版本（v0.26.0）：0.2.0-rc.2+" src="https://img.shields.io/badge/DSH-0.2.0--rc.2%2B-4d6bfe" /></a>
 
-> 📌 **通道与支持线**：`v0.26.0` 适配 DSH **0.2.0-rc.2+**（npm 的 `latest` / `next` 都是 `0.2.0-rc.2`）。**装 DSH 请写精确版本号**：`npm i -g @deepseek-ai/dsh@0.2.0-rc.2`——`alpha` 通道已到 `0.2.1-alpha.2`，那条线上本版**尚不可用**（宿主删掉了 `webRuntime` 服务，插件的宿主半边会停在 `pending`；修复在 PR [#905](https://github.com/omdsh-dev/DSH-better-sidebar/pull/905)）。**0.1.7 线的用户请固定 `dsh-better-sidebar@0.22.1`**：0.2.0 是宿主 minor 变更，`^0.1.7-rc.1` 这类 caret 范围在 0.2.0 上会被宿主的启动兼容性预检判定失败、整行静默禁用。
+> 📌 **通道与支持线**：`v0.26.0` 适配 DSH **0.2.0-rc.2+**（npm 的 `latest` / `next` 都是 `0.2.0-rc.2`）。**装 DSH 请写精确版本号**：`npm i -g @deepseek-ai/dsh@0.2.0-rc.2`（`alpha` 通道的 `0.2.1-alpha.x` 不在本版支持线内）。**0.1.7 线的用户请固定 `dsh-better-sidebar@0.22.1`**：0.2.0 是宿主 minor 变更，`^0.1.7-rc.1` 这类 caret 范围在 0.2.0 上会被宿主的启动兼容性预检判定失败、整行静默禁用。
 
 > 🧭 **按你的 DSH 版本选插件版本**：
 >
