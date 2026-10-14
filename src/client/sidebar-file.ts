@@ -24,8 +24,7 @@
  * editor path verbatim for every other file.
  */
 import type { Context } from '../context-types.ts'
-import { addressBaseOf } from './address-base.ts'
-import { resolveSidebarPath } from './paths.ts'
+import { addressBaseOf, resolveAddressPath } from './address-base.ts'
 import { fileAddressFor } from './resource-address.ts'
 
 /** The kind this plugin's own file editor registers its tab type under. */
@@ -150,7 +149,7 @@ export function openSidebarFile(
   options: { line?: number; cwd?: string } = {},
 ): void {
   const summary = ctx.sessions.list.getSnapshot().byId[sessionId]
-  const absolute = resolveSidebarPath(options.cwd ?? summary?.cwd, path)
+  const absolute = resolveAddressPath(options.cwd ?? summary?.cwd, path)
   // A type that explicitly claims this file owns it: hand the address to the
   // native surface so that type's registered tab body renders instead of this
   // plugin's editor (#695). Every other file falls through to the editor.

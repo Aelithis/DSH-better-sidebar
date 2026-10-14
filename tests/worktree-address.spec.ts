@@ -20,7 +20,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { addressBaseOf } from '../src/client/address-base.ts'
+import { addressBaseOf, resolveAddressPath } from '../src/client/address-base.ts'
 import { fileParamsOf } from '../src/client/native/index.ts'
 import { createNativeSurface } from '../src/client/native/surface.ts'
 import { resolveSidebarPath } from '../src/client/paths.ts'
@@ -160,6 +160,24 @@ describe('address base (worktree sessions)', () => {
     // The `path:line` spec still splits off the resolved path (#826).
     expect(fileParamsOf(infoOf('dsh-resource://file/session/s1/src/a.ts:42'), '/repo'))
       .toEqual({ path: '/repo/src/a.ts', title: 'a.ts', line: 42 })
+  })
+
+  it('spells the resolved path in the base separator style (one spelling per file)', () => {
+    // The address grammar is `/`-separated on EVERY platform, so joining it
+    // onto a Windows base must not leave `C:\repo\src/a.ts`: the file tree and
+    // every `join`-based producer spell the same file `C:\repo\src\a.ts`, and
+    // two spellings of one file are two tab identities (the editor's id and
+    // dedupeKey are path-derived). CI caught exactly this on the Windows lane.
+    expect(fileParamsOf(infoOf('dsh-resource://file/session/s1/src/a.ts'), 'C:\\repo'))
+      .toEqual({ path: 'C:\\repo\\src\\a.ts' })
+    expect(fileParamsOf(infoOf('dsh-resource://file/session/s1/src/a.ts'), '/repo'))
+      .toEqual({ path: '/repo/src/a.ts' })
+    // Relative intent resolves through the same rule; POSIX keeps the path
+    // verbatim, because there `\` is a legal file-name character, not a
+    // separator (`resolveSidebarPath` never folds on POSIX either).
+    expect(resolveAddressPath('C:\\repo', 'src\\a.ts')).toBe('C:\\repo\\src\\a.ts')
+    expect(resolveAddressPath('/repo', 'src/a.ts')).toBe('/repo/src/a.ts')
+    expect(resolveAddressPath('/repo', 'a\\b.ts')).toBe('/repo/a\\b.ts')
   })
 
   it('builds every plugin address on the session base, never on the caller root', () => {

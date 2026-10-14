@@ -23,10 +23,10 @@
  * absent from the native guide and `openTab` refuses it.
  */
 import type { Context } from '../../context-types.ts'
-import { addressBaseOf } from '../address-base.ts'
+import { addressBaseOf, resolveAddressPath } from '../address-base.ts'
 import { t } from '../locales.ts'
 import { splitTrailingLineSpec } from '../path-line.ts'
-import { baseName, resolveSidebarPath } from '../paths.ts'
+import { baseName } from '../paths.ts'
 import { parseFileAddress } from '../resource-address.ts'
 import type { BetterSidebarService, TabDescriptor } from '../service.ts'
 import type { SidebarStore } from '../state.ts'
@@ -199,7 +199,7 @@ export function fileParamsOf(info: NativeTabInfo, base?: string): NativeTabParam
   if (address === undefined) return undefined
   // Resolve BEFORE the trailing line spec is split off: the spec belongs to
   // the file name, and a base can only be prepended to the path.
-  const path = base === undefined ? address.path : resolveSidebarPath(base, address.path)
+  const path = base === undefined ? address.path : resolveAddressPath(base, address.path)
   const spec = splitTrailingLineSpec(path)
   if (spec === undefined) return { path }
   return { path: spec.path, title: baseName(spec.path), line: spec.line }

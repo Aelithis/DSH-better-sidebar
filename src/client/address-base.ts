@@ -31,6 +31,7 @@
  *   stripped-down host or a bare test context).
  */
 import type { Context } from '../context-types.ts'
+import { resolveSidebarPath } from './paths.ts'
 
 export function addressBaseOf(ctx: Context, sessionId: string | undefined): string | undefined {
   if (sessionId === undefined) return undefined
@@ -41,4 +42,26 @@ export function addressBaseOf(ctx: Context, sessionId: string | undefined): stri
     // caller's own cwd; the address is no worse than before this helper.
     return undefined
   }
+}
+
+/**
+ * Resolve an address's path against its base, spelled the way the base is.
+ *
+ * The address grammar is `/`-separated on every platform, so joining one onto
+ * a Windows base with `resolveSidebarPath` alone leaves a MIXED spelling:
+ * `C:\repo` + `src/a.ts` → `C:\repo\src/a.ts`, while the file tree, the git
+ * panel and every `join`-based producer spell the same file
+ * `C:\repo\src\a.ts`. Two spellings of one file is two tab identities (the
+ * editor's `dedupeKey`/id is path-derived) and two answers to "is it the same
+ * path", so the address boundary folds the separators to the base's style.
+ * POSIX keeps the path verbatim: there `\` is a legal file-name character, not
+ * a separator (the same reason `resolveSidebarPath` never folds on POSIX).
+ *
+ * @param base - the workspace root whose separator style decides the answer.
+ * @param path - an address path (relative to `base`) or an absolute path.
+ * @returns the resolved path in `base`'s separator style.
+ */
+export function resolveAddressPath(base: string | undefined, path: string): string {
+  const resolved = resolveSidebarPath(base, path)
+  return base !== undefined && base.includes('\\') ? resolved.replace(/[/\\]+/g, '\\') : resolved
 }
