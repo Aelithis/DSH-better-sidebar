@@ -174,11 +174,47 @@ function oldSpan(): { events: SidebarSessionEvent[]; nodes: number[] } {
  */
 function compactedLog(): SidebarSessionEvent[] {
   const events = [...systemHead(), ...oldSpan().events]
-  const keep = turn(9, 2, { callId: 'c-keep', result: 'keep result' })
+  // A whole shadowed turn between the head and the keep window: the seed's
+  // turn numbers must be renumbered to run 1, 2, 3… over the gap.
+  const shadowTurn = turn(9, 2, { callId: 'c-shadow', result: 'shadow result' })
+  events.push(...shadowTurn.events)
+  // The keep window is appended BEFORE the compaction group (the group
+  // lands at the log's end at compaction time); the tail follows it.
+  const keep = turn(17, 3, { callId: 'c-keep', result: 'keep result' })
   events.push(...keep.events)
-  // The region shadows the old span's nodes but NOT the protected head.
-  events.push(...compactionGroup(events.length, [3, 5, 6]))
-  events.push(...turn(events.length, 3, { callId: 'c-tail', result: 'tail result' }).events)
+  // The region shadows the old span's and the middle turn's nodes but NOT
+  // the protected head.
+  events.push(...compactionGroup(events.length, [3, 5, 6, 11, 13, 14]))
+  events.push(...turn(events.length, 4, { callId: 'c-tail', result: 'tail result' }).events)
+  return events
+}
+
+/**
+ * The mid-span shape: the region ends INSIDE the keep window's first turn
+ * (the host's boundary is only tool-pairing balanced, not turn aligned), so
+ * that turn's early nodes are shadowed while its later ones survive — the
+ * keep interval must skip the shadowed surface events and the orphaned
+ * tool/call instead of re-emitting them.
+ */
+function midSpanLog(): SidebarSessionEvent[] {
+  const events = [...systemHead(), ...oldSpan().events]
+  // Turn 2's first step is shadowed (user + tool pair); its second step's
+  // assistant survives — the region ends inside the keep window's first
+  // turn, which precedes the compaction group like every keep window does.
+  events.push(
+    lo('turn/start', 9, { turn: 2 }),
+    lo('step/start', 10, { turn: 2, step: 1 }),
+    sf('user/message', 11, userMessage('m-q2', 'q2 mid')),
+    lo('tool/call', 12, { turn: 2, step: 1, callId: 'c-mid', name: 'bash', arguments: '{}' }),
+    sf('tool/result', 13, { turn: 2, step: 1, message: toolResultMessage('c-mid', 'mid result') }),
+    lo('step/end', 14, { turn: 2, step: 1 }),
+    lo('step/start', 15, { turn: 2, step: 2 }),
+    sf('assistant/message', 16, { turn: 2, step: 2, message: assistantMessage('a2 kept'), stream: [] }),
+    lo('step/end', 17, { turn: 2, step: 2 }),
+    lo('turn/end', 18, { turn: 2, reason: { kind: 'completed' } }),
+  )
+  events.push(...compactionGroup(19, [3, 5, 6, 11, 13]))
+  events.push(...turn(23, 3, { callId: 'c-tail', result: 'tail result' }).events)
   return events
 }
 
@@ -191,31 +227,41 @@ function compactedLog(): SidebarSessionEvent[] {
  */
 function midTurnLog(kind: 'closers' | 'dangling'): SidebarSessionEvent[] {
   const events = [...systemHead(), ...oldSpan().events]
+  const shadowTurn = turn(9, 2, { callId: 'c-shadow', result: 'shadow result' })
+  events.push(...shadowTurn.events)
   const seq = events.length
   events.push(
-    lo('turn/start', seq, { turn: 2 }),
-    lo('step/start', seq + 1, { turn: 2, step: 1 }),
-    sf('user/message', seq + 2, userMessage('m-q2', 'q2')),
+    lo('turn/start', seq, { turn: 3 }),
+    lo('step/start', seq + 1, { turn: 3, step: 1 }),
+    sf('user/message', seq + 2, userMessage('m-q3', 'q3')),
   )
-  events.push(...compactionGroup(seq + 3, [3, 5, 6], { id: 'cp-auto', turn: 2, summary: 'auto summarized' }))
+  events.push(...compactionGroup(seq + 3, [3, 5, 6, 11, 13, 14], { id: 'cp-auto', turn: 3, summary: 'auto summarized' }))
   const tail = events.length
   if (kind === 'closers') {
-    events.push(sf('assistant/message', tail, { turn: 2, step: 1, message: assistantMessage('open answer'), stream: [] }))
+    events.push(sf('assistant/message', tail, { turn: 3, step: 1, message: assistantMessage('open answer'), stream: [] }))
   } else {
     events.push(
-      sf('assistant/message', tail, { turn: 2, step: 1, message: assistantMessage('with tool', { callId: 'c-open' }), stream: [] }),
-      lo('tool/call', tail + 1, { turn: 2, step: 1, callId: 'c-open', name: 'bash', arguments: '{}' }),
+      sf('assistant/message', tail, { turn: 3, step: 1, message: assistantMessage('with tool', { callId: 'c-open' }), stream: [] }),
+      lo('tool/call', tail + 1, { turn: 3, step: 1, callId: 'c-open', name: 'bash', arguments: '{}' }),
     )
   }
   return events
 }
 
-/** The model-visible sequence a fold produces: one `type:data` token per node. */
+/** The model-visible sequence a fold produces: one `type:data` token per
+ *  node, with the envelope fields the rebase rewrites (`headerSeq`,
+ *  `turn`/`step` — the renderer projects `data.message`, not these)
+ *  excluded, mirroring the builder's own comparison. */
 function visibleSequence(events: readonly SidebarSessionEvent[]): string[] {
   const fold = foldSurface(events as unknown as readonly SessionEvent[])
   return fold.nodes.map(seq => {
     const event = events[seq]
-    return event === undefined ? `missing:${seq}` : `${event.type}:${JSON.stringify(event.data)}`
+    if (event === undefined) return `missing:${seq}`
+    const data = { ...(event.data as Record<string, unknown>) }
+    delete data.headerSeq
+    delete data.turn
+    delete data.step
+    return `${event.type}:${JSON.stringify(data)}`
   })
 }
 
@@ -253,6 +299,8 @@ describe('buildSidechatInheritance compaction tail', () => {
     expect(seed.length).toBeLessThan(events.length)
     expect(seed.some(event => JSON.stringify(event).includes('old result'))).toBe(false)
     expect(seed.some(event => JSON.stringify(event).includes('c-old'))).toBe(false)
+    expect(seed.some(event => JSON.stringify(event).includes('shadow result'))).toBe(false)
+    expect(seed.some(event => JSON.stringify(event).includes('c-shadow'))).toBe(false)
     expect(seed.map(event => event.type).slice(0, 5)).toEqual([
       'turn/start', 'step/start', 'system/message', 'step/end', 'turn/end',
     ])
@@ -332,8 +380,11 @@ describe('buildSidechatInheritance compaction tail', () => {
     })]
     const { seed, snapshot } = buildSidechatInheritance(withDangling)
     expect(snapshot).toBeNull()
-    expect(seed.map(event => event.type)).toEqual(withDangling.map(event => event.type))
-    expect(seed.some(event => JSON.stringify(event).includes('old result'))).toBe(true)
+    // Event-for-event deep equality with the verbatim copy (envelope fields
+    // plus the shared data objects), not just a type sequence.
+    expect(seed.map(event => [event.type, event.seq, event.time, event.data])).toEqual(
+      withDangling.map(event => [event.type, event.seq, event.time, event.data]),
+    )
   })
 
   it('falls back to the verbatim full copy when a tail replace reorders surviving nodes', () => {
@@ -353,7 +404,9 @@ describe('buildSidechatInheritance compaction tail', () => {
     } as SidebarSessionEvent)
     const { seed, snapshot } = buildSidechatInheritance(events)
     expect(snapshot).toBeNull()
-    expect(seed.map(event => event.type)).toEqual(events.map(event => event.type))
+    expect(seed.map(event => [event.type, event.seq, event.time, event.data])).toEqual(
+      events.map(event => [event.type, event.seq, event.time, event.data]),
+    )
   })
 
   it('keeps the open-turn closers on the trimmed tail (mid-turn compaction)', () => {
@@ -384,6 +437,24 @@ describe('buildSidechatInheritance compaction tail', () => {
     expect(seed.at(-1)?.type).not.toBe('tool/call')
     expect(snapshot).not.toBeNull()
     expect(JSON.stringify(snapshot)).toContain('bash')
+  })
+
+  it('skips shadowed nodes and orphaned calls when the region ends mid-turn', () => {
+    const events = midSpanLog()
+    const { seed, snapshot } = buildSidechatInheritance(events)
+    // The region ended inside turn 2: its early user+tool pair are shadowed,
+    // the later assistant survives. The trim must fire, the keep interval
+    // must NOT re-emit the shadowed events (nor the orphaned tool/call),
+    // and the skeleton of the partially-shadowed turn stays complete.
+    expect(snapshot).toBeNull()
+    expect(seed.length).toBeLessThan(events.length)
+    expect(seed.some(event => JSON.stringify(event).includes('q2 mid'))).toBe(false)
+    expect(seed.some(event => JSON.stringify(event).includes('c-mid'))).toBe(false)
+    expect(seed.some(event => JSON.stringify(event).includes('mid result'))).toBe(false)
+    expect(seed.some(event => JSON.stringify(event).includes('a2 kept'))).toBe(true)
+    expect(visibleSequence(seed)).toEqual(visibleSequence(events))
+    expectContiguous(seed)
+    expect(invariantFailures(seed)).toEqual([])
   })
 
   it('remaps replace operations that stay inside the tail', () => {
