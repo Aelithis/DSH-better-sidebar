@@ -735,14 +735,16 @@ describe('buildSidechatInheritance compaction tail', () => {
     expect(invariantFailures(seed)).toEqual([])
 
     // Together: a command that runs INSIDE the keep window and settles
-    // there — both records ride, and the done cites the rebased run.
+    // there — both records ride, and the done's citation remaps onto the
+    // rebased event it names. The host contract: sourceEventSeq cites an
+    // earlier NON-command event, and commandIds are unique per run.
     const together = [
       ...base,
       lo('turn/start', 8, { turn: 2 }),
       lo('step/start', 9, { turn: 2, step: 1 }),
       sf('user/message', 10, userMessage('m-q2', 'q2')),
-      lo('command/run', 11, { commandId: 'cmd1', name: 'compact', source: { kind: 'user' } }),
-      lo('command/done', 12, { commandId: 'cmd1', kind: 'success', text: 'ok', sourceEventSeq: 11 }),
+      lo('command/run', 11, { commandId: 'cmd2', name: 'compact', source: { kind: 'user' } }),
+      lo('command/done', 12, { commandId: 'cmd2', kind: 'success', text: 'ok', sourceEventSeq: 10 }),
       sf('assistant/message', 13, { turn: 2, step: 1, message: assistantMessage('a2'), stream: [] }),
       lo('step/end', 14, { turn: 2, step: 1 }),
       lo('turn/end', 15, { turn: 2, reason: { kind: 'completed' } }),
@@ -751,10 +753,11 @@ describe('buildSidechatInheritance compaction tail', () => {
     together.push(...compactionGroup(together.length, [4, 5]))
     const trimmed = buildSidechatInheritance(together)
     expect(trimmed.seed.length).toBeLessThan(together.length)
-    const done = trimmed.seed.find(event => event.type === 'command/done') as { data?: { sourceEventSeq?: number }; seq?: number }
-    const runIdx = trimmed.seed.findIndex(event => event.type === 'command/run')
-    expect(runIdx).toBeGreaterThanOrEqual(0)
-    expect(done?.data?.sourceEventSeq).toBe(runIdx)
+    const done = trimmed.seed.find(event => event.type === 'command/done') as { data?: { sourceEventSeq?: number } }
+    const citedIdx = trimmed.seed.findIndex((event, index) => index === (done?.data?.sourceEventSeq ?? -1))
+    expect(citedIdx).toBeGreaterThanOrEqual(0)
+    // The citation names a non-command event (the user message), not the run.
+    expect(trimmed.seed[citedIdx]?.type).toBe('user/message')
     expect(visibleSequence(trimmed.seed)).toEqual(visibleSequence(together))
     expect(invariantFailures(trimmed.seed)).toEqual([])
   })

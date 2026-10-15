@@ -422,10 +422,14 @@ function compactionTail(events: readonly SidechatLogEvent[]): SidechatLogEvent[]
       }
     } else if (event.type === 'command/done') {
       const id = data.commandId
-      const runSeq = data.sourceEventSeq
-      const runKept = (typeof id === 'string' && keptRunIds.has(id))
-        || (typeof runSeq === 'number' && emittedSeqs.has(runSeq) && events[runSeq]?.type === 'command/run')
-      if (!runKept) droppedDones.add(event.seq)
+      const sourceSeq = data.sourceEventSeq
+      // The host contract: sourceEventSeq cites an earlier NON-command
+      // event, and the commands invariant rejects a stale or out-of-range
+      // citation. A done whose run or whose cited source falls in the
+      // dropped span drops ATOMICALLY with it.
+      const runKept = typeof id === 'string' && keptRunIds.has(id)
+      const sourceKept = typeof sourceSeq !== 'number' || emittedSeqs.has(sourceSeq)
+      if (!runKept || !sourceKept) droppedDones.add(event.seq)
     }
   }
   // Turn renumbering: the host's turn counter must run 1, 2, 3… over the
@@ -843,10 +847,13 @@ function rebaseEvent(
     && firstKeptTurn !== undefined && sourceData.turn >= firstKeptTurn) {
     seed.data = { ...seed.data, turn: sourceData.turn - turnOffset }
   }
-  // A settled command cites the seq of the run it settled; remap it alongside.
+  // A settled command cites an earlier non-command event by seq; remap it
+  // alongside, and drop the done when the cited event did not survive — a
+  // stale citation is something the host's commands invariant rejects.
   if (event.type === 'command/done' && typeof sourceData.sourceEventSeq === 'number') {
     const mapped = rebase.get(sourceData.sourceEventSeq)
-    if (mapped !== undefined) seed.data = { ...seed.data, sourceEventSeq: mapped }
+    if (mapped === undefined) return DROPPED
+    seed.data = { ...seed.data, sourceEventSeq: mapped }
   }
   // Compaction metering records cite the surface span they priced. When the
   // span survived the rebase, remap the citations; when it did not (the
