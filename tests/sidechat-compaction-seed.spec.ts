@@ -14,7 +14,8 @@
  */
 import { describe, expect, it } from 'vitest'
 import { foldSurface } from '@deepseek-ai/dsh-session/surface'
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import { Session, SessionLogOffset, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import { buildSidechatInheritance } from '../src/sidechat-core.ts'
 import type { SidebarSessionEvent } from '../src/context-types.ts'
 
@@ -37,7 +38,7 @@ function assistantMessage(text: string): Record<string, unknown> {
     id: `m-${text}`,
     role: 'assistant',
     content: [{ type: 'text', text }],
-    source: { kind: 'model', stream: [] },
+    source: { kind: 'model', provider: 'test', model: 'model-x' },
   }
 }
 
@@ -95,13 +96,13 @@ interface CompactedLog {
  */
 function compactedLog(): CompactedLog {
   const events: SidebarSessionEvent[] = [
-    sf('system/message', 0, { id: 'm-sys', role: 'system', content: [{ type: 'text', text: 'system prompt' }], source: { kind: 'system' } }),
+    sf('system/message', 0, { message: { id: 'm-sys', role: 'system', content: [{ type: 'text', text: 'system prompt' }], source: { kind: 'system-prompt' } } }),
   ]
   const old = turn(1, 1, { callId: 'c-old', result: 'old result' })
   events.push(...old.events)
   const keep = turn(1 + old.events.length, 2, { callId: 'c-keep', result: 'keep result' })
   events.push(...keep.events)
-  let seq = events.length
+  const seq = events.length
   const shadowed = old.nodes
   events.push(lo('compaction/start', seq, { compactionId: 'cp1', turn: null }))
   events.push(lo('compaction/summary', seq + 1, {
@@ -207,11 +208,33 @@ describe('buildSidechatInheritance compaction tail', () => {
     void full
   })
 
+  it('is accepted by the real dsh-session seed validator', () => {
+    const { events } = compactedLog()
+    const { seed } = buildSidechatInheritance(events)
+    // The REAL validator, exactly as the routes call it (isSeeded + the
+    // inherited cut) — this is the layer that once rejected a seed whose
+    // surfaceOp markers were stripped, so it gates every envelope decision
+    // the rebasing makes.
+    const id = 'session-compaction-seed-acceptance'
+    const session = Session.create(
+      id as SessionId,
+      seed as never,
+      { version: SESSION_FORMAT_VERSION, id: id as SessionId, createdAt: Date.now(), isSeeded: true },
+      SessionLogOffset(seed.length),
+    )
+    // The constructor appends the inherited-cut marker right after the seed,
+    // and that marker is the child's first own event (log position = the
+    // inherited count) — same shape as today's full-copy threads.
+    expect(session.snapshotEvents()).toHaveLength(seed.length + 1)
+    expect(session.ownEvents()).toHaveLength(1)
+    expect(session.ownEvents()[0]?.type).toBe('session/end-seed')
+  })
+
   it('keeps the open-turn closers and snapshot semantics on the trimmed tail', () => {
     const { events, checkpoint } = compactedLog()
     // Append an OPEN turn whose tool call has no result yet → dangling →
     // the builder cuts before it and delivers a structured snapshot.
-    let seq = events.length
+    const seq = events.length
     events.push(lo('turn/start', seq, { turn: 4 }))
     events.push(lo('step/start', seq + 1, { turn: 4, step: 1 }))
     events.push(lo('tool/call', seq + 2, { turn: 4, step: 1, callId: 'c-open', name: 'bash', arguments: '{}' }))
