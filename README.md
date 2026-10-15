@@ -72,12 +72,7 @@
 > | --- | --- | --- |
 > | **0.2.0-rc.2+**（含之后的 0.2.0 正式版） | `dsh plugin --profile web add dsh-better-sidebar@latest` | **0.26.0**，`^0.2.0-rc.2` |
 > | **0.1.7-rc.1 ~ 0.1.7-rc.2**（含 0.1.7 正式版） | `dsh plugin --profile web add dsh-better-sidebar@0.22.1` | **0.22.1**，`^0.1.7-rc.1` |
-> | 0.1.7-alpha.1 / 0.1.7-alpha.2 | **没有可装版本**——先把 DSH 升到 rc.1，再跑上一行：<br>`npm i -g @deepseek-ai/dsh@0.1.7-rc.1` | — |
 > | 0.1.6-alpha.2 及更早、`0.1.5-rc.*`（含 npm `latest` 的 0.1.5-rc.3） | `dsh plugin --profile web add dsh-better-sidebar@0.19.1` | **0.19.1**，`^0.1.5-rc.1` |
-> | `0.1.5-alpha.2` | `dsh plugin --profile web add dsh-better-sidebar@0.19.0-alpha.1` | `^0.1.5-alpha.2` |
-> | `0.1.2-rc.*` | `dsh plugin --profile web add dsh-better-sidebar@0.18.1` | `^0.1.2-rc.1` |
-> | `0.1.2-alpha.2` | `dsh plugin --profile web add dsh-better-sidebar@0.18.0-alpha.0` | `^0.1.2-alpha.2` |
-> | `0.1.0-rc.8` / `0.1.1` | `dsh plugin --profile web add dsh-better-sidebar@0.17.1` | `^0.1.0-rc.8` |
 >
 > 命令里的 `web` 换成你自己的 profile 名即可。**旧版本一律写精确版本号**（`@0.19.1` 而不是 `@latest`），因为 `latest` 会随新正式版前移；反过来也**不要**在 0.1.7 的 alpha 上装 0.19.1，装上只会坏。
 
@@ -183,8 +178,9 @@ dsh registry enable dsh-external/dsh-better-sidebar
 
 推荐添加QQ群(577011007)
 
+
 <div align="center">
-  <img width="220" alt="微信群二维码" src="https://github.com/user-attachments/assets/5d727d52-7fff-4526-8b36-fb7203fb1dce" />
+  <img width="220" alt="微信群二维码" src="https://github.com/user-attachments/assets/e9c77c37-83f5-4c3a-911e-6afeaf815615" />
   <img width="220" alt="QQ群二维码" src="https://github.com/user-attachments/assets/9be34629-26ef-4537-aad4-1393c147f81c" />
 </div>
 
