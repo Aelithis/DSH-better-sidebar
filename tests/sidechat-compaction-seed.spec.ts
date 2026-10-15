@@ -4,17 +4,19 @@
  *
  * Why this is sound: the compaction checkpoint `user/message` REPLACES the
  * shadowed span on the model-visible surface, so a child seeded with
- * [pre-cut visible nodes + checkpoint + post-compaction tail] folds to the
- * SAME surface as the parent — identical model-visible conversation, same
- * provider context-cache prefix — while dropping the shadowed bulk from the
- * durable copy. The construction is verified with the REAL fold
- * (`foldSurface` from `@deepseek-ai/dsh-session/surface`): when the tail
- * cannot be proven equivalent (dangling back-references, reordering
- * replaces), the builder falls back to today's verbatim full copy.
+ * [surviving head skeleton + checkpoint + keep-window + tail verbatim]
+ * folds to the SAME surface as the parent — identical model-visible
+ * conversation, same provider context-cache prefix — while the shadowed
+ * bulk never lands in the durable copy. The construction is verified with
+ * the REAL fold (`foldSurface` from `@deepseek-ai/dsh-session/surface`) and
+ * pinned against the REAL session relational invariants
+ * (`@deepseek-ai/dsh-session/invariant`): when the tail cannot be proven
+ * equivalent, the builder falls back to today's verbatim full copy.
  */
 import { describe, expect, it } from 'vitest'
 import { foldSurface } from '@deepseek-ai/dsh-session/surface'
 import { Session, SessionLogOffset, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
+import * as SessionInvariant from '@deepseek-ai/dsh-session/invariant'
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import { buildSidechatInheritance } from '../src/sidechat-core.ts'
 import type { SidebarSessionEvent } from '../src/context-types.ts'
@@ -33,11 +35,15 @@ function userMessage(id: string, text: string): Record<string, unknown> {
   return { id, role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' } }
 }
 
-function assistantMessage(text: string): Record<string, unknown> {
+function assistantMessage(text: string, over: { callId?: string } = {}): Record<string, unknown> {
+  const content: Array<Record<string, unknown>> = [{ type: 'text', text }]
+  if (over.callId !== undefined) {
+    content.unshift({ type: 'tool-call', callId: over.callId, name: 'bash', arguments: {} })
+  }
   return {
     id: `m-${text}`,
     role: 'assistant',
-    content: [{ type: 'text', text }],
+    content,
     source: { kind: 'model', provider: 'test', model: 'model-x' },
   }
 }
@@ -53,12 +59,12 @@ function toolResultMessage(callId: string, text: string): Record<string, unknown
   }
 }
 
-/** One completed turn with an optional tool pair; returns its events plus the
- *  seqs of its surface-visible nodes (user, result, assistant). */
+/** One completed turn with an optional tool pair; returns its events plus
+ *  the seqs of its surface-visible nodes (user, result, assistant). */
 function turn(
   seq: number,
   turnNumber: number,
-  over: { text?: string; callId?: string; result?: string } = {},
+  over: { text?: string; callId?: string; result?: string; assistantCall?: string } = {},
 ): { events: SidebarSessionEvent[]; nodes: number[] } {
   const text = over.text ?? `q${turnNumber}`
   const events: SidebarSessionEvent[] = [
@@ -74,65 +80,134 @@ function turn(
     nodes.push(next + 1)
     next += 2
   }
-  events.push(sf('assistant/message', next, { turn: turnNumber, step: 1, message: assistantMessage(`a${turnNumber}`), stream: [] }))
+  events.push(sf('assistant/message', next, {
+    turn: turnNumber,
+    step: 1,
+    message: assistantMessage(`a${turnNumber}`, over.assistantCall !== undefined ? { callId: over.assistantCall } : {}),
+    stream: [],
+  }))
   nodes.push(next)
   events.push(lo('step/end', next + 1, { turn: turnNumber, step: 1 }))
   events.push(lo('turn/end', next + 2, { turn: turnNumber, reason: { kind: 'completed' } }))
   return { events, nodes }
 }
 
-interface CompactedLog {
-  readonly events: SidebarSessionEvent[]
-  /** Seqs the checkpoint shadows (the old span's surface nodes). */
-  readonly shadowed: number[]
-  /** The checkpoint replacement event's seq. */
-  readonly checkpoint: number
+/** The compaction group appended at `at`: start + summary + checkpoint +
+ *  end, shadowing `shadowed` (the span's surface-node seqs). `turn: null`
+ *  is the manual between-turns form; a number is the automatic mid-turn
+ *  form, and the checkpoint adjacency is the shadow-price contract. */
+function compactionGroup(
+  at: number,
+  shadowed: readonly number[],
+  over: { id?: string; turn?: number | null; summary?: string } = {},
+): SidebarSessionEvent[] {
+  const id = over.id ?? 'cp1'
+  const first = shadowed[0] ?? 0
+  const last = shadowed[shadowed.length - 1] ?? 0
+  const summaryText = over.summary ?? 'old turns summarized'
+  const turnValue = over.turn === undefined ? null : over.turn
+  return [
+    lo('compaction/start', at, { compactionId: id, turn: turnValue }),
+    lo('compaction/summary', at + 1, {
+      compactionId: id,
+      summary: [{ type: 'text', text: summaryText }],
+      shadowedRange: { start: first, end: last },
+      shadowedSeqs: [...shadowed],
+      shadowedTokenCount: 100,
+      provider: 'deepseek',
+      model: 'test-model',
+      rawOutput: [],
+      llmStreamCall: true,
+    }),
+    {
+      type: 'user/message',
+      seq: at + 2,
+      time: (at + 2) * 1000,
+      data: {
+        id: `m-${id}`,
+        role: 'user',
+        content: [{ type: 'text', text: summaryText }],
+        source: { kind: 'compact-checkpoint', compactionId: id },
+      },
+      surfaceOp: { op: 'replace', startSeq: first, endSeq: last },
+      sourceEventSeqs: [...shadowed],
+    } as SidebarSessionEvent,
+    lo('compaction/end', at + 3, { compactionId: id, turn: turnValue }),
+  ]
 }
 
 /**
- * The canonical compacted parent: protected system head, one shadowed old
- * turn WITH a tool pair, one keep-window turn WITH its own tool pair, the
- * compaction group, then one post-compaction tail turn.
+ * Turn 1's opening, host-shaped: the protected `system/message` (carrying
+ * its turn/step) is the first request's first message, and the shadowable
+ * old span continues in the SAME step — `oldTurn` supplies the rest.
  */
-function compactedLog(): CompactedLog {
-  const events: SidebarSessionEvent[] = [
-    sf('system/message', 0, { message: { id: 'm-sys', role: 'system', content: [{ type: 'text', text: 'system prompt' }], source: { kind: 'system-prompt' } } }),
+function systemHead(): SidebarSessionEvent[] {
+  return [
+    lo('turn/start', 0, { turn: 1 }),
+    lo('step/start', 1, { turn: 1, step: 1 }),
+    sf('system/message', 2, {
+      turn: 1,
+      step: 1,
+      message: { id: 'm-sys', role: 'system', content: [{ type: 'text', text: 'system prompt' }], source: { kind: 'system-prompt' } },
+    }),
   ]
-  const old = turn(1, 1, { callId: 'c-old', result: 'old result' })
-  events.push(...old.events)
-  const keep = turn(1 + old.events.length, 2, { callId: 'c-keep', result: 'keep result' })
+}
+
+/** The old span continuing turn 1's step: a tool pair + assistant, closed. */
+function oldSpan(): { events: SidebarSessionEvent[]; nodes: number[] } {
+  const events: SidebarSessionEvent[] = [
+    sf('user/message', 3, userMessage('m-q1', 'q1')),
+    lo('tool/call', 4, { turn: 1, step: 1, callId: 'c-old', name: 'bash', arguments: '{}' }),
+    sf('tool/result', 5, { turn: 1, step: 1, message: toolResultMessage('c-old', 'old result') }),
+    sf('assistant/message', 6, { turn: 1, step: 1, message: assistantMessage('a1'), stream: [] }),
+    lo('step/end', 7, { turn: 1, step: 1 }),
+    lo('turn/end', 8, { turn: 1, reason: { kind: 'completed' } }),
+  ]
+  return { events, nodes: [3, 5, 6] }
+}
+
+/**
+ * The canonical compacted parent, host-shaped: turn 1 carries the protected
+ * system head, turn 2 is the shadowed old span (with a tool pair), turn 3
+ * is the keep window with its own tool pair, then the manual compaction
+ * group, then one closed tail turn.
+ */
+function compactedLog(): SidebarSessionEvent[] {
+  const events = [...systemHead(), ...oldSpan().events]
+  const keep = turn(9, 2, { callId: 'c-keep', result: 'keep result' })
   events.push(...keep.events)
+  // The region shadows the old span's nodes but NOT the protected head.
+  events.push(...compactionGroup(events.length, [3, 5, 6]))
+  events.push(...turn(events.length, 3, { callId: 'c-tail', result: 'tail result' }).events)
+  return events
+}
+
+/**
+ * The automatic-compaction shape: the group fires INSIDE a still-open turn
+ * (that turn's skeleton and first message sit BEFORE the cut), and the log
+ * ends inside that turn — `kind` picks how: a plain pending assistant
+ * message (synthetic closers) or a dangling tool call (structured
+ * snapshot).
+ */
+function midTurnLog(kind: 'closers' | 'dangling'): SidebarSessionEvent[] {
+  const events = [...systemHead(), ...oldSpan().events]
   const seq = events.length
-  const shadowed = old.nodes
-  events.push(lo('compaction/start', seq, { compactionId: 'cp1', turn: null }))
-  events.push(lo('compaction/summary', seq + 1, {
-    compactionId: 'cp1',
-    summary: [{ type: 'text', text: 'turn 1 summarized' }],
-    shadowedRange: { start: shadowed[0] ?? 0, end: shadowed[shadowed.length - 1] ?? 0 },
-    shadowedSeqs: shadowed,
-    shadowedTokenCount: 100,
-    provider: 'deepseek',
-    model: 'test-model',
-    rawOutput: [],
-    llmStreamCall: true,
-  }))
-  const checkpoint = seq + 2
-  events.push({
-    type: 'user/message',
-    seq: checkpoint,
-    time: checkpoint * 1000,
-    data: {
-      id: 'm-cp1',
-      role: 'user',
-      content: [{ type: 'text', text: 'turn 1 summarized' }],
-      source: { kind: 'compact-checkpoint', compactionId: 'cp1' },
-    },
-    surfaceOp: { op: 'replace', startSeq: shadowed[0] ?? 0, endSeq: shadowed[shadowed.length - 1] ?? 0 },
-    sourceEventSeqs: shadowed,
-  } as SidebarSessionEvent)
-  events.push(lo('compaction/end', seq + 3, { compactionId: 'cp1', turn: null }))
-  events.push(...turn(seq + 4, 3, { callId: 'c-tail', result: 'tail result' }).events)
-  return { events, shadowed, checkpoint }
+  events.push(
+    lo('turn/start', seq, { turn: 2 }),
+    lo('step/start', seq + 1, { turn: 2, step: 1 }),
+    sf('user/message', seq + 2, userMessage('m-q2', 'q2')),
+  )
+  events.push(...compactionGroup(seq + 3, [3, 5, 6], { id: 'cp-auto', turn: 2, summary: 'auto summarized' }))
+  const tail = events.length
+  if (kind === 'closers') {
+    events.push(sf('assistant/message', tail, { turn: 2, step: 1, message: assistantMessage('open answer'), stream: [] }))
+  } else {
+    events.push(
+      sf('assistant/message', tail, { turn: 2, step: 1, message: assistantMessage('with tool', { callId: 'c-open' }), stream: [] }),
+      lo('tool/call', tail + 1, { turn: 2, step: 1, callId: 'c-open', name: 'bash', arguments: '{}' }),
+    )
+  }
+  return events
 }
 
 /** The model-visible sequence a fold produces: one `type:data` token per node. */
@@ -148,32 +223,55 @@ function expectContiguous(seed: readonly { seq: number }[]): void {
   seed.forEach((event, index) => expect(event.seq).toBe(index))
 }
 
+/** Run the REAL session relational invariants over one candidate log and
+ *  return the failure messages (empty = the log satisfies them). */
+function invariantFailures(log: readonly SidebarSessionEvent[]): string[] {
+  const failures: string[] = []
+  const session = { snapshotEvents: () => log }
+  const ctx = {
+    sessions: { list: () => [session] },
+    on: () => {},
+    invariants: {
+      register: (_pkg: string, installer: (c: unknown, f: (m: string) => void) => void) => {
+        installer(ctx, (message: string) => { failures.push(message) })
+        return () => {}
+      },
+    },
+  }
+  void SessionInvariant.apply(ctx as never)
+  return failures
+}
+
 describe('buildSidechatInheritance compaction tail', () => {
   it('reuses the last summarizing compaction instead of copying the shadowed span', () => {
-    const { events, checkpoint } = compactedLog()
+    const events = compactedLog()
     const { seed, snapshot } = buildSidechatInheritance(events)
     expect(snapshot).toBeNull()
-    // The shadowed old turn (its visible nodes AND its log-only scaffolding
-    // and tool/call) is dropped entirely.
+    // The shadowed old turn is dropped entirely — its visible nodes AND its
+    // log-only scaffolding and tool/call — while the protected head keeps
+    // its turn/step skeleton (closed, because the closers were dropped too).
     expect(seed.length).toBeLessThan(events.length)
     expect(seed.some(event => JSON.stringify(event).includes('old result'))).toBe(false)
     expect(seed.some(event => JSON.stringify(event).includes('c-old'))).toBe(false)
-    // The keep window survives — including its paired tool call before its result.
+    expect(seed.map(event => event.type).slice(0, 5)).toEqual([
+      'turn/start', 'step/start', 'system/message', 'step/end', 'turn/end',
+    ])
+    // The keep window survives VERBATIM: its own tool call stays right
+    // before its result.
     const keepCall = seed.findIndex(event => JSON.stringify(event).includes('c-keep'))
     const keepResult = seed.findIndex(event => JSON.stringify(event).includes('keep result'))
     expect(keepCall).toBeGreaterThanOrEqual(0)
     expect(keepResult).toBeGreaterThan(keepCall)
     // The checkpoint survives as a plain append (its replace targets are gone).
-    const cp = seed.find(event => event.seq !== undefined && JSON.stringify(event).includes('turn 1 summarized'))
+    const cp = seed.find(event => JSON.stringify(event).includes('old turns summarized'))
     expect(cp).toBeDefined()
     expect((cp as { surfaceOp?: unknown }).surfaceOp).toBe('append')
     expect((cp as { sourceEventSeqs?: unknown }).sourceEventSeqs).toBeUndefined()
     expectContiguous(seed)
-    void checkpoint
   })
 
   it('folds to the same model-visible sequence as the parent (surface equivalence)', () => {
-    const { events } = compactedLog()
+    const events = compactedLog()
     const parent = visibleSequence(events)
     expect(parent.length).toBeGreaterThan(0)
     const { seed } = buildSidechatInheritance(events)
@@ -181,90 +279,17 @@ describe('buildSidechatInheritance compaction tail', () => {
     expect(child).toEqual(parent)
   })
 
-  it('falls back to the verbatim full copy when the log has no compaction', () => {
-    const { events } = turn(0, 1, { callId: 'c1' })
+  it('satisfies the real session relational invariants', () => {
+    const events = compactedLog()
     const { seed } = buildSidechatInheritance(events)
-    expectContiguous(seed)
-    expect(seed.map(event => event.type)).toEqual(events.map(event => event.type))
-  })
-
-  it('falls back to the verbatim full copy when a tail event references the dropped head', () => {
-    const { events } = compactedLog()
-    // A developer/message citing a pre-cut request/header: the reference
-    // cannot be renumbered, so the tail is not provably equivalent.
-    const dangling = sf('developer/message', events.length, {
-      id: 'm-dev',
-      role: 'developer',
-      content: [{ type: 'text', text: 'dev' }],
-      source: { kind: 'developer' },
-      headerSeq: 1,
-    })
-    const withDangling = [...events, dangling]
-    const { seed } = buildSidechatInheritance(withDangling)
-    const full = buildSidechatInheritance(events)
-    // Full copy of the SAME log minus the dangling event appended... the
-    // fallback copies everything verbatim, so the seed carries the old span.
-    expect(seed.some(event => JSON.stringify(event).includes('old result'))).toBe(true)
-    void full
-  })
-
-  it('remaps replace operations that stay inside the tail', () => {
-    const { events } = compactedLog()
-    // One more closed tail turn, then a replacement user/message whose
-    // replace range covers ONLY that turn's tail nodes: the range rebases
-    // intact, the fold still shows the same transitions, the trim fires.
-    const tailTurn = turn(events.length, 4)
-    const replacedSeqs = tailTurn.nodes
-    events.push(...tailTurn.events)
-    const replacementSeq = events.length
-    events.push({
-      type: 'user/message',
-      seq: replacementSeq,
-      time: replacementSeq * 1000,
-      data: userMessage('m-edited', 'edited tail question'),
-      surfaceOp: { op: 'replace', startSeq: replacedSeqs[0] ?? 0, endSeq: replacedSeqs[replacedSeqs.length - 1] ?? 0 },
-      sourceEventSeqs: replacedSeqs,
-    } as SidebarSessionEvent)
-    const parent = visibleSequence(events)
-    const { seed } = buildSidechatInheritance(events)
-    // The trim must still fire here (the replace reorders only tail nodes —
-    // no fallback), which is what makes the remap assertions below meaningful.
     expect(seed.length).toBeLessThan(events.length)
-    expect(visibleSequence(seed)).toEqual(parent)
-    const rebased = seed.find(event => {
-      const op = (event as { surfaceOp?: unknown }).surfaceOp
-      return typeof op === 'object' && op !== null && (op as { op?: unknown }).op === 'replace'
-    }) as { surfaceOp?: { startSeq: number; endSeq: number }; seq?: number } | undefined
-    // Not degraded: the range survived as a REMAPPED replace bound to the
-    // rebased positions (not to the parent's dropped-head seq space).
-    expect(rebased).toBeDefined()
-    expect(rebased?.surfaceOp?.startSeq).toBeLessThan(rebased?.seq ?? 0)
-    expect(rebased?.surfaceOp?.endSeq).toBeLessThan(rebased?.seq ?? 0)
-  })
-
-  it('falls back to the full copy when a tail replace reorders surviving nodes', () => {
-    const { events } = compactedLog()
-    // A replacement whose range covers a SURVIVING pre-cut node: the parent
-    // fold removes that node and repositions the replacement at its slot,
-    // which appending cannot reproduce — the verified equivalence must
-    // reject the trim and fall back to today's verbatim full copy.
-    const keepUserSeq = events.findIndex(event => JSON.stringify(event).includes('m-q2'))
-    const replacementSeq = events.length
-    events.push({
-      type: 'user/message',
-      seq: replacementSeq,
-      time: replacementSeq * 1000,
-      data: userMessage('m-resurfaced', 'resurfaced edit'),
-      surfaceOp: { op: 'replace', startSeq: keepUserSeq, endSeq: keepUserSeq },
-      sourceEventSeqs: [keepUserSeq],
-    } as SidebarSessionEvent)
-    const { seed } = buildSidechatInheritance(events)
-    expect(seed.some(event => JSON.stringify(event).includes('old result'))).toBe(true)
-    expect(seed.length).toBe(events.length + 0)
+    expect(invariantFailures(events)).toEqual([])
+    expect(invariantFailures(seed)).toEqual([])
+    expect(invariantFailures(buildSidechatInheritance(turn(0, 1, { callId: 'c1' }).events).seed)).toEqual([])
   })
 
   it('is accepted by the real dsh-session seed validator', () => {
-    const { events } = compactedLog()
+    const events = compactedLog()
     const { seed } = buildSidechatInheritance(events)
     // The REAL validator, exactly as the routes call it (isSeeded + the
     // inherited cut) — this is the layer that once rejected a seed whose
@@ -285,18 +310,142 @@ describe('buildSidechatInheritance compaction tail', () => {
     expect(session.ownEvents()[0]?.type).toBe('session/end-seed')
   })
 
-  it('keeps the open-turn closers and snapshot semantics on the trimmed tail', () => {
-    const { events, checkpoint } = compactedLog()
-    // Append an OPEN turn whose tool call has no result yet → dangling →
-    // the builder cuts before it and delivers a structured snapshot.
-    const seq = events.length
-    events.push(lo('turn/start', seq, { turn: 4 }))
-    events.push(lo('step/start', seq + 1, { turn: 4, step: 1 }))
-    events.push(lo('tool/call', seq + 2, { turn: 4, step: 1, callId: 'c-open', name: 'bash', arguments: '{}' }))
+  it('falls back to the verbatim full copy when the log has no compaction', () => {
+    const events = turn(0, 1, { callId: 'c1' }).events
+    const { seed } = buildSidechatInheritance(events)
+    expectContiguous(seed)
+    expect(seed.map(event => event.type)).toEqual(events.map(event => event.type))
+  })
+
+  it('falls back to the verbatim full copy when a tail event references the dropped span', () => {
+    const events = compactedLog()
+    // A developer/message citing a pre-cut request/header: the reference
+    // cannot be renumbered, so the tail is not provably equivalent. The
+    // fallback must equal TODAY's behavior on this very log: the verbatim
+    // copy, event for event.
+    const withDangling = [...events, sf('developer/message', events.length, {
+      id: 'm-dev',
+      role: 'developer',
+      content: [{ type: 'text', text: 'dev' }],
+      source: { kind: 'developer' },
+      headerSeq: 1,
+    })]
+    const { seed, snapshot } = buildSidechatInheritance(withDangling)
+    expect(snapshot).toBeNull()
+    expect(seed.map(event => event.type)).toEqual(withDangling.map(event => event.type))
+    expect(seed.some(event => JSON.stringify(event).includes('old result'))).toBe(true)
+  })
+
+  it('falls back to the verbatim full copy when a tail replace reorders surviving nodes', () => {
+    const events = compactedLog()
+    // A replacement whose range covers a SURVIVING pre-cut node: the parent
+    // fold removes that node and repositions the replacement at its slot,
+    // which dropping the span cannot reproduce.
+    const keepUserSeq = events.findIndex(event => JSON.stringify(event).includes('m-q2'))
+    const replacementSeq = events.length
+    events.push({
+      type: 'user/message',
+      seq: replacementSeq,
+      time: replacementSeq * 1000,
+      data: userMessage('m-resurfaced', 'resurfaced edit'),
+      surfaceOp: { op: 'replace', startSeq: keepUserSeq, endSeq: keepUserSeq },
+      sourceEventSeqs: [keepUserSeq],
+    } as SidebarSessionEvent)
     const { seed, snapshot } = buildSidechatInheritance(events)
+    expect(snapshot).toBeNull()
+    expect(seed.map(event => event.type)).toEqual(events.map(event => event.type))
+  })
+
+  it('keeps the open-turn closers on the trimmed tail (mid-turn compaction)', () => {
+    const events = midTurnLog('closers')
+    // Automatic compaction ran inside the still-open turn; the fork happens
+    // mid-turn with a plain pending assistant message. The trim must fire
+    // AND the synthetic interrupted-closers must land — the open turn's
+    // skeleton is kept verbatim, so the open-turn detection still sees it.
+    const { seed, snapshot } = buildSidechatInheritance(events)
+    expect(snapshot).toBeNull()
+    expect(seed.length).toBeLessThan(events.length)
+    expectContiguous(seed)
+    expect(seed.at(-2)?.type).toBe('step/end')
+    expect(seed.at(-1)?.type).toBe('turn/end')
+    expect((seed.at(-1) as { data?: { reason?: { kind?: string } } }).data?.reason?.kind).toBe('interrupted')
+    expect(invariantFailures(seed)).toEqual([])
+  })
+
+  it('delivers the dangling-tool snapshot on the trimmed tail (mid-turn compaction)', () => {
+    const events = midTurnLog('dangling')
+    // Same shape but the open turn ends on a tool call with no result yet:
+    // providers reject dangling assistant calls, so the builder must cut
+    // before the open turn and deliver the structured snapshot — exactly as
+    // the full-copy path does.
+    const { seed, snapshot } = buildSidechatInheritance(events)
+    expect(seed.length).toBeLessThan(events.length)
     expectContiguous(seed)
     expect(seed.at(-1)?.type).not.toBe('tool/call')
     expect(snapshot).not.toBeNull()
-    void checkpoint
+    expect(JSON.stringify(snapshot)).toContain('bash')
+  })
+
+  it('remaps replace operations that stay inside the tail', () => {
+    const events = compactedLog()
+    // One more closed tail turn, then a replacement user/message whose
+    // replace range covers ONLY that turn's tail nodes: the range rebases
+    // intact, the fold still shows the same transitions, the trim fires.
+    const tailTurn = turn(events.length, 5)
+    const replacedSeqs = tailTurn.nodes
+    events.push(...tailTurn.events)
+    const replacementSeq = events.length
+    events.push({
+      type: 'user/message',
+      seq: replacementSeq,
+      time: replacementSeq * 1000,
+      data: userMessage('m-edited', 'edited tail question'),
+      surfaceOp: { op: 'replace', startSeq: replacedSeqs[0] ?? 0, endSeq: replacedSeqs[replacedSeqs.length - 1] ?? 0 },
+      sourceEventSeqs: replacedSeqs,
+    } as SidebarSessionEvent)
+    const parent = visibleSequence(events)
+    const { seed } = buildSidechatInheritance(events)
+    // The trim must still fire here (the replace reorders only tail nodes —
+    // no fallback), which is what makes the remap assertions meaningful.
+    expect(seed.length).toBeLessThan(events.length)
+    expect(visibleSequence(seed)).toEqual(parent)
+    const rebased = seed.find(event => {
+      const op = (event as { surfaceOp?: unknown }).surfaceOp
+      return typeof op === 'object' && op !== null && (op as { op?: unknown }).op === 'replace'
+    }) as { surfaceOp?: { startSeq: number; endSeq: number }; seq?: number } | undefined
+    // Not degraded: the range survived as a REMAPPED replace bound to the
+    // rebased positions (not to the parent's dropped-span seq space).
+    expect(rebased).toBeDefined()
+    expect(rebased?.surfaceOp?.startSeq).toBeLessThan(rebased?.seq ?? 0)
+    expect(rebased?.surfaceOp?.endSeq).toBeLessThan(rebased?.seq ?? 0)
+  })
+
+  it('reuses the previous compaction when the newest summary is orphaned', () => {
+    const events = compactedLog()
+    const at = events.length
+    // A second compaction whose replacement never landed (summary + error
+    // end, no checkpoint): the builder must fall back to the EARLIER
+    // complete compaction instead of the full copy.
+    events.push(
+      lo('compaction/start', at, { compactionId: 'cp-dead', turn: null }),
+      lo('compaction/summary', at + 1, {
+        compactionId: 'cp-dead',
+        summary: [{ type: 'text', text: 'never landed' }],
+        shadowedRange: { start: 3, end: 3 },
+        shadowedSeqs: [3],
+        shadowedTokenCount: 10,
+        provider: 'deepseek',
+        model: 'test-model',
+        rawOutput: [],
+        llmStreamCall: true,
+      }),
+      lo('compaction/end', at + 2, { compactionId: 'cp-dead', turn: null, error: 'summarizer failed' }),
+    )
+    const { seed } = buildSidechatInheritance(events)
+    // The trim fired through the EARLIER compaction: the old span is gone
+    // while the orphaned group's log-only records may ride along (the fold
+    // never sees them, and they keep the parent's metering history honest).
+    expect(seed.length).toBeLessThan(events.length)
+    expect(seed.some(event => JSON.stringify(event).includes('old result'))).toBe(false)
   })
 })
