@@ -248,20 +248,16 @@ function midTurnLog(kind: 'closers' | 'dangling'): SidebarSessionEvent[] {
   return events
 }
 
-/** The model-visible sequence a fold produces: one `type:data` token per
- *  node, with the envelope fields the rebase rewrites (`headerSeq`,
- *  `turn`/`step` — the renderer projects `data.message`, not these)
- *  excluded, mirroring the builder's own comparison. */
+/** The model-visible sequence a fold produces, mirroring the renderer's
+ *  projection exactly like the builder's own comparison: a user/message IS
+ *  its whole data object; every other surface event projects `data.message`. */
 function visibleSequence(events: readonly SidebarSessionEvent[]): string[] {
   const fold = foldSurface(events as unknown as readonly SessionEvent[])
   return fold.nodes.map(seq => {
     const event = events[seq]
     if (event === undefined) return `missing:${seq}`
-    const data = { ...(event.data as Record<string, unknown>) }
-    delete data.headerSeq
-    delete data.turn
-    delete data.step
-    return `${event.type}:${JSON.stringify(data)}`
+    if (event.type === 'user/message') return `${event.type}:${JSON.stringify(event.data)}`
+    return `${event.type}:${JSON.stringify((event.data as { message?: unknown }).message ?? null)}`
   })
 }
 
@@ -489,6 +485,101 @@ describe('buildSidechatInheritance compaction tail', () => {
     expect(rebased).toBeDefined()
     expect(rebased?.surfaceOp?.startSeq).toBeLessThan(rebased?.seq ?? 0)
     expect(rebased?.surfaceOp?.endSeq).toBeLessThan(rebased?.seq ?? 0)
+  })
+
+  it('trims when the protected head was rewritten mid-session (turn 1, later step)', () => {
+    // Host shape: SystemPromptProjection.replace rewrites surface node 0 in
+    // a LATER step of turn 1 — the surviving head node carries turn 1 / step
+    // >= 2. The skeleton normalizes to turn 1 step 1 (envelope numbers only;
+    // a user/message never gains fields) and the trim still fires.
+    const events = [
+      lo('turn/start', 0, { turn: 1 }),
+      lo('step/start', 1, { turn: 1, step: 1 }),
+      sf('system/message', 2, {
+        turn: 1, step: 1,
+        message: { id: 'm-sys', role: 'system', content: [{ type: 'text', text: 'original prompt' }], source: { kind: 'system-prompt' } },
+      }),
+      sf('user/message', 3, userMessage('m-q1', 'q1')),
+      sf('assistant/message', 4, { turn: 1, step: 1, message: assistantMessage('a1'), stream: [] }),
+      lo('step/end', 5, { turn: 1, step: 1 }),
+      lo('step/start', 6, { turn: 1, step: 2 }),
+      {
+        ...sf('system/message', 7, {
+          turn: 1, step: 2,
+          message: { id: 'm-sys2', role: 'system', content: [{ type: 'text', text: 'rewritten prompt' }], source: { kind: 'system-prompt' } },
+        }),
+        surfaceOp: { op: 'replace', startSeq: 2, endSeq: 2 },
+        sourceEventSeqs: [2],
+      } as SidebarSessionEvent,
+      lo('step/end', 8, { turn: 1, step: 2 }),
+      lo('turn/end', 9, { turn: 1, reason: { kind: 'completed' } }),
+    ]
+    const keep = turn(10, 2, { callId: 'c-keep', result: 'keep result' })
+    events.push(...keep.events)
+    events.push(...compactionGroup(events.length, [3, 4]))
+    events.push(...turn(events.length, 3, { callId: 'c-tail', result: 'tail result' }).events)
+    const { seed, snapshot } = buildSidechatInheritance(events)
+    expect(snapshot).toBeNull()
+    expect(seed.length).toBeLessThan(events.length)
+    // The surviving head is the REWRITTEN prompt, skeleton-normalized to
+    // turn 1 step 1; the original shadowed prompt is gone.
+    expect(seed.some(event => JSON.stringify(event).includes('rewritten prompt'))).toBe(true)
+    expect(seed.some(event => JSON.stringify(event).includes('original prompt'))).toBe(false)
+    const head = seed.find(event => event.type === 'system/message') as { data?: { turn?: number; step?: number } }
+    expect(head?.data?.turn).toBe(1)
+    expect(head?.data?.step).toBe(1)
+    expect(visibleSequence(seed)).toEqual(visibleSequence(events))
+    expect(invariantFailures(seed)).toEqual([])
+  })
+
+  it('trims when the pruner rewrote a keep-window tool result mid-turn', () => {
+    // Host shape: the tool-result-pruner appends a tool/result REPLACEMENT
+    // between steps, carrying the ORIGINAL turn/step and a replace op over
+    // its target. The target is not on the final surface, but it is the
+    // replacement's fold target — it must be emitted so the transition
+    // replays, and the record's citations must rebase.
+    const events = [...systemHead(), ...oldSpan().events]
+    // Turn 2 has two steps; the pruner runs at the pre-step boundary between
+    // them (turn still open) and rewrites step 1's over-budget result.
+    events.push(
+      lo('turn/start', 9, { turn: 2 }),
+      lo('step/start', 10, { turn: 2, step: 1 }),
+      sf('user/message', 11, userMessage('m-q2', 'q2')),
+      lo('tool/call', 12, { turn: 2, step: 1, callId: 'c-keep', name: 'bash', arguments: '{}' }),
+      sf('tool/result', 13, { turn: 2, step: 1, message: toolResultMessage('c-keep', 'keep result') }),
+      lo('step/end', 14, { turn: 2, step: 1 }),
+      lo('compaction/prune', 15, {
+        shadowedRange: { start: 13, end: 13 },
+        shadowedSeqs: [13],
+        shadowedTokenCount: 40,
+      }),
+      {
+        ...sf('tool/result', 16, { turn: 2, step: 1, message: toolResultMessage('c-keep', 'pruned stub') }),
+        surfaceOp: { op: 'replace', startSeq: 13, endSeq: 13 },
+        sourceEventSeqs: [13],
+      } as SidebarSessionEvent,
+      lo('step/start', 17, { turn: 2, step: 2 }),
+      sf('assistant/message', 18, { turn: 2, step: 2, message: assistantMessage('a2'), stream: [] }),
+      lo('step/end', 19, { turn: 2, step: 2 }),
+      lo('turn/end', 20, { turn: 2, reason: { kind: 'completed' } }),
+    )
+    events.push(...compactionGroup(events.length, [3, 5, 6]))
+    events.push(...turn(events.length, 3, { callId: 'c-tail', result: 'tail result' }).events)
+    const { seed, snapshot } = buildSidechatInheritance(events)
+    expect(snapshot).toBeNull()
+    expect(seed.length).toBeLessThan(events.length)
+    // Both the original result (fold target) and its replacement survive,
+    // the replacement keeps its replace op REMAPPED, and the prune record's
+    // citations rebase to the seed's seq space.
+    expect(seed.some(event => JSON.stringify(event).includes('keep result'))).toBe(true)
+    expect(seed.some(event => JSON.stringify(event).includes('pruned stub'))).toBe(true)
+    const replacement = seed.find(event => JSON.stringify(event).includes('pruned stub')) as { surfaceOp?: { op?: string; startSeq?: number }; seq?: number }
+    expect(replacement?.surfaceOp?.op).toBe('replace')
+    expect(replacement?.surfaceOp?.startSeq).toBeLessThan(replacement?.seq ?? 0)
+    const record = seed.find(event => event.type === 'compaction/prune') as { data?: { shadowedSeqs?: number[] } }
+    expect(record?.data?.shadowedSeqs?.[0]).toBe(replacement?.surfaceOp?.startSeq)
+    expect(visibleSequence(seed)).toEqual(visibleSequence(events))
+    expect(invariantFailures(seed)).toEqual([])
   })
 
   it('reuses the previous compaction when the newest summary is orphaned', () => {
