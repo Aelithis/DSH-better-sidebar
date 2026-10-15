@@ -582,6 +582,48 @@ describe('buildSidechatInheritance compaction tail', () => {
     expect(invariantFailures(seed)).toEqual([])
   })
 
+  it('trims when the keep window opens on a turn whose inbox insert precedes its turn/start', () => {
+    // Real loop order: [insert q][turn/start][claim q][step/start][user].
+    // The keep window must swallow the insert ahead of the turn/start so
+    // the positional inbox fold replays; without it the claim dangles and
+    // Session.create rejects the seed (caught on the real deployment's
+    // main session during e2e).
+    const events = [...systemHead(), ...oldSpan().events]
+    const shadowTurn = turn(9, 2, { callId: 'c-shadow', result: 'shadow result' })
+    events.push(...shadowTurn.events)
+    const at = events.length
+    events.push(
+      lo('agent/inbox/spliced', at, { target: 'next-turn', start: 0, removedCount: 0, inserted: [userMessage('m-q3', 'q3')] }),
+      lo('turn/start', at + 1, { turn: 3 }),
+      lo('agent/inbox/spliced', at + 2, { target: 'next-turn', start: 0, removedCount: 1, inserted: [] }),
+      lo('step/start', at + 3, { turn: 3, step: 1 }),
+      sf('user/message', at + 4, userMessage('m-q3', 'q3')),
+      sf('assistant/message', at + 5, { turn: 3, step: 1, message: assistantMessage('a3'), stream: [] }),
+      lo('step/end', at + 6, { turn: 3, step: 1 }),
+      lo('turn/end', at + 7, { turn: 3, reason: { kind: 'completed' } }),
+    )
+    events.push(...compactionGroup(events.length, [3, 5, 6, 11, 13, 14]))
+    events.push(...turn(events.length, 4, { callId: 'c-tail', result: 'tail result' }).events)
+    const { seed, snapshot } = buildSidechatInheritance(events)
+    expect(snapshot).toBeNull()
+    expect(seed.length).toBeLessThan(events.length)
+    // The insert rode along ahead of the keep window's turn/start, so the
+    // claim finds its message and the inbox fold replays.
+    const splices = seed.filter(event => event.type === 'agent/inbox/spliced')
+    expect(splices.length).toBeGreaterThanOrEqual(2)
+    expect(visibleSequence(seed)).toEqual(visibleSequence(events))
+    expect(invariantFailures(seed)).toEqual([])
+    // The real validator accepts (this is the layer that rejected the
+    // pre-fix seed on the real session).
+    const id = 'session-inbox-splice-acceptance'
+    Session.create(
+      id as SessionId,
+      seed as never,
+      { version: SESSION_FORMAT_VERSION, id: id as SessionId, createdAt: Date.now(), isSeeded: true },
+      SessionLogOffset(seed.length),
+    )
+  })
+
   it('reuses the previous compaction when the newest summary is orphaned', () => {
     const events = compactedLog()
     const at = events.length

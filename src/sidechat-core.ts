@@ -335,7 +335,13 @@ function compactionTail(events: readonly SidechatLogEvent[]): SidechatLogEvent[]
   }
   const headEvents = headSkeleton(events, head)
   if (headEvents === undefined) return undefined
-  const keepStart = enclosingTurnStart(events, keepFirst)
+  let keepStart = enclosingTurnStart(events, keepFirst)
+  // The loop writes a turn's inbox INSERT before its turn/start and the
+  // CLAIM right after it; starting the keep window at the turn/start would
+  // keep the claim while dropping its insert, and the host's positional
+  // inbox fold would reject the seed. Swallow the contiguous splices that
+  // precede the skeleton root — they replay cleanly from an empty inbox.
+  while (keepStart > 0 && events[keepStart - 1]?.type === 'agent/inbox/spliced') keepStart -= 1
   const groupId = dataOf(events[cut - 1]!).compactionId
   // The keep interval is a LOG range; the region may have ended mid-turn,
   // so the interval can re-carry surface nodes the checkpoint already
@@ -435,7 +441,42 @@ function compactionTail(events: readonly SidechatLogEvent[]): SidechatLogEvent[]
     return undefined
   }
   if (!turnSequenceValid(seed)) return undefined
+  if (!inboxSplicesValid(seed)) return undefined
   return seed
+}
+
+/**
+ * Relational pre-check mirroring the host's durable-inbox fold: every kept
+ * `agent/inbox/spliced` event replays POSITIONALLY over the pending inbox
+ * (splice.start/removedCount must stay in range, message ids unique). A
+ * seed whose splice history cannot replay from an empty inbox falls back
+ * to the full copy.
+ */
+function inboxSplicesValid(seed: readonly SeedEvent[]): boolean {
+  const nextTurn: Array<Record<string, unknown>> = []
+  const nextStep: Array<Record<string, unknown>> = []
+  for (const event of seed) {
+    if (event.type !== 'agent/inbox/spliced') continue
+    const data = dataOf(event)
+    const inbox = data.target === 'next-step' ? nextStep : nextTurn
+    const rawStart = data.start
+    const rawRemoved = data.removedCount
+    const removedCount = typeof rawRemoved === 'number' ? rawRemoved : 0
+    const inserted = Array.isArray(data.inserted) ? data.inserted as Array<Record<string, unknown>> : []
+    const start = typeof rawStart === 'number' ? rawStart : Number.NaN
+    if (!Number.isSafeInteger(start) || start < 0 || start > inbox.length
+      || !Number.isSafeInteger(removedCount) || removedCount < 0
+      || start + removedCount > inbox.length) return false
+    inbox.splice(start, removedCount, ...inserted)
+    const ids = new Set<string>()
+    for (const message of [...nextTurn, ...nextStep]) {
+      const id = message.id
+      if (typeof id !== 'string') continue
+      if (ids.has(id)) return false
+      ids.add(id)
+    }
+  }
+  return true
 }
 
 /**
