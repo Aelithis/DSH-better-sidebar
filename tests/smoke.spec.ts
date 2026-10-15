@@ -9,6 +9,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync
 import { tmpdir, homedir } from 'node:os'
 import { dirname, join, resolve as resolvePath } from 'node:path'
 import { SettingsConflictError, type SettingsNamespace } from '@deepseek-ai/dsh-settings'
+import { WebSocket } from 'ws'
 import { apply, FS_TREES_MAX_PATHS, mediaTypeForPath } from '../src/index.ts'
 import { SIDEBAR_PREFS_DEFAULTS } from '../src/prefs-shared.ts'
 import { encodeHtmlUrl } from '../src/html-route.ts'
@@ -132,8 +133,63 @@ describe('host plugin smoke', () => {
     for (const cleanup of effects) cleanup()
   })
 
-  it('serves HTML previews as UTF-8 without changing the file bytes', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'dsh-sidebar-html-utf8-'))
+  /**
+   * Teardown must release the ACCEPTED sockets, not merely stop accepting new
+   * ones: `WebSocketServer.close()` on a `noServer` server does not terminate
+   * an already-upgraded socket under ws@8 (it sets `_shouldEmitClose` and
+   * waits), so without the explicit `wss.clients` close every fs-watch
+   * `fs.watch` handle and the agent-opens subscriber set survives the plugin
+   * unmount until the browser disconnects. The client here is a REAL ws
+   * connection through the registered upgrade handler.
+   */
+  it('closes the accepted push sockets on teardown', async () => {
+    const upgrades: SidebarWebUpgradeRoute[] = []
+    const effects: Array<() => void | (() => void)> = []
+    const ctx: FakeContext = {
+      webRuntime: { trustedHosts: [] },
+      webServer: {
+        register: () => () => {},
+        registerUpgrade: (route) => { upgrades.push(route); return () => {} },
+      },
+      sessions: { get: () => undefined },
+      tools: { register: () => () => {} },
+      effect: (fn) => {
+        const cleanup = fn()
+        if (typeof cleanup === 'function') effects.push(cleanup)
+      },
+      inject: () => () => {},
+      on: () => () => {},
+      get: () => undefined,
+    }
+    apply(ctx as never)
+    const upgrade = upgrades.find(route => route.path === '/sidebar/ws/agent-opens')!
+    const { createServer } = await import('node:http')
+    const server = createServer()
+    server.on('upgrade', (req, socket, head) => {
+      upgrade.handler(req as never, socket as never, head as never)
+    })
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', () => { resolve() }) })
+    const address = server.address()
+    if (address === null || typeof address === 'string') throw new Error('test setup: no server port')
+    const client = new WebSocket(`ws://127.0.0.1:${address.port}/sidebar/ws/agent-opens?sessionId=s-teardown`)
+    try {
+      await new Promise<void>((resolve, reject) => {
+        client.once('open', () => { resolve() })
+        client.once('error', reject)
+      })
+      const closed = new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => { resolve(false) }, 3_000)
+        client.once('close', () => { clearTimeout(timer); resolve(true) })
+      })
+      for (const cleanup of effects) cleanup()
+      expect(await closed).toBe(true)
+    } finally {
+      client.terminate()
+      await new Promise<void>((resolve) => { server.close(() => { resolve() }) })
+    }
+  })
+
+  it('serves HTML previews as UTF-8 without changing the file bytes', async () => {    const directory = mkdtempSync(join(tmpdir(), 'dsh-sidebar-html-utf8-'))
     const path = join(directory, 'fragment.html')
     const source = Buffer.from('<div>排序算法可视化</div>', 'utf8')
     writeFileSync(path, source)
@@ -1195,6 +1251,27 @@ describe('session cwd resolution over the API route', () => {
         levels: { path: string; entries: { compact?: boolean }[] }[]
       }).levels
       expect(levels.find(entry => entry.path === level)?.entries.filter(row => row.compact === true)).toHaveLength(3)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('fs.tree builds one probe gate for its single level', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-sidebar-fs-tree-gate-'))
+    const workspace = join(root, 'workspace')
+    mkdirSync(join(workspace, 'only'), { recursive: true })
+    writeFileSync(join(workspace, 'only', 'child.txt'), 'x')
+    try {
+      const route = mount({ sessions: { get: () => ({ header: { cwd: workspace } }) } })
+      const before = probeGateCalls.length
+      const answer = await invoke(route, 'fs.tree', { sessionId: 's-tree-single-gate', path: workspace })
+      expect(answer.ok).toBe(true)
+      // The single-layer route is a probe-bounded request too: it lists ONE
+      // level, but that level runs the same per-row probes (`fs.trees` passes
+      // a gate for exactly this reason), so it must build one as well.
+      expect(probeGateCalls.length - before).toBe(1)
+      const entries = (answer.value as unknown as { entries: { compact?: boolean }[] }).entries
+      expect(entries.filter(entry => entry.compact === true)).toHaveLength(1)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

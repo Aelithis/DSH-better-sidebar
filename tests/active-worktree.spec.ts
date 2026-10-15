@@ -6,8 +6,19 @@ import { join } from 'node:path'
 import { activeWorktreeRootOf } from '../src/active-worktree.ts'
 import type { Context } from '../src/context-types.ts'
 
-/** Every cwd handed to the plugin's own git probe, in call order. */
-const probed = vi.hoisted(() => [] as string[])
+/** The plugin's git probe seam: call order plus an optional canned answer. */
+const seam = vi.hoisted(() => ({
+  /** Every cwd handed to the plugin's own git probe, in call order. */
+  probed: [] as string[],
+  /**
+   * Optional canned answer per probe. Set it to exercise the process-wide
+   * caches (which are keyed per session) without paying one REAL git spawn per
+   * key; `probed` still records every call the module made.
+   */
+  responder: null as null | ((cwd: string, args: string[]) => string),
+}))
+
+const probed = seam.probed
 
 // Records (and delegates to) the real spawn so the case-folding regression is
 // visible on case-insensitive hosts too.
@@ -17,7 +28,8 @@ vi.mock('../src/git.ts', async (importOriginal) => {
     ...actual,
     runGit: (cwd: string, args: string[], timeoutMs?: number) => {
       probed.push(cwd)
-      return actual.runGit(cwd, args, timeoutMs)
+      const canned = seam.responder?.(cwd, args)
+      return canned === undefined ? actual.runGit(cwd, args, timeoutMs) : Promise.resolve(canned)
     },
   }
 })
@@ -59,6 +71,29 @@ function sessionCtx(cwd: string, calls: Array<Record<string, unknown>>): Context
     },
     get: () => undefined,
   } as never
+}
+
+/**
+ * The same live-session face with the session LOOKUP counted. The root cache is
+ * consulted before the session is ever read, so `lookups()` is the observable
+ * difference between "answered from the TTL cache" and "scanned the event log
+ * again" — which is what makes the no-rescan assertion below discriminative.
+ */
+function countingSessionCtx(cwd: string, calls: Array<Record<string, unknown>>): { ctx: Context; lookups: () => number } {
+  let lookups = 0
+  const ctx = {
+    sessions: {
+      get: () => {
+        lookups += 1
+        return {
+          header: { cwd },
+          snapshotEvents: () => calls.map((data, index) => ({ type: 'tool/call', seq: index, time: index, data })),
+        }
+      },
+    },
+    get: () => undefined,
+  } as never
+  return { ctx: ctx as Context, lookups: () => lookups }
 }
 
 describe('active worktree root', () => {
@@ -114,6 +149,141 @@ describe('active worktree root', () => {
       expect(probed).toContain(worktreeB)
       expect(probed).not.toContain(worktreeB.toLowerCase())
     } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  /**
+   * Steady-state cost: twelve `/sidebar/*` route handlers funnel through
+   * `cwdOf()`, so a burst of parallel calls for one session used to spawn one
+   * `git rev-parse` per call. The in-flight maps collapse the whole
+   * (session, base) resolution into one.
+   */
+  it('shares ONE base git spawn across a burst of concurrent asks', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-active-root-'))
+    const repo = join(root, 'repo')
+    try {
+      initRepo(repo, 'a.txt')
+      const { ctx, lookups } = countingSessionCtx(repo, [])
+      probed.length = 0
+      const answers = await Promise.all(
+        Array.from({ length: 8 }, () => activeWorktreeRootOf(ctx, 's-burst', repo)),
+      )
+      expect(probed).toEqual([repo])
+      // The whole resolution is shared, not just the spawn: the event log is
+      // read (and scanned) once for the burst.
+      expect(lookups()).toBe(1)
+      // Every concurrent caller still gets the resolved answer.
+      expect(new Set(answers)).toEqual(new Set([realpathSync.native(repo)]))
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  /**
+   * Different sessions rooted in the SAME repository share the base probe:
+   * without the per-path in-flight map, N tabs of one workspace spawn N
+   * `git rev-parse` processes at once. Each session still resolves on its own
+   * (its own event log decides its root).
+   */
+  it('shares ONE base probe across different sessions of one repository', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-active-root-'))
+    const repo = join(root, 'repo')
+    try {
+      initRepo(repo, 'a.txt')
+      const { ctx, lookups } = countingSessionCtx(repo, [])
+      probed.length = 0
+      await Promise.all(
+        Array.from({ length: 6 }, (_unused, index) => activeWorktreeRootOf(ctx, `s-shared-${index}`, repo)),
+      )
+      expect(probed).toEqual([repo])
+      expect(lookups()).toBe(6)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  /** The TTL is what makes the client's 5 s poll free; 3 s made every poll a miss. */
+  it('answers a second ask inside the TTL without scanning or spawning', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-active-root-'))
+    const repo = join(root, 'repo')
+    try {
+      initRepo(repo, 'a.txt')
+      mkdirSync(join(repo, 'src'))
+      // A tool call INSIDE the repository: scanning it costs a probe, and the
+      // answer is the repository top level.
+      const { ctx, lookups } = countingSessionCtx(repo, [{ cwd: join(repo, 'src') }])
+      const first = await activeWorktreeRootOf(ctx, 's-ttl', repo)
+      expect(first).toBe(realpathSync.native(repo))
+      expect(lookups()).toBe(1)
+      expect(probed.length).toBeGreaterThan(0)
+
+      probed.length = 0
+      await expect(activeWorktreeRootOf(ctx, 's-ttl', repo)).resolves.toBe(first)
+      // No spawn AND no event-log scan (the cache is consulted before the
+      // session is read, so the scan never starts).
+      expect(probed).toEqual([])
+      expect(lookups()).toBe(1)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  /**
+   * The client's per-tab poll is every 5 s, so a 3 s TTL made every poll a
+   * miss. The cached root must survive past the old window (10 s in, still a
+   * hit) — the clock is moved, not the test.
+   */
+  it('serves the cached root 10 s later (longer than the old 3 s TTL)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-active-root-'))
+    const repo = join(root, 'repo')
+    try {
+      initRepo(repo, 'a.txt')
+      const { ctx, lookups } = countingSessionCtx(repo, [])
+      const first = await activeWorktreeRootOf(ctx, 's-ttl-span', repo)
+      probed.length = 0
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 10_000)
+      try {
+        await expect(activeWorktreeRootOf(ctx, 's-ttl-span', repo)).resolves.toBe(first)
+      } finally {
+        clock.mockRestore()
+      }
+      expect(probed).toEqual([])
+      expect(lookups()).toBe(1)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  /**
+   * The three process-wide maps are bounded LRUs. The module exposes no test
+   * seam, so the bound is observed the only way it is observable from outside:
+   * after `cap` distinct sessions, the OLDEST session's next ask is a miss
+   * again (it was evicted) while the youngest ones still hit.
+   */
+  it('bounds the root cache: the oldest session is evicted past the cap', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-active-root-'))
+    try {
+      // The canned answer keeps the 257 probes from being 257 real processes;
+      // `probed` still counts every probe the module made.
+      seam.responder = (cwd) => `${cwd}\n`
+      const ctx = sessionCtx(root, [])
+      const cap = 256
+      for (let index = 0; index <= cap; index += 1) {
+        await activeWorktreeRootOf(ctx, `lru-${index}`, root)
+      }
+      expect(probed).toHaveLength(cap + 1)
+
+      probed.length = 0
+      // The oldest SURVIVOR and the newest key are still cached: no probe.
+      await activeWorktreeRootOf(ctx, 'lru-1', root)
+      await activeWorktreeRootOf(ctx, `lru-${cap}`, root)
+      expect(probed).toEqual([])
+      // Inserted first, so it is the one the cap evicted: re-asked, it probes.
+      await activeWorktreeRootOf(ctx, 'lru-0', root)
+      expect(probed).toEqual([root])
+    } finally {
+      seam.responder = null
       rmSync(root, { recursive: true, force: true })
     }
   })

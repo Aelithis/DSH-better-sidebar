@@ -107,6 +107,32 @@ describe('AgentOpenRegistry', () => {
     detach2()
   })
 
+  /**
+   * The queue is bounded per session: a thread whose sidebar is never shown
+   * must not accumulate opens for the lifetime of the host process.
+   */
+  it('caps the per-session queue, dropping the OLDEST queued opens', () => {
+    const registry = new AgentOpenRegistry()
+    const ids: string[] = []
+    for (let index = 0; index < 70; index += 1) {
+      ids.push(registry.enqueue('s1', 'file', `/f${index}.txt`, `f${index}.txt`).id)
+    }
+    // Another session's queue is untouched by the cap.
+    registry.enqueue('s2', 'file', '/other.txt', 'other.txt')
+
+    const received: Array<{ id: string }> = []
+    const detach = registry.attach('s1', (request) => { received.push(request) })
+    expect(received).toHaveLength(64)
+    // FIFO among the survivors, and the survivors are the NEWEST 64.
+    expect(received.map(request => request.id)).toEqual(ids.slice(6))
+    detach()
+
+    const other: unknown[] = []
+    const detachOther = registry.attach('s2', (request) => { other.push(request) })
+    expect(other).toHaveLength(1)
+    detachOther()
+  })
+
   it('drainAll drops the queue and dispose drops subscribers', () => {
     const registry = new AgentOpenRegistry()
     registry.enqueue('s1', 'file', '/a.txt', 'a.txt')

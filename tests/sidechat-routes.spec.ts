@@ -617,6 +617,96 @@ describe('sidechat.events', () => {
     expect(services.open).toHaveBeenCalledWith('child', 'read')
   })
 
+  /**
+   * A cold thread is re-read on EVERY poll, and each read decodes the whole
+   * persisted log and scans it back to `session/end-seed`. The memo keys on the
+   * stored artifact's identity (the host's change token + physical size), so a
+   * repeat poll costs one `stat` while a changed artifact re-reads — and the
+   * handle is still opened and closed.
+   */
+  it('reads a cold thread once per stored-artifact identity', async () => {
+    const child = agent('child')
+    const services = happyServices(undefined, child)
+    services.agents.get = vi.fn((_id: unknown) => undefined)
+    const read = vi.fn(async () => ({ events: threadLog() }))
+    const close = vi.fn(async () => {})
+    services.open.mockImplementation(async () => ({
+      header: { agentPreset: 'preset-a' },
+      inheritedEventCount: 0,
+      read,
+      close,
+    }))
+    let revision = 'mtime-1:size-4096'
+    const stat = vi.fn(async () => ({ revision, sizeBytes: 4_096 }))
+    // `stat` is read structurally at runtime (the plugin's mirror of the host
+    // service models the handle API only), so the fake attaches it here.
+    const persistence = services.sessionPersistence as { stat?: unknown }
+    persistence.stat = stat
+    const api = buildSidechatApi(ctxWith(services))
+
+    const first = await api['sidechat.events']({ childId: 'cold-memo' })
+    expect(first.events.map(event => event.seq)).toEqual([3, 4, 5, 6, 7])
+    const second = await api['sidechat.events']({ childId: 'cold-memo' })
+    expect(second.events.map(event => event.seq)).toEqual([3, 4, 5, 6, 7])
+    // Same identity: ONE handle, ONE read, and the handle was closed.
+    expect(stat).toHaveBeenCalledTimes(2)
+    expect(services.open).toHaveBeenCalledTimes(1)
+    expect(read).toHaveBeenCalledTimes(1)
+    expect(close).toHaveBeenCalledTimes(1)
+
+    // A new mtime is a new identity: the memo must not serve the stale log.
+    revision = 'mtime-2:size-8192'
+    await api['sidechat.events']({ childId: 'cold-memo' })
+    expect(services.open).toHaveBeenCalledTimes(2)
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(close).toHaveBeenCalledTimes(2)
+  })
+
+  /** The memo is bounded: a thread past the cap is re-read, not remembered. */
+  it('bounds the cold-log memo', async () => {
+    const services = happyServices(undefined, agent('child'))
+    services.agents.get = vi.fn((_id: unknown) => undefined)
+    const read = vi.fn(async () => ({ events: threadLog() }))
+    services.open.mockImplementation(async () => ({
+      header: { agentPreset: 'preset-a' },
+      inheritedEventCount: 0,
+      read,
+      close: async () => {},
+    }))
+    const persistence = services.sessionPersistence as { stat?: unknown }
+    persistence.stat = vi.fn(async (id: string) => ({ revision: `rev-${id}`, sizeBytes: 1 }))
+    const api = buildSidechatApi(ctxWith(services))
+
+    const cap = 16
+    for (let index = 0; index <= cap; index += 1) {
+      await api['sidechat.events']({ childId: `cold-lru-${index}` })
+    }
+    expect(services.open).toHaveBeenCalledTimes(cap + 1)
+
+    // The newest thread still hits; the oldest was evicted and re-reads.
+    await api['sidechat.events']({ childId: `cold-lru-${cap}` })
+    expect(services.open).toHaveBeenCalledTimes(cap + 1)
+    await api['sidechat.events']({ childId: 'cold-lru-0' })
+    expect(services.open).toHaveBeenCalledTimes(cap + 2)
+  })
+
+  it('falls back to an uncached read when the host exposes no stat', async () => {
+    const child = agent('child')
+    const services = happyServices(undefined, child)
+    services.agents.get = vi.fn((_id: unknown) => undefined)
+    const read = vi.fn(async () => ({ events: threadLog() }))
+    services.open.mockImplementation(async () => ({
+      header: { agentPreset: 'preset-a' },
+      inheritedEventCount: 0,
+      read,
+      close: async () => {},
+    }))
+    const api = buildSidechatApi(ctxWith(services))
+    await api['sidechat.events']({ childId: 'cold-no-stat' })
+    await api['sidechat.events']({ childId: 'cold-no-stat' })
+    expect(services.open).toHaveBeenCalledTimes(2)
+  })
+
   it('returns a marker-less legacy log whole', async () => {
     const child = agent('child', {
       events: [
