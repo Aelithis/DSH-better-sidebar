@@ -208,6 +208,61 @@ describe('buildSidechatInheritance compaction tail', () => {
     void full
   })
 
+  it('remaps replace operations that stay inside the tail', () => {
+    const { events } = compactedLog()
+    // One more closed tail turn, then a replacement user/message whose
+    // replace range covers ONLY that turn's tail nodes: the range rebases
+    // intact, the fold still shows the same transitions, the trim fires.
+    const tailTurn = turn(events.length, 4)
+    const replacedSeqs = tailTurn.nodes
+    events.push(...tailTurn.events)
+    const replacementSeq = events.length
+    events.push({
+      type: 'user/message',
+      seq: replacementSeq,
+      time: replacementSeq * 1000,
+      data: userMessage('m-edited', 'edited tail question'),
+      surfaceOp: { op: 'replace', startSeq: replacedSeqs[0] ?? 0, endSeq: replacedSeqs[replacedSeqs.length - 1] ?? 0 },
+      sourceEventSeqs: replacedSeqs,
+    } as SidebarSessionEvent)
+    const parent = visibleSequence(events)
+    const { seed } = buildSidechatInheritance(events)
+    // The trim must still fire here (the replace reorders only tail nodes —
+    // no fallback), which is what makes the remap assertions below meaningful.
+    expect(seed.length).toBeLessThan(events.length)
+    expect(visibleSequence(seed)).toEqual(parent)
+    const rebased = seed.find(event => {
+      const op = (event as { surfaceOp?: unknown }).surfaceOp
+      return typeof op === 'object' && op !== null && (op as { op?: unknown }).op === 'replace'
+    }) as { surfaceOp?: { startSeq: number; endSeq: number }; seq?: number } | undefined
+    // Not degraded: the range survived as a REMAPPED replace bound to the
+    // rebased positions (not to the parent's dropped-head seq space).
+    expect(rebased).toBeDefined()
+    expect(rebased?.surfaceOp?.startSeq).toBeLessThan(rebased?.seq ?? 0)
+    expect(rebased?.surfaceOp?.endSeq).toBeLessThan(rebased?.seq ?? 0)
+  })
+
+  it('falls back to the full copy when a tail replace reorders surviving nodes', () => {
+    const { events } = compactedLog()
+    // A replacement whose range covers a SURVIVING pre-cut node: the parent
+    // fold removes that node and repositions the replacement at its slot,
+    // which appending cannot reproduce — the verified equivalence must
+    // reject the trim and fall back to today's verbatim full copy.
+    const keepUserSeq = events.findIndex(event => JSON.stringify(event).includes('m-q2'))
+    const replacementSeq = events.length
+    events.push({
+      type: 'user/message',
+      seq: replacementSeq,
+      time: replacementSeq * 1000,
+      data: userMessage('m-resurfaced', 'resurfaced edit'),
+      surfaceOp: { op: 'replace', startSeq: keepUserSeq, endSeq: keepUserSeq },
+      sourceEventSeqs: [keepUserSeq],
+    } as SidebarSessionEvent)
+    const { seed } = buildSidechatInheritance(events)
+    expect(seed.some(event => JSON.stringify(event).includes('old result'))).toBe(true)
+    expect(seed.length).toBe(events.length + 0)
+  })
+
   it('is accepted by the real dsh-session seed validator', () => {
     const { events } = compactedLog()
     const { seed } = buildSidechatInheritance(events)
