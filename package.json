@@ -72,7 +72,7 @@
     "scripts/install.ps1",
     "cordis.patch.yml",
     "README.md",
-    "README_EN.md",
+    "README_ZH.md",
     "LICENSE",
     "icon.svg",
     "locale/*.json"

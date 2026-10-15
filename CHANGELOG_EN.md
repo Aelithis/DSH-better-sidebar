@@ -1,6 +1,6 @@
 # Changelog
 
-> Full release history of dsh-better-sidebar (see the [README](README_EN.md) for the latest release; also mirrored on [GitHub Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases)).
+> Full release history of dsh-better-sidebar (see the [README](README.md) for the latest release; also mirrored on [GitHub Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases)).
 >
 > 📝 The Chinese [CHANGELOG](./CHANGELOG.md) is the authoritative, item-by-item record; this file carries the English summaries and has historically lagged behind it. Where the two disagree, the Chinese one is current.
 
