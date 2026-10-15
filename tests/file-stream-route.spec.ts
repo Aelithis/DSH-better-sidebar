@@ -16,13 +16,14 @@
  *   prevent on the failure side.
  */
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../src/index.ts'
 import { writeError, writeJson } from '../src/wire.ts'
 import type { SidebarWebRoute } from '../src/context-types.ts'
+import { removeTree } from './temp-tree.ts'
 
 interface FakeContext {
   webRuntime: { trustedHosts: readonly string[] }
@@ -52,7 +53,7 @@ afterEach(async () => {
       server.closeAllConnections()
     })
   }
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  for (const root of roots.splice(0)) removeTree(root)
 })
 
 /** A temp workspace whose session cwd is the returned directory. */

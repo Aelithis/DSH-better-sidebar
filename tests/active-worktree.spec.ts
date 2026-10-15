@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { activeWorktreeRootOf } from '../src/active-worktree.ts'
 import type { Context } from '../src/context-types.ts'
+import { removeTree } from './temp-tree.ts'
 
 /** The plugin's git probe seam: call order plus an optional canned answer. */
 const seam = vi.hoisted(() => ({
@@ -114,7 +115,7 @@ describe('active worktree root', () => {
       // `/var` → `/private/var` symlink; same convention as git-worktree.spec).
       await expect(activeWorktreeRootOf(ctx, 's-cross-repo', repoA)).resolves.toBe(realpathSync.native(worktreeB))
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -126,7 +127,7 @@ describe('active worktree root', () => {
       const ctx = sessionCtx(repo, [{ cwd: join(repo, 'src') }])
       await expect(activeWorktreeRootOf(ctx, 's-no-worktree', repo)).resolves.toBe(realpathSync.native(repo))
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -149,7 +150,7 @@ describe('active worktree root', () => {
       expect(probed).toContain(worktreeB)
       expect(probed).not.toContain(worktreeB.toLowerCase())
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -176,7 +177,7 @@ describe('active worktree root', () => {
       // Every concurrent caller still gets the resolved answer.
       expect(new Set(answers)).toEqual(new Set([realpathSync.native(repo)]))
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -199,7 +200,7 @@ describe('active worktree root', () => {
       expect(probed).toEqual([repo])
       expect(lookups()).toBe(6)
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -225,7 +226,7 @@ describe('active worktree root', () => {
       expect(probed).toEqual([])
       expect(lookups()).toBe(1)
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -251,7 +252,7 @@ describe('active worktree root', () => {
       expect(probed).toEqual([])
       expect(lookups()).toBe(1)
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -284,7 +285,7 @@ describe('active worktree root', () => {
       expect(probed).toEqual([root])
     } finally {
       seam.responder = null
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 })

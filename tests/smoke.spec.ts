@@ -18,6 +18,7 @@ import { downloadUrl, htmlUrl } from '../src/client/api.ts'
 import * as git from '../src/git.ts'
 import { listDirectory } from '../src/fs-tree.ts'
 import type { SidebarWebRoute, SidebarWebUpgradeRoute } from '../src/context-types.ts'
+import { removeTree } from './temp-tree.ts'
 
 /**
  * The probe-budget factory is spied on so a batch's gate SHARING is asserted
@@ -48,7 +49,7 @@ const canCreateSymlink = (() => {
   } catch {
     return false
   } finally {
-    rmSync(dir, { recursive: true, force: true })
+    removeTree(dir)
   }
 })()
 
@@ -237,7 +238,7 @@ describe('host plugin smoke', () => {
       expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8')
     } finally {
       for (const cleanup of effects) cleanup()
-      rmSync(directory, { recursive: true, force: true })
+      removeTree(directory)
     }
   })
 
@@ -376,7 +377,7 @@ describe('git destructive operations (scratch repository)', () => {
       expect(staged).toContain('-two')
       expect(staged).toContain('+CHANGED')
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      removeTree(dir)
     }
   })
 
@@ -400,7 +401,7 @@ describe('git destructive operations (scratch repository)', () => {
       expect(readFileSync(join(dir, 'pkg', 'README.md'), 'utf8')).toBe('pkg-DIRTY\n')
       expect(gitRun(dir, ['status', '--porcelain'])).toBe(' M pkg/README.md\n')
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      removeTree(dir)
     }
   })
 
@@ -415,7 +416,7 @@ describe('git destructive operations (scratch repository)', () => {
       expect(readFileSync(join(dir, 'a.txt'), 'utf8')).toBe('one\ntwo\nthree\n')
       expect((await git.log(dir))[0]!.subject).toBe('Revert "change"')
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      removeTree(dir)
     }
   })
 
@@ -432,7 +433,7 @@ describe('git destructive operations (scratch repository)', () => {
       expect(readFileSync(join(dir, 'b.txt'), 'utf8')).toBe('feature work\n')
       expect((await git.log(dir))[0]!.subject).toBe('feature work')
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      removeTree(dir)
     }
   })
 
@@ -443,7 +444,7 @@ describe('git destructive operations (scratch repository)', () => {
       await expect(git.revert(dir, 'deadbeef00000000000000000000000000000000')).rejects.toThrow()
       await expect(git.cherryPick(dir, 'deadbeef00000000000000000000000000000000')).rejects.toThrow()
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      removeTree(dir)
     }
   })
 
@@ -466,7 +467,7 @@ describe('git destructive operations (scratch repository)', () => {
       await expect(git.revert(dir, '--abort')).rejects.toThrow()
       await expect(git.cherryPick(dir, '--abort')).rejects.toThrow()
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      removeTree(dir)
     }
   })
 
@@ -479,7 +480,7 @@ describe('git destructive operations (scratch repository)', () => {
       gitRun(dir, ['add', 'a.txt'])
       await expect(git.show(dir, ':0', 'a.txt')).resolves.toContain('staged-change')
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      removeTree(dir)
     }
   })
 })
@@ -626,7 +627,7 @@ describe('session cwd resolution over the API route', () => {
         expect(await invoke(route, 'git.log', { ...base, repoRoot: b, worktree })).toMatchObject({ ok: false })
       }
     } finally {
-      rmSync(scratch, { recursive: true, force: true })
+      removeTree(scratch)
     }
   })
 
@@ -673,7 +674,7 @@ describe('session cwd resolution over the API route', () => {
       expect(notRepo).toMatchObject({ ok: false, status: 409, error: { code: 'not-repo' } })
       expect(notRepo.error?.message).not.toContain('internal')
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      removeTree(dir)
     }
   })
 
@@ -776,7 +777,7 @@ describe('session cwd resolution over the API route', () => {
       expect(diff).toContain('+root-DIRTY')
       expect(diff).not.toContain('pkg-DIRTY')
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      removeTree(dir)
     }
   })
 
@@ -822,7 +823,7 @@ describe('session cwd resolution over the API route', () => {
       expect(value.path).toBe(outside)
       expect(value.entries.map(entry => entry.name)).toEqual(['secret.txt'])
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -840,7 +841,7 @@ describe('session cwd resolution over the API route', () => {
       expect(read.ok).toBe(true)
       expect((read.value as unknown as { kind: string; content: string }).content).toBe('secret')
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -857,7 +858,7 @@ describe('session cwd resolution over the API route', () => {
       expect(write.ok).toBe(true)
       expect(readFileSync(written, 'utf8')).toBe('hack')
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -901,7 +902,7 @@ describe('session cwd resolution over the API route', () => {
       expect((await invokeGet(html, htmlUrl(scope, external))).status).toBe(400)
       expect((await invokeGet(file, downloadUrl(scope, external))).status).toBe(400)
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -926,7 +927,7 @@ describe('session cwd resolution over the API route', () => {
       const written = readFileSync(target, 'utf8')
       expect([draftA, draftB]).toContain(written)
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -949,7 +950,7 @@ describe('session cwd resolution over the API route', () => {
       expect(write.ok).toBe(true)
       expect(readFileSync(target).equals(encodeText(text, 'gbk'))).toBe(true)
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -983,7 +984,7 @@ describe('session cwd resolution over the API route', () => {
       expect(typeof value?.head).toBe('string')
       expect(Buffer.from(value!.head!, 'base64').length).toBe(4096)
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -1001,7 +1002,7 @@ describe('session cwd resolution over the API route', () => {
       expect(await invokeGet(file, downloadUrl({ sessionId: 'home' }, `~/${dirName}/note.txt`)))
         .toMatchObject({ status: 200, body: 'home sweet home' })
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      removeTree(dir)
     }
   })
 
@@ -1032,7 +1033,7 @@ describe('session cwd resolution over the API route', () => {
       expect(htmlResult).toMatchObject({ status: 200 })
       expect(htmlResult.body).toContain('outside')
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -1055,7 +1056,7 @@ describe('session cwd resolution over the API route', () => {
       expect(res.headers['content-security-policy']).toContain('sandbox')
       expect(res.headers['x-content-type-options']).toBe('nosniff')
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -1076,7 +1077,7 @@ describe('session cwd resolution over the API route', () => {
       expect(res.headers['content-type']).toBe('image/png')
       expect(res.headers['content-security-policy']).toBeUndefined()
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -1089,7 +1090,7 @@ describe('session cwd resolution over the API route', () => {
       const tree = await invoke(route, 'fs.tree', { sessionId: 'security', path: join(workspace, 'missing') })
       expect(tree).toMatchObject({ ok: false, status: 400, error: { code: 'fs-error' } })
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -1119,7 +1120,7 @@ describe('session cwd resolution over the API route', () => {
       expect(levels[2]!.truncated).toBe(false)
       expect(levels[2]!.error).toMatch(/missing/)
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -1140,7 +1141,7 @@ describe('session cwd resolution over the API route', () => {
       expect((single.value as unknown as { entries: Array<{ name: string }> }).entries.map(entry => entry.name))
         .toEqual(level.entries.map(entry => entry.name))
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -1177,7 +1178,7 @@ describe('session cwd resolution over the API route', () => {
       const plainLevels = (plain.value as unknown as { levels: Array<{ entries: Array<{ name: string }> }> }).levels
       expect(plainLevels[0]!.entries.map(entry => entry.name)).toEqual(['src', 'third_party', '.DS_Store'])
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -1206,7 +1207,7 @@ describe('session cwd resolution over the API route', () => {
       const anchored = await invoke(route, 'fs.search', { sessionId: 's-search', query: './src/index.ts' })
       expect(anchored.value).toEqual({ matches: [join(workspace, 'src', 'index.ts')], dirs: [], truncated: false })
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -1224,7 +1225,7 @@ describe('session cwd resolution over the API route', () => {
       })
       expect(tooMany).toMatchObject({ ok: false, status: 400, error: { code: 'bad-request' } })
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -1252,7 +1253,7 @@ describe('session cwd resolution over the API route', () => {
       }).levels
       expect(levels.find(entry => entry.path === level)?.entries.filter(row => row.compact === true)).toHaveLength(3)
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -1273,7 +1274,7 @@ describe('session cwd resolution over the API route', () => {
       const entries = (answer.value as unknown as { entries: { compact?: boolean }[] }).entries
       expect(entries.filter(entry => entry.compact === true)).toHaveLength(1)
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -1292,7 +1293,7 @@ describe('session cwd resolution over the API route', () => {
       expect(tree.ok).toBe(true)
       expect((tree.value as unknown as { entries: Array<{ name: string }> }).entries.map(entry => entry.name)).toEqual(['secret.txt'])
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -1310,7 +1311,7 @@ describe('session cwd resolution over the API route', () => {
       expect(read.ok).toBe(true)
       expect((read.value as unknown as { content: string }).content).toBe('secret')
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -1328,7 +1329,7 @@ describe('session cwd resolution over the API route', () => {
       // The write landed on the link's TARGET (the link is not replaced).
       expect(readFileSync(join(outside, 'new.txt'), 'utf8')).toBe('hack')
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 })
@@ -1598,7 +1599,7 @@ describe('side card settings routes', () => {
       expect(row?.value).not.toHaveProperty('browserInterceptHttp')
       expect(row?.revision).toBe(1)
     } finally {
-      rmSync(home, { recursive: true, force: true })
+      removeTree(home)
     }
   })
 
@@ -1615,7 +1616,7 @@ describe('side card settings routes', () => {
       expect(row?.value).toMatchObject({ editorExplorer: true, agentOpenTools: false })
       expect(row?.revision).toBe(0)
     } finally {
-      rmSync(home, { recursive: true, force: true })
+      removeTree(home)
     }
   })
 
@@ -1646,7 +1647,7 @@ describe('side card settings routes', () => {
       const stillOpen = await invoke(route, 'fs.read', { sessionId: 'fence', cwd: workspace, path: join(outside, 'secret.txt') })
       expect(stillOpen).toMatchObject({ ok: true })
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 

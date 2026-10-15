@@ -10,11 +10,12 @@
  * gate the request was given (and a cache hit spends nothing at all). The
  * route's per-request gate SHARING is asserted in tests/smoke.spec.ts.
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { createProbeGate, listDirectory, type ProbeGate } from '../src/fs-tree.ts'
+import { removeTree } from './temp-tree.ts'
 
 /** A gate that only COUNTS acquisitions: it bounds nothing of its own, so the
  *  count it reports is exactly the probes the caller routed through it. */
@@ -105,7 +106,7 @@ describe('listDirectory probe budget', () => {
       expect(counted.calls()).toBe(spent)
       expect(cached).toBe(listing)
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      removeTree(dir)
     }
   })
 
@@ -132,7 +133,7 @@ describe('listDirectory probe budget', () => {
         expect(listing.entries.filter(entry => entry.compact === true)).toHaveLength(3)
       }
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -164,7 +165,7 @@ describe('listDirectory probe budget', () => {
         listing.entries.slice(0, 32).map(entry => entry.name),
       )
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -187,7 +188,7 @@ describe('listDirectory probe budget', () => {
       expect(counted.calls()).toBe(0)
       expect(listing.entries.every(entry => entry.compact === undefined)).toBe(true)
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 })

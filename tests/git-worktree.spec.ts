@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { parseWorktreeList, resolveWorktree, runGit, status, worktrees } from '../src/git.ts'
+import { removeTree } from './temp-tree.ts'
 
 const IDENTITY = {
   GIT_AUTHOR_NAME: 'dsh-better-sidebar-test',
@@ -89,7 +90,7 @@ describe('linked Git worktrees', () => {
       // Git retains administrative metadata after a checkout directory is
       // deleted, reporting the record as prunable. It must disappear from both
       // the selector inventory and the accepted command-target allowlist.
-      rmSync(agent, { recursive: true, force: true })
+      removeTree(agent)
       const remaining = await worktrees(main)
       expect(remaining).toHaveLength(1)
       expect(resolve(remaining[0]!.path)).toBe(resolve(realpathSync.native(main)))
@@ -97,7 +98,7 @@ describe('linked Git worktrees', () => {
       await expect(resolveWorktree(main, agentPath)).rejects.toThrow('unknown linked worktree')
     } finally {
       try { git(main, ['worktree', 'remove', '--force', agent]) } catch { /* fixture may not be fully initialized */ }
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -129,7 +130,7 @@ describe('linked Git worktrees', () => {
       // still expand the same tree file by file.
       expect((await status(main)).entries).toHaveLength(50)
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -186,7 +187,7 @@ describe('linked Git worktrees', () => {
       }, { additions: 0, deletions: 0 })
       expect(totals).toEqual({ additions: 3, deletions: 0 })
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -226,7 +227,7 @@ describe('linked Git worktrees', () => {
       expect(result.entries).toHaveLength(renames)
       expect(result.truncated).toBe(false)
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -245,7 +246,7 @@ describe('linked Git worktrees', () => {
       // is unaffected without the option.
       await expect(runGit(root, ['show', 'HEAD:big.txt'])).resolves.toHaveLength(256 * 1024)
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 
@@ -276,7 +277,7 @@ describe('linked Git worktrees', () => {
       // A complete prefix of the same answer, not a scrambled one.
       expect(all.startsWith(fields.slice(0, 1_000).join('\0'))).toBe(true)
     } finally {
-      rmSync(root, { recursive: true, force: true })
+      removeTree(root)
     }
   })
 })
