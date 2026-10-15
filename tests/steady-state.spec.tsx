@@ -21,7 +21,7 @@
  */
 // @vitest-environment jsdom
 import { readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, relative, sep } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -284,7 +284,9 @@ describe('steady state: the recurring-timer inventory is explicit', () => {
   it('every setInterval site is declared with the condition that stops it', () => {
     const sites = clientSources(root)
       .filter(path => readFileSync(path, 'utf8').includes('setInterval('))
-      .map(path => path.slice(root.length).replace(/^\//, ''))
+      // 清单里的键一律用 POSIX 分隔的包内相对路径：`slice(root.length)` 在
+      // Windows 上会留下前导反斜杠（`\JobsDrawer.tsx`）而两边永不相等。
+      .map(path => relative(root, path).split(sep).join('/'))
       .sort()
     expect(
       sites,
