@@ -624,13 +624,14 @@ describe('buildSidechatInheritance compaction tail', () => {
     )
   })
 
-  it('falls back when a kept compaction group would lose its summary to the dropped span', () => {
+  it('drops a mid-keep compaction group atomically when its citations fall in the dropped span', () => {
     // Same-turn double compaction: cp0 completes mid-turn, cp1 (the consumed
-    // one) shadows cp0's checkpoint; cp0's records ride in the keep window
-    // but its citations name the dropped span, so dropping only the summary
-    // would strand a successful compaction/end — the bracket gate falls
-    // back to the full copy instead of shipping a seed the host's
-    // compaction invariant companion rejects.
+    // one) swallows cp0's checkpoint; cp0's records ride in the keep window
+    // but its citations name the dropped span. Record-level dropping would
+    // strand a successful compaction/end (the host's compaction invariant
+    // companion rejects it) — the group drops ATOMICALLY and the trim still
+    // fires, which is what real multi-compaction parents need (every
+    // mid-keep group cites nodes a later group re-shadowed).
     const events = [
       lo('turn/start', 0, { turn: 1 }),
       lo('step/start', 1, { turn: 1, step: 1 }),
@@ -671,19 +672,28 @@ describe('buildSidechatInheritance compaction tail', () => {
       lo('turn/end', 19, { turn: 2, reason: { kind: 'completed' } }),
       ...turn(20, 3, { callId: 'c-tail', result: 'tail result' }).events,
     ]
-    // The consumed compaction shadows cp0's checkpoint plus turn 1's nodes.
-    events.push(...compactionGroup(events.length, [3, 4, 14]))
-    const { seed } = buildSidechatInheritance(events)
-    expect(seed.length).toBe(events.length)
+    // The consumed compaction swallows the surface span as it exists at ITS
+    // fold moment: cp0's checkpoint (which replaced turn 1's nodes) plus
+    // turn 2 step 1's messages.
+    events.push(...compactionGroup(events.length, [14, 9, 10]))
+    const { seed, snapshot } = buildSidechatInheritance(events)
+    expect(snapshot).toBeNull()
+    expect(seed.length).toBeLessThan(events.length)
+    // cp0's whole bracket is gone — no lone end without its summary.
+    expect(seed.some(event => JSON.stringify(event).includes('cp0'))).toBe(false)
+    expect(seed.some(event => event.type === 'compaction/end' && (event.data as { compactionId?: string }).compactionId === 'cp1')).toBe(false)
+    const seedGroups = seed.filter(event => event.type === 'compaction/start' || event.type === 'compaction/summary' || event.type === 'compaction/end')
+    expect(seedGroups).toEqual([])
+    expect(visibleSequence(seed)).toEqual(visibleSequence(events))
+    expect(invariantFailures(seed)).toEqual([])
     // Control: the same log without the consumed group (its four trailing
-    // events) cuts at cp0 instead and trims — only the bracket split, not
-    // the log, disables the optimization.
+    // events) cuts at cp0 instead and also trims.
     const control = events.slice(0, -4)
     const controlSeed = buildSidechatInheritance(control).seed
     expect(controlSeed.length).toBeLessThan(control.length)
   })
 
-  it('falls back when a command/run is dropped while its command/done survives', () => {
+  it('drops a command/done atomically when its run falls in the dropped span', () => {
     // A slash command runs before turn 1 and settles inside turn 2; the
     // consumed compaction shadows turn 1's surface, so the keep window
     // keeps the done without its run — the bracket gate falls back instead
@@ -716,7 +726,13 @@ describe('buildSidechatInheritance compaction tail', () => {
     ]
     events.push(...compactionGroup(events.length, [4, 5]))
     const { seed } = buildSidechatInheritance(events)
-    expect(seed.length).toBe(events.length)
+    // The done drops ATOMICALLY with its dropped run — no lone done the
+    // host's commands invariant rejects, and the trim still fires.
+    expect(seed.length).toBeLessThan(events.length)
+    expect(seed.some(event => event.type === 'command/done')).toBe(false)
+    expect(seed.some(event => event.type === 'command/run')).toBe(false)
+    expect(visibleSequence(seed)).toEqual(visibleSequence(events))
+    expect(invariantFailures(seed)).toEqual([])
 
     // Together: a command that runs INSIDE the keep window and settles
     // there — both records ride, and the done cites the rebased run.

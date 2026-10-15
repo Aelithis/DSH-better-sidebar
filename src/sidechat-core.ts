@@ -374,6 +374,60 @@ function compactionTail(events: readonly SidechatLogEvent[]): SidechatLogEvent[]
       for (let seq = Math.max(0, start); seq <= Math.min(end, events.length - 1); seq++) replaceCovered.add(seq)
     }
   }
+  // The set of parent seqs the seed will carry, decided BEFORE emission: a
+  // grouped record whose citations cannot remap drops ATOMICALLY — its
+  // compaction bracket (start/summary/end) or its command pair goes
+  // together, never a lone partner that the host's invariant companions
+  // reject. Real multi-compaction sessions hit this on every mid-keep group
+  // (its summary cites nodes later groups re-shadowed), so record-level
+  // dropping would strand brackets on every real parent.
+  const emittedSeqs = new Set<number>()
+  for (const event of headEvents) emittedSeqs.add(event.seq)
+  emittedSeqs.add(checkpoint.seq)
+  const keepSkip = (event: SidechatLogEvent): boolean =>
+    (isSurfaceEligibleType(event.type) && !surviving.has(event.seq) && !replaceCovered.has(event.seq))
+    || (event.type === 'tool/call' && !survivingCallIds.has(String(dataOf(event).callId)))
+  for (const [from, to] of [[keepStart, cut], [cut + 1, events.length]] as const) {
+    for (let index = from; index < to; index++) {
+      const event = events[index]
+      if (event === undefined) continue
+      if (isCompactionGroupEvent(event, groupId)) continue
+      if (index < cut && keepSkip(event)) continue
+      emittedSeqs.add(event.seq)
+    }
+  }
+  const droppedGroups = new Set<string>()
+  const keptRunIds = new Set<string>()
+  for (const seq of emittedSeqs) {
+    const event = events[seq]
+    if (event === undefined || event.type !== 'command/run') continue
+    const id = dataOf(event).commandId
+    if (typeof id === 'string') keptRunIds.add(id)
+  }
+  const droppedDones = new Set<number>()
+  for (const seq of emittedSeqs) {
+    const event = events[seq]
+    if (event === undefined) continue
+    const data = dataOf(event)
+    if (event.type === 'compaction/summary' || event.type === 'compaction/prune') {
+      const range = data.shadowedRange as { start?: unknown; end?: unknown } | undefined
+      const cited = data.shadowedSeqs
+      if (range === null || typeof range !== 'object' || !Array.isArray(cited)) continue
+      const start = typeof range.start === 'number' ? emittedSeqs.has(range.start) : true
+      const end = typeof range.end === 'number' ? emittedSeqs.has(range.end) : true
+      const citedAll = cited.every(item => typeof item !== 'number' || emittedSeqs.has(item))
+      if (!start || !end || !citedAll) {
+        const id = data.compactionId
+        if (typeof id === 'string') droppedGroups.add(id)
+      }
+    } else if (event.type === 'command/done') {
+      const id = data.commandId
+      const runSeq = data.sourceEventSeq
+      const runKept = (typeof id === 'string' && keptRunIds.has(id))
+        || (typeof runSeq === 'number' && emittedSeqs.has(runSeq) && events[runSeq]?.type === 'command/run')
+      if (!runKept) droppedDones.add(event.seq)
+    }
+  }
   // Turn renumbering: the host's turn counter must run 1, 2, 3… over the
   // seed, but the dropped span leaves a gap between the head skeleton's
   // turn and the keep window's first turn/start. Every kept event carrying
@@ -421,13 +475,17 @@ function compactionTail(events: readonly SidechatLogEvent[]): SidechatLogEvent[]
   for (let index = keepStart; index < cut; index++) {
     const event = events[index]
     if (event === undefined || isCompactionGroupEvent(event, groupId)) continue
-    if (isSurfaceEligibleType(event.type) && !surviving.has(event.seq) && !replaceCovered.has(event.seq)) continue
-    if (event.type === 'tool/call' && !survivingCallIds.has(String(dataOf(event).callId))) continue
+    if (keepSkip(event)) continue
+    if (droppedGroups.has(String(dataOf(event).compactionId))) continue
+    if (droppedDones.has(event.seq)) continue
     emit(event)
   }
   for (let index = cut + 1; index < events.length; index++) {
     const event = events[index]
-    if (event !== undefined && !isCompactionGroupEvent(event, groupId)) emit(event)
+    if (event === undefined || isCompactionGroupEvent(event, groupId)) continue
+    if (droppedGroups.has(String(dataOf(event).compactionId))) continue
+    if (droppedDones.has(event.seq)) continue
+    emit(event)
   }
   if (aborted) return undefined
   // Prove equivalence before the caller relies on it: the rebased sequence
@@ -496,8 +554,9 @@ function inboxSplicesValid(seed: readonly SeedEvent[]): boolean {
     if (data.target !== 'next-turn' && data.target !== 'next-step') return false
     const inbox = data.target === 'next-step' ? nextStep : nextTurn
     const rawStart = data.start
-    const rawRemoved = data.removedCount
-    const removedCount = typeof rawRemoved === 'number' ? rawRemoved : Number.NaN
+    // The host contract makes removedCount optional and defaults it to 0
+    // (its own writer omits it for pure inserts — 54% of real splices).
+    const removedCount = typeof data.removedCount === 'number' ? data.removedCount : 0
     const inserted = Array.isArray(data.inserted) ? data.inserted as Array<Record<string, unknown>> : undefined
     const start = typeof rawStart === 'number' ? rawStart : Number.NaN
     if (inserted === undefined
