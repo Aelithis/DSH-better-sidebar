@@ -2,7 +2,7 @@
 
 > 本文档收录 dsh-better-sidebar 的完整发布历史（最新版摘要见 [README](README_ZH.md)；同步发布于 [GitHub Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases)）。
 
-### Unreleased
+### v0.26.1
 
 - ⚡ **稳态开销治理：0.25 引入的常驻轮询、每 tab 成本与 `keepMounted` 的无界复利**（社区反馈「0.24 没问题，之后就会卡」——侧栏在前台开久了卡、多轮对话后 DSH 卡、重装重启又暂时好；分界线经产物级 A/B 落在 v0.25.0，v0.26.0 的 git 轮询修复没触及这些；方法与全部实测数字见 [docs/plans/2026-10-15-perf-steady-state.md](docs/plans/2026-10-15-perf-steady-state.md)）：
   - **两个 500ms 表先治**（v0.25 引入，实测单 tick 0.5→9.7ms、最坏约 3 500 次强制布局读取/秒，且**无论是否可见都在跑**）：宿主右侧面板展开态改**全模块一条共享表**（引用计数，隐藏即 `clearInterval`，恢复即补读）；空白会话的兜底入口只在它**真的渲染**时建表（此前 interval 注册在 early return 之前，渲染 `null` 也照跑），让位走查 400→100 步（400px），隐藏期间不测量不写 state。同批：`settings-nav-icon` 的 `document.body` 观察者改 **rAF 合帧**并去掉 `characterData`（流式 token 改动文本节点不再逐次触发全文档查询）、`use-center-column` 的 1.5s 兜底表只在「一列都没有」时 armed（此前周期与复核窗口等长，注释声称的 query-free 快路径永不生效）、`session-phase` 隐藏时不请求且值未变不 `setState`（blank 会话不再每秒重渲染）。

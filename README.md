@@ -85,6 +85,11 @@ If something fails, check the FAQ table in https://github.com/omdsh-dev/DSH-bett
 
 ## 🆕 Recent Updates
 
+**v0.26.1** — full release history at [Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases) · [CHANGELOG](./CHANGELOG_EN.md)
+
+- ⚡ **Fixed the steady-state cost behind "fine on 0.24, then it got slow"** (community reports: the sidebar turns laggy after being open a long time, DSH turns laggy after many turns, a restart clears it for a while; an artifact-level A/B puts the line at v0.25.0): both 500 ms timers are now visibility-gated (the host right-panel state is one shared module-level poller; the blank-session fallback only runs while it actually renders), the per-tab 5 s session-root poll became **one per session and only while visible**, the file-tree watch and side-chat push stop when parked, `keepMounted` keeps its semantics while every cache/registry is now bounded, and the host cwd resolver gained in-flight dedupe with a 3 s → 15 s TTL
+- 📊 Measured in the real mount lane (4 visited tabs, 15 s idle window): live 500 ms timers **3 → 1**, live 5 s timers **5 → 0**, `session.cwd` requests **15 → 0**, hit tests **1,620 → 0**, forced layouts **5,190 → 30**
+
 **v0.26.0** — full release history at [Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases) · [CHANGELOG](./CHANGELOG_EN.md)
 
 - 🚀 **Streaming everywhere**: uploads / downloads / HTML preview / archiving have no size caps anymore; huge files open as a read-only paged preview
