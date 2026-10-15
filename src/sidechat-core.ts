@@ -18,6 +18,7 @@
  */
 import type { SidebarHistoryEntry, SidebarSessionSummary } from './context-types.ts'
 import type { AssistantLiveChunk } from './assistant-live.ts'
+import { foldSurface } from '@deepseek-ai/dsh-session/surface'
 
 /** The durable thread-label prefix (also the row filter in the client list). */
 export const SIDE_LABEL_PREFIX = 'Side: '
@@ -274,8 +275,210 @@ const SNAPSHOT_RESULT_CAP = 2000
 const SNAPSHOT_TOTAL_CAP = 8000
 
 /**
+ * Rebase the parent's log onto its last summarizing compaction: the
+ * checkpoint `user/message` already REPLACES the shadowed span on the
+ * model-visible surface, so a child needs only the surviving pre-cut surface
+ * nodes, the checkpoint itself, and the post-compaction tail — the shadowed
+ * bulk never has to be physically copied again. The result is verified with
+ * the real fold before it is used: the rebased sequence must produce the
+ * SAME visible nodes as the parent, which keeps the child's model context
+ * (and provider context-cache prefix) identical to a full-log fork.
+ *
+ * Returns a seq-contiguous event array, or undefined to fall back to the
+ * verbatim full copy — no compaction in the log, a tail whose back
+ * references cannot be rebased, or any fold the construction cannot prove
+ * equivalent. Failures degrade to today's behavior, never to a wrong child.
+ * @param events - the parent's log (live or persisted).
+ * @returns the rebased log, or undefined when the full copy is required.
+ */
+function compactionTail(events: readonly SidechatLogEvent[]): SidechatLogEvent[] | undefined {
+  const cut = lastCheckpointIndex(events)
+  if (cut === undefined) return undefined
+  const checkpoint = events[cut]
+  if (checkpoint === undefined) return undefined
+  let head: SidechatLogEvent[]
+  let parentNodes: readonly number[]
+  try {
+    const fold = foldSurface(events as unknown as Parameters<typeof foldSurface>[0])
+    parentNodes = fold.nodes
+    const surfaceIndex = parentNodes.indexOf(checkpoint.seq)
+    // The checkpoint must sit on the surface, and every node before its
+    // surface slot must predate the cut (a post-cut node reordered ahead of
+    // the checkpoint would need the very shadowing we are removing).
+    if (surfaceIndex === -1) return undefined
+    const before: SidechatLogEvent[] = []
+    const after: SidechatLogEvent[] = []
+    let sawTailNode = false
+    for (let index = 0; index < parentNodes.length; index++) {
+      if (index === surfaceIndex) continue
+      const node = events[parentNodes[index] as number]
+      if (node === undefined || node.seq >= cut) {
+        if (index > surfaceIndex) {
+          sawTailNode = true
+          continue
+        }
+        return undefined
+      }
+      // Surface order is [pre-cut before the checkpoint's slot][checkpoint]
+      // [pre-cut after its slot][tail in log order]; anything else cannot be
+      // reproduced by appending and degrades to the full copy.
+      if (sawTailNode) return undefined
+      if (index < surfaceIndex) before.push(node)
+      else after.push(node)
+    }
+    head = [...before, checkpoint, ...after]
+  } catch {
+    return undefined
+  }
+  // Surviving pre-cut tool/results are surface nodes; their PAIRED calls
+  // are log-only events the fold never kept. Emit each call right before
+  // its result so the child's pairs stay complete.
+  const headWithCalls: SidechatLogEvent[] = []
+  for (const event of head) {
+    const callId = toolResultCallId(event)
+    if (callId !== undefined) {
+      const call = findPairedCall(events, cut, callId)
+      if (call !== undefined) headWithCalls.push(call)
+    }
+    headWithCalls.push(event)
+  }
+  // Positional renumbering: head (with calls) keeps surface order, the
+  // post-checkpoint tail keeps log order; both map old seqs onto 0..n-1.
+  // Head events are visible nodes re-emitted as plain appends — any replace
+  // they carried is already baked into WHICH nodes survive (the surfaceOp
+  // marker itself is required by the seed validator, while stale citations
+  // into the dropped head must not survive).
+  const rebase = new Map<number, number>()
+  const seed: SeedEvent[] = []
+  for (const event of headWithCalls) {
+    rebase.set(event.seq, seed.length)
+    seed.push(
+      event.type === 'tool/call'
+        ? { type: event.type, seq: seed.length, time: event.time, data: dataOf(event) }
+        : { type: event.type, seq: seed.length, time: event.time, data: dataOf(event), surfaceOp: 'append' },
+    )
+  }
+  for (const event of events.slice(cut + 1)) {
+    const rebased = rebaseTailEvent(event, seed.length, rebase)
+    if (rebased === undefined) return undefined
+    rebase.set(event.seq, seed.length)
+    seed.push(rebased)
+  }
+  // Prove equivalence before the caller relies on it: the rebased sequence
+  // must fold without error and to the same visible nodes as the parent.
+  try {
+    const child = foldSurface(seed as unknown as Parameters<typeof foldSurface>[0])
+    if (!sameVisibleSequence(events, parentNodes, child.nodes, seed)) return undefined
+  } catch {
+    return undefined
+  }
+  return seed
+}
+
+/** Index of the checkpoint user/message of the last summarizing compaction:
+ *  the event right after the last `compaction/summary` — that adjacency is
+ *  the shadow-price contract. Undefined without a matching shape. */
+function lastCheckpointIndex(events: readonly SidechatLogEvent[]): number | undefined {
+  for (let index = events.length - 1; index >= 0; index--) {
+    if (events[index]?.type !== 'compaction/summary') continue
+    return events[index + 1]?.type === 'user/message' ? index + 1 : undefined
+  }
+  return undefined
+}
+
+/** The callId a tool/result event cites, when its message carries one. */
+function toolResultCallId(event: SidechatLogEvent): string | undefined {
+  if (event.type !== 'tool/result') return undefined
+  const message = dataOf(event).message as { source?: { callId?: unknown } } | undefined
+  const callId = message?.source?.callId
+  return typeof callId === 'string' && callId !== '' ? callId : undefined
+}
+
+/** The last log-only tool/call with this callId before the cut, when present. */
+function findPairedCall(events: readonly SidechatLogEvent[], cut: number, callId: string): SidechatLogEvent | undefined {
+  for (let index = cut - 1; index >= 0; index--) {
+    const event = events[index]
+    if (event?.type === 'tool/call' && dataOf(event).callId === callId) return event
+  }
+  return undefined
+}
+
+/** One `type` + message-content token per visible node, for comparing folds.
+ *  `headerSeq` is envelope metadata the rebase rewrites, not content. */
+function visibleToken(event: SidechatLogEvent | undefined): string {
+  if (event === undefined) return 'missing'
+  const data = { ...dataOf(event) }
+  delete data.headerSeq
+  return `${event.type}:${JSON.stringify(data)}`
+}
+
+/** Compare the parent's visible nodes with the rebased child's by content. */
+function sameVisibleSequence(
+  parent: readonly SidechatLogEvent[],
+  parentNodes: readonly number[],
+  childNodes: readonly number[],
+  child: readonly SidechatLogEvent[],
+): boolean {
+  if (parentNodes.length !== childNodes.length) return false
+  for (let index = 0; index < parentNodes.length; index++) {
+    if (visibleToken(parent[parentNodes[index] as number]) !== visibleToken(child[childNodes[index] as number])) {
+      return false
+    }
+  }
+  return true
+}
+
+/**
+ * Copy one post-checkpoint tail event into the rebased sequence: envelope
+ * seq references are remapped through the rebase map, and a reference the
+ * map cannot serve (it points into the dropped head) degrades the event
+ * honestly — a replace whose shadowed nodes are gone becomes an append,
+ * dropped citations vanish — except `developer/message.headerSeq`, whose
+ * referent cannot be degraded: that aborts the whole tail.
+ * @param event - the tail event to copy.
+ * @param seq - the event's position in the rebased sequence.
+ * @param rebase - old seq → rebased position over the kept set.
+ * @returns the rebased event, or undefined when the tail is not provable.
+ */
+function rebaseTailEvent(event: SidechatLogEvent, seq: number, rebase: Map<number, number>): SeedEvent | undefined {
+  const source = event as SidechatLogEvent & { ignorable?: true }
+  const seed: SeedEvent = { type: source.type, seq, time: source.time, data: dataOf(source) }
+  if (source.ignorable === true) seed.ignorable = true
+  const sourceData = dataOf(event)
+  if (event.type === 'developer/message' && typeof sourceData.headerSeq === 'number') {
+    const mapped = rebase.get(sourceData.headerSeq)
+    if (mapped === undefined) return undefined
+    seed.data = { ...seed.data, headerSeq: mapped }
+  }
+  const op = (event as { surfaceOp?: unknown }).surfaceOp
+  if (op === 'append') {
+    seed.surfaceOp = 'append'
+  } else if (op !== null && typeof op === 'object' && 'op' in op && (op as { op: unknown }).op === 'replace') {
+    const replace = op as { startSeq?: unknown; endSeq?: unknown }
+    const start = typeof replace.startSeq === 'number' ? rebase.get(replace.startSeq) : undefined
+    const end = typeof replace.endSeq === 'number' ? rebase.get(replace.endSeq) : undefined
+    // A range the rebase cannot resolve lost its shadowed nodes with the
+    // head; appending the replacement is exactly what remains visible.
+    seed.surfaceOp = start !== undefined && end !== undefined && start <= end
+      ? { op: 'replace', startSeq: start, endSeq: end }
+      : 'append'
+  }
+  const cited = (event as { sourceEventSeqs?: unknown }).sourceEventSeqs
+  if (Array.isArray(cited)) {
+    const mapped = cited.map(item => typeof item === 'number' ? rebase.get(item) : undefined)
+    // Citations the rebase cannot serve referenced the dropped head; the
+    // field is optional and only has to cover a live replace range.
+    if (!mapped.includes(undefined)) seed.sourceEventSeqs = mapped as number[]
+  }
+  return seed
+}
+
+/**
  * Build the side-thread inheritance for one parent log: the full event log
  * up to the click moment, honestly closed when it ends inside an open turn.
+ * When the parent has compacted, the log is first rebased onto its last
+ * summarizing compaction (`compactionTail`) — same model-visible surface, a
+ * fraction of the durable copy.
  * @param events - the parent's log (live or persisted).
  * @param live - the parent's in-flight stream chunks (DSH 0.1.5+ publishes
  *   them outside the log); used only by the snapshot fallback.
@@ -285,26 +488,28 @@ export function buildSidechatInheritance(
   live: readonly AssistantLiveChunk[] = [],
 ): SidechatInheritance {
   if (events.length === 0) return { seed: [], snapshot: null }
-  const boundary = lastTurnBoundary(events)
-  if (boundary < 0 || events[boundary]?.type === 'turn/end') {
+  const trimmed = compactionTail(events)
+  const log = trimmed ?? events
+  const boundary = lastTurnBoundary(log)
+  if (boundary < 0 || log[boundary]?.type === 'turn/end') {
     // Ends outside any turn (or has no turns at all): the whole log is a
     // valid, balanced seed — possibly ending with a pending user message.
-    return { seed: copyEvents(events), snapshot: null }
+    return { seed: copyEvents(log), snapshot: null }
   }
   // Ends inside the open turn starting at `boundary`.
-  if (hasDanglingToolCall(events, boundary)) {
+  if (hasDanglingToolCall(log, boundary)) {
     // Cannot close honestly: cut before the open turn; the caller attaches
     // the structured snapshot to the boundary prompt instead.
     return {
-      seed: copyEvents(events.slice(0, boundary)),
-      snapshot: buildOpenTurnSnapshot(events, live),
+      seed: copyEvents(log.slice(0, boundary)),
+      snapshot: buildOpenTurnSnapshot(log, live),
     }
   }
-  const seed = copyEvents(events)
-  const last = events[events.length - 1]
-  const turn = numberAt(dataOf(events[boundary]!), 'turn')
+  const seed = copyEvents(log)
+  const last = log[log.length - 1]
+  const turn = numberAt(dataOf(log[boundary]!), 'turn')
   const now = last?.time ?? 0
-  const openStep = openStepInTurn(events, boundary)
+  const openStep = openStepInTurn(log, boundary)
   if (openStep !== undefined) {
     seed.push({ type: 'step/end', seq: seed.length, time: now, data: { turn, step: openStep } })
   }
