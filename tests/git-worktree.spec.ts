@@ -255,10 +255,15 @@ describe('linked Git worktrees', () => {
       git(root, ['init', '-q'])
       // Long names, so the status answer spans several 64 KiB pipe reads: the
       // cap is checked per chunk, which is exactly how a runaway untracked
-      // walk is cut off mid-stream.
+      // walk is cut off mid-stream. They are long enough that ONE 64 KiB chunk
+      // carries at most ~500 fields, so "the capped answer is shorter than the
+      // whole one" is a real bound (cap 1,000 plus at most that one crossing
+      // chunk) rather than a race against the kill: `runGit` ignores every
+      // chunk that arrives after the cap trips. The kill itself is pinned
+      // deterministically against a mocked child in tests/git-spawn.spec.ts.
       const files = 2_500
       for (let index = 0; index < files; index += 1) {
-        writeFileSync(join(root, `f${index}-${'x'.repeat(40)}.ts`), 'x')
+        writeFileSync(join(root, `f${index}-${'x'.repeat(120)}.ts`), 'x')
       }
       const args = ['status', '--porcelain=v1', '-z', '--untracked-files=all']
       const all = await runGit(root, args)

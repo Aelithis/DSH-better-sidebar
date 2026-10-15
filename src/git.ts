@@ -305,6 +305,13 @@ export function runGit(cwd: string, args: string[], timeoutMs = 30_000, options:
       reject(new GitCommandError(`git ${args[0] ?? ''} timed out after ${timeoutMs}ms`, 'git-error', args.join(' ')))
     }, timeoutMs)
     child.stdout.on('data', (chunk: Buffer) => {
+      // The caller's row cap already decided the answer: ignore everything
+      // that arrives afterwards. Without this guard the retained output kept
+      // growing by whatever the killed child had already buffered into the
+      // pipe, so "capped" was only a claim about the kill and not a bound on
+      // what the caller receives (CI: a 125 KB answer plus a fast child made
+      // the capped call return all 2,500 rows).
+      if (fieldCapped) return
       stdout += chunk.toString('utf8')
       outBytes += chunk.length
       if (outBytes > maxBytes) {
