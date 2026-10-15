@@ -83,7 +83,7 @@ describe('PowerShell installer entry points', { timeout: 30_000 }, () => {
   })
 
   it('documents only BOM-safe in-memory invocation', () => {
-    for (const file of ['README.md', 'README_EN.md', 'scripts/install.ps1']) {
+    for (const file of ['README.md', 'README_ZH.md', 'scripts/install.ps1']) {
       const source = readFileSync(resolve(ROOT, file), 'utf8')
       expect(source, file).not.toMatch(new RegExp(`irm [^\\r\\n]*${INSTALLER_URL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^\\r\\n]*\\|\\s*iex`, 'i'))
       expect(source, file).not.toMatch(/\[scriptblock\]::Create\(\(irm\b/i)
