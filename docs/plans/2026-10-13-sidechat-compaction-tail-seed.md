@@ -1,6 +1,6 @@
 # 侧边对话启动慢：种子改为从最后一次 compaction 切尾（可验证等价）
 
-> 2026-10-13 起，2026-10-15 三轮独立审查后为 v4 构造 · 配套变更：`src/sidechat-core.ts` `compactionTail` + `tests/sidechat-compaction-seed.spec.ts`（14 例）
+> 2026-10-13 起，2026-10-15 四轮独立审查后为 v5 构造 · 配套变更：`src/sidechat-core.ts` `compactionTail` + `tests/sidechat-compaction-seed.spec.ts`（17 例）
 
 ## 问题
 
@@ -39,13 +39,13 @@ DSH 的 compaction 机制（`dsh-compaction` / `compaction-basic`）：
 4b. **头部骨架归一**：存活头部（含被 mid-session 改写的受保护 system 头，任意原始 turn/step）一律归一为 **turn 1 step 1**——只改写事件里**已有**的数字信封字段（user/message 从不带、也绝不注入，它的整份 data 就是模型可见消息）；关闭件从日志取回、同样归一；
 4c. **replace 目标不跳过**：keep 区间里被 checkpoint shadow 的 surface 节点跳过，**但仍是某个存活替换事件之 replace 目标的节点不跳**（pruner 的 tool/result 改写正是此形）——否则替换会被迫降级为落在已闭合 step 之后的 append，违反关系规则；
 5. **中段切点**（宿主 region 边界只受 tool-pairing 平衡约束、可止于轮中）：keep 区间内**跳过被 checkpoint shadow 掉的 surface 事件**（同轮早期节点）与**孤儿 tool/call**（其 result 未存活），骨架照发——空 step 合法；
-6. **自证**：用宿主公开导出的真折叠 `foldSurface`（`@deepseek-ai/dsh-session/surface`，浏览器安全子路径）分别折父日志与重基结果，**逐节点比对模型可见内容**——token 镜像宿主投影：`user/message` 比整份 `data`，其余比 `data.message`（信封 turn/step/headerSeq 天然不在其中）；再加一道**关系门** `turnSequenceValid`——镜像宿主 invariant 的**计数与配对核心**：轮号连续、无嵌套开轮、step 序号连续且开合于所属轮、轮内消息与 `tool/call` 点名开轮/开步（**非 append 的 `tool/result` 豁免**，宿主同款——pruner 替换携带旧 step）、`tool/result` 须消费本 step 的 pending call、step 不得带 pending 关闭。不等价、折叠抛错或关系门失败 → 回退全量。这是核心镜像而非宿主全契约——凡是门证明不了的，一律回退。
+6. **自证**：用宿主公开导出的真折叠 `foldSurface`（`@deepseek-ai/dsh-session/surface`，浏览器安全子路径）分别折父日志与重基结果，**逐节点比对模型可见内容**——token 镜像宿主投影：`user/message` 比整份 `data`，其余比 `data.message`（信封 turn/step/headerSeq 天然不在其中；spec 的 oracle 也用宿主 `deriveEventMessage`，不与实现共用投影）；再加四道**关系门**——`turnSequenceValid`（镜像宿主 invariant 的计数与配对核心：轮号连续、无嵌套开轮、step 序号连续且开合于所属轮、轮内消息与 `tool/call` 点名开轮/开步、非 append `tool/result` 豁免、pending call 须被消费、step 不得带 pending 关闭）；`inboxSplicesValid`（镜像宿主持久 inbox 折叠：位置拼接、已知 target、重复 id 拒绝）；`bracketsValid`（镜像宿主成组记录：成功 `compaction/end` 须有同 id 的 `compaction/summary`、`command/done` 须有先行的 `command/run`——四审证明「只丢计量记录」会拆散成组记录、宿主 companion 拒绝而三道自证全盲）；可见序列等价。不等价、折叠抛错或任一门失败 → 回退全量。这是核心镜像而非宿主全契约——凡是门证明不了的，一律回退。
 6. **回退** = 现行全量拷贝，行为逐字不变（无 compaction 的会话永远走这条路；探针实测五种形状回退输出与改前逐字节一致）。
 
 ### 证明范围与披露
 
 - 等价证明覆盖**可见节点内容序列**；`request/header`/`request/context` 等模型装配输入中 log-only 的部分，keep-window 与尾部内的会随逐字保留带过去，更老的随区段丢弃——实测（二审探针，6 组工具集变化组合）：子会话首个请求经宿主 `projectToolUpdates` 投影后与全量 fork **完全一致**（子会话自建的 header 重置 declaration series），今天无可观测差异；此推理链无测试 pin，属已知边界。
-- **回退（安全、无收益）的已知形状**（三轮探针实测）：**宽头**（受保护头之外还有存活 pre-cut 节点且含 tool/result——需经公开 `compactRegion` 任意区间接缝或第三方 backend 才可达，随包 backend 的 region 恒起于 surface index 0/1）；**单轮父会话**（compaction 发生在唯一仍在打开的轮内、无 keep 区间）；父日志本身违反关系不变量（子会话回退后与 legacy 逐字节一致 = parity）；审查者 p1-A 的多 step 中段复合形状。**已支持**（探针实证）：中段切点（keep 首轮部分被 shadow，含跨多 step）、context-overflow（keep 只剩末节点）、**被改写的受保护头**（任意原始 turn/step，归一后 trim 生效）、**pruner 替换在 keep 窗口**（replace 目标保留重放 + 非 append 豁免 + 计量记录引用重映射或丢弃）、空 keep 区间、级联 compaction、孤立 summary 回扫。keep 窗口内 `request/header` + `developer/message.headerSeq` 成功重映射由三轮审查者探针钉住（`probe-header-remap`：指向重基后 header、trim、invariant 0/0）。
+- **回退（安全、无收益）的已知形状**（四轮探针实测）：**宽头**（受保护头之外还有存活 pre-cut 节点且含 tool/result——需经公开 `compactRegion` 任意区间接缝或第三方 backend 才可达，随包 backend 的 region 恒起于 surface index 0/1）；**单轮父会话**（compaction 发生在唯一仍在打开的轮内、无 keep 区间）；**cut 之后被改写的受保护头**（存活 node 0 是 post-cut 替换、pre-cut 扫描找不到头——四审实测六个最重会话三个命中，含 32675 事件的旧式 fork 子会话；生产主会话不受影响）；**同轮双成功 compaction 且后组吞掉前组 checkpoint**（前组 citations 全落在 keep 窗口之前——bracket 门回退；跨轮级联正常 trim）；**命令括号被拆**（`command/run` 落在被遗忘区段而 `command/done` 存活——bracket 门回退）；父日志本身违反关系不变量（子会话回退后与 legacy 逐字节一致 = parity）；审查者 p1-A 的多 step 中段复合形状。**已支持**（探针实证）：中段切点（keep 首轮部分被 shadow，含跨多 step）、context-overflow（keep 只剩末节点）、**被改写的受保护头**（原始 turn/step 任意、cut 之前——归一后 trim 生效）、**pruner 替换在 keep 窗口**（replace 目标保留重放 + 非 append 豁免 + 计量记录引用重映射或丢弃）、**keep 窗口起点的 inbox insert 回吞**（真实 loop 顺序 `[insert][turn/start][claim]`——v4 e2e 在生产主会话上抓到并修复）、空 keep 区间、**跨轮级联 compaction**、孤立 summary 回扫、命令 run+done 同窗（`sourceEventSeq` 重映射）。keep 窗口内 `request/header` + `developer/message.headerSeq` 成功重映射由三轮审查者探针钉住（`probe-header-remap`：指向重基后 header、trim、invariant 0/0）。
 - 日志含 `image/offload` 等 **MESSAGE_PROJECTION 事件类型**时 `foldSurface`（无 projections）抛错 → 回退全量（安全，但含图长会话拿不到收益）。同理，未来插件自定义 projection 不在 core 集合内时证明会失真为「回退」而非「假通过」。
 - 孤立 compaction 组（summary 后替换未落地）的 log-only 记录随尾部保留（折叠不可见，保留宿主 metering 历史）；构造时剔除的只有**本次消费的那一组**。
 - 第二个 system 头（checkpoint 表位之前的其他存活节点）实测受支持（二审探针 E：trim 生效、等价、validator 接受）。
@@ -56,7 +56,7 @@ DSH 的 compaction 机制（`dsh-compaction` / `compaction-basic`）：
 - 不做引用式继承（子会话直接引用父会话物理行）——需要动 dsh-session/session-persistence/format 的宿主变更，超出插件贡献面；
 - 不加配置开关——回退路径本身就是安全阀；若上游评审要求可配置再加。
 
-## 测试（`tests/sidechat-compaction-seed.spec.ts`，14 例）
+## 测试（`tests/sidechat-compaction-seed.spec.ts`，17 例）
 
 夹具为宿主真实形状：`system/message {turn, step, message}`（`source.kind: 'system-prompt'`）、`tool/result` 挂 `message`、assistant 消息带 `model` source；compaction 组含手动（`turn: null`）与自动（`turn: <open turn>`）两种形态，且**开轮的 turn/start 与首条消息在切点之前**（二审 B1 的触发形状）。
 
@@ -73,7 +73,10 @@ DSH 的 compaction 机制（`dsh-compaction` / `compaction-basic`）：
 11. **中段 keep-window**：region 止于 keep 首轮之内 → 被 shadow 的同轮早期节点与孤儿 tool/call 被跳过、骨架完整、等价成立、invariant 零失败；
 12. **改写头**（turn 1 后续 step 的 SystemPromptProjection.replace 形状）→ 归一为 turn 1 step 1 后 trim 照常、原 prompt 消失、等价、invariant 零失败；
 13. **pruner 改写 keep 窗口结果**（两 step 之间的替换、携带原始 turn/step）→ replace 目标保留重放、替换 op 重映射、prune 记录引用重映射、等价、invariant 零失败；
-14. 真实验证器验收（`Session.create` + end-seed 标记落为子会话第一个 own event，与全量线程同形）。
+14. **keep 窗口起点的 inbox 括号**（`[insert][turn/start][claim]` 真实 loop 顺序）→ insert 回吞、位置折叠可重放（真投影由树外探针与 e2e 覆盖）；
+15. **同轮双成功 compaction、后组吞前组 checkpoint** → bracket 门回退（对照：去掉被消费组后 cp0 独立成切点、照常 trim）；
+16. **命令括号**：run 落被遗忘区段、done 存活 → 回退；run+done 同在 keep 窗口 → trim 且 `sourceEventSeq` 指向重基后的 run；
+17. 真实验证器验收（`Session.create` + end-seed 标记落为子会话第一个 own event，与全量线程同形）。
 
 夹具使用**真实轮距**（受保护头 turn 1 + 被 shadow 的整轮 + keep 轮 3 起）——二审证明「keep 恰为 turn 2」的唯一连续夹具会让 invariant 用例假绿。
 
@@ -82,7 +85,8 @@ DSH 的 compaction 机制（`dsh-compaction` / `compaction-basic`）：
 - 毁掉尾部 replace 重映射/降级分支 → 例 9 当场红；
 - 孤儿 summary 不回扫 → 例 10 当场红；
 - 关闭 turn 重编号 → 例 3（真实轮距 invariant）当场红；
-- 三审的变异复验：关 turnOffset 5/12 红、去骨架包裹 6/12 红（含点名用例）。
+- 三审变异复验：关 turnOffset 5/12 红、去骨架包裹 6/12 红（含点名用例）；
+- 四审变异复验（树外隔离副本）：抽 `replaceCovered.add` → 恰 pruner 用例红；去头部 step 归一 → 恰改写头用例红。
 **披露**：`sameVisibleSequence` 终验单独变异不可由行为测试变红（它是纵深防御，只有与构造缺陷叠加才可观察——二审的 B1 修复前正是「构造缺陷 + 守卫被绕过」的叠加形态，例 7/8 就是为此而设）。
 
 ## 独立审查记录（两轮，双 corpus 投票）
@@ -91,7 +95,9 @@ DSH 的 compaction 机制（`dsh-compaction` / `compaction-basic`）：
 
 二审（同日，两位全新 fresh reviewer）：两票再次 **CHANGES_REQUIRED**，独立收敛于新 blocking——**turn 编号断档**（v2 头部骨架收口后计数器期望 turn 2，keep 窗口逐字保留原始 `turn/start{N}`；两道自证 foldSurface/Session.create 都抓不到，真实 harness 在 `sessions.create` 抛 `InvariantError`）；另指出中段切点（region 边界仅 tool-pairing 平衡）会静默回退。→ v3：turn 重编号（keep ∪ 尾双段扫描首个保留轮）、中段 keep-window 跳过被 shadow 节点与孤儿 call、运行时 `turnSequenceValid` 关系门、夹具换真实轮距。
 
-三审（同日，两位全新 fresh reviewer）：两票 **CHANGES_REQUIRED**——(a) 头部骨架 step 号未归一（受保护头被改写到 turn 1 step ≥2 时产出宿主 invariant 拒绝的种子）；(b) 宽头存活 `tool/result` 丢配对 `tool/call`；(c) keep/尾保留的 compaction 计量记录 `shadowedRange/shadowedSeqs` 未重映射（违反 dsh-compaction invariant）；(d) 关系门对**非 append** `tool/result` 过严（pruner 替换会让 trim 无谓回退）；(e) lint 死赋值。→ v4：头部归一 turn 1 step 1（只改写已有数字信封字段——期间发现并修复了「向 user/message 注入 turn/step」的真等价破坏，token 改为镜像宿主投影：user=整份 data、其余=data.message）、关系门补 nextStep/pendingCalls/嵌套开轮/非 append 豁免、compaction 记录引用重映射或整条丢弃、**replace 目标节点不跳过**（pruner 形状由此从回退转为生效）。三轮审查者的全部树外证据脚本（`check-midturn`/`check-invariant`/`headline`/`probe1-5`/`probe2 B 扫描`/`probe3`/`probe4`/`rev3-probe:*`/`rev3-sidechat:p1-p9`）在 v4 上全部转绿或按设计安全回退（非法父日志与 legacy 逐字节 parity）。**第四轮 fresh review 尚未运行**——PR 开立前应再跑一轮。
+三审（同日，两位全新 fresh reviewer）：两票 **CHANGES_REQUIRED**——(a) 头部骨架 step 号未归一（受保护头被改写到 turn 1 step ≥2 时产出宿主 invariant 拒绝的种子）；(b) 宽头存活 `tool/result` 丢配对 `tool/call`；(c) keep/尾保留的 compaction 计量记录 `shadowedRange/shadowedSeqs` 未重映射（违反 dsh-compaction invariant）；(d) 关系门对**非 append** `tool/result` 过严（pruner 替换会让 trim 无谓回退）；(e) lint 死赋值。→ v4：头部归一 turn 1 step 1（只改写已有数字信封字段——期间发现并修复了「向 user/message 注入 turn/step」的真等价破坏，token 改为镜像宿主投影：user=整份 data、其余=data.message）、关系门补 nextStep/pendingCalls/嵌套开轮/非 append 豁免、compaction 记录引用重映射或整条丢弃、**replace 目标节点不跳过**（pruner 形状由此从回退转为生效）。
+
+四审（同日，两位全新 fresh reviewer，对象 657dcd5 → tip 196fa11 两版钉证）：核心等价性**未能证伪**（2100 生成形状、113 次 trim 全过真 session invariant + 真 Session.create + 真持久 inbox 投影 + 真 `deriveEventMessage` wire 比对；非 trim 全与 legacy 逐字节一致），但两票各在同一根因上给 blocking——**宿主「成组记录」被只丢计量记录拆散**：(a) 成功 `compaction/end` 失去同组 `compaction/summary`（同轮双 compaction 形状，随机实测命中 trim 的 18.6%，真 dsh-compaction invariant 拒绝而三道自证全盲）；(b) 657dcd5 的 keep 窗口丢掉紧邻 turn/start 前的 inbox INSERT、保留其后的 CLAIM（真实持久 inbox 投影拒绝——**v4 e2e 在生产主会话上当场抓到**：`thread creation failed: invalid persisted inbox splice at session seq 7`）。→ v5：keepStart 回吞前置 splice + `inboxSplicesValid` 门（e2e 复测：**799 ms**、seed 3,457 = 35,992 的 **10.4×**、冷上下文回答再命中压缩摘要细节）；`bracketsValid` 门（成组记录原子性：compaction bracket + command 配对）；`command/done.sourceEventSeq` 重映射；spec oracle 换宿主 `deriveEventMessage`；补同轮双 compaction 与命令括号两用例（17 例）。Standards 另修：`expectedFirstKeptTurn` 按骨架实际 turn/start 判定（N2）、`inboxSplicesValid` 收紧到宿主严格度（N4）、post-cut 改写头回退形状入披露（S3，六会话三命中）。四轮审查者的全部树外证据脚本在 v5 上全部转绿或按设计安全回退。
 
 ## 部署验证（已执行，2026-10-15）
 

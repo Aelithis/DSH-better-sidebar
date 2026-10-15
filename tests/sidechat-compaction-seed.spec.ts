@@ -14,7 +14,7 @@
  * equivalent, the builder falls back to today's verbatim full copy.
  */
 import { describe, expect, it } from 'vitest'
-import { foldSurface } from '@deepseek-ai/dsh-session/surface'
+import { deriveEventMessage, foldSurface } from '@deepseek-ai/dsh-session/surface'
 import { Session, SessionLogOffset, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
 import * as SessionInvariant from '@deepseek-ai/dsh-session/invariant'
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
@@ -248,16 +248,15 @@ function midTurnLog(kind: 'closers' | 'dangling'): SidebarSessionEvent[] {
   return events
 }
 
-/** The model-visible sequence a fold produces, mirroring the renderer's
- *  projection exactly like the builder's own comparison: a user/message IS
- *  its whole data object; every other surface event projects `data.message`. */
+/** The model-visible sequence a fold produces, using the HOST's own
+ *  `deriveEventMessage` projection as the oracle so the spec cannot share a
+ *  projection bug with the implementation under test. */
 function visibleSequence(events: readonly SidebarSessionEvent[]): string[] {
   const fold = foldSurface(events as unknown as readonly SessionEvent[])
   return fold.nodes.map(seq => {
     const event = events[seq]
     if (event === undefined) return `missing:${seq}`
-    if (event.type === 'user/message') return `${event.type}:${JSON.stringify(event.data)}`
-    return `${event.type}:${JSON.stringify((event.data as { message?: unknown }).message ?? null)}`
+    return `${event.type}:${JSON.stringify(deriveEventMessage(event as unknown as SessionEvent))}`
   })
 }
 
@@ -586,8 +585,9 @@ describe('buildSidechatInheritance compaction tail', () => {
     // Real loop order: [insert q][turn/start][claim q][step/start][user].
     // The keep window must swallow the insert ahead of the turn/start so
     // the positional inbox fold replays; without it the claim dangles and
-    // Session.create rejects the seed (caught on the real deployment's
-    // main session during e2e).
+    // the host's durable-inbox projection rejects the seed during thread
+    // creation (caught on the real deployment's main session during e2e;
+    // Session.create itself does not validate this face).
     const events = [...systemHead(), ...oldSpan().events]
     const shadowTurn = turn(9, 2, { callId: 'c-shadow', result: 'shadow result' })
     events.push(...shadowTurn.events)
@@ -622,6 +622,125 @@ describe('buildSidechatInheritance compaction tail', () => {
       { version: SESSION_FORMAT_VERSION, id: id as SessionId, createdAt: Date.now(), isSeeded: true },
       SessionLogOffset(seed.length),
     )
+  })
+
+  it('falls back when a kept compaction group would lose its summary to the dropped span', () => {
+    // Same-turn double compaction: cp0 completes mid-turn, cp1 (the consumed
+    // one) shadows cp0's checkpoint; cp0's records ride in the keep window
+    // but its citations name the dropped span, so dropping only the summary
+    // would strand a successful compaction/end — the bracket gate falls
+    // back to the full copy instead of shipping a seed the host's
+    // compaction invariant companion rejects.
+    const events = [
+      lo('turn/start', 0, { turn: 1 }),
+      lo('step/start', 1, { turn: 1, step: 1 }),
+      sf('system/message', 2, {
+        turn: 1, step: 1,
+        message: { id: 'm-sys', role: 'system', content: [{ type: 'text', text: 'system prompt' }], source: { kind: 'system-prompt' } },
+      }),
+      sf('user/message', 3, userMessage('m-q1', 'q1')),
+      sf('assistant/message', 4, { turn: 1, step: 1, message: assistantMessage('a1'), stream: [] }),
+      lo('step/end', 5, { turn: 1, step: 1 }),
+      lo('turn/end', 6, { turn: 1, reason: { kind: 'completed' } }),
+      lo('turn/start', 7, { turn: 2 }),
+      lo('step/start', 8, { turn: 2, step: 1 }),
+      sf('user/message', 9, userMessage('m-q2', 'q2')),
+      sf('assistant/message', 10, { turn: 2, step: 1, message: assistantMessage('a2'), stream: [] }),
+      lo('step/end', 11, { turn: 2, step: 1 }),
+      lo('compaction/start', 12, { compactionId: 'cp0', turn: 2 }),
+      lo('compaction/summary', 13, {
+        compactionId: 'cp0',
+        summary: [{ type: 'text', text: 'summary cp0' }],
+        shadowedRange: { start: 3, end: 4 },
+        shadowedSeqs: [3, 4],
+        shadowedTokenCount: 10,
+        provider: 'deepseek',
+        model: 'model-x',
+        rawOutput: [],
+        llmStreamCall: true,
+      }),
+      {
+        ...sf('user/message', 14, { id: 'm-cp0', role: 'user', content: [{ type: 'text', text: 'summary cp0' }], source: { kind: 'compact-checkpoint', compactionId: 'cp0' } }),
+        surfaceOp: { op: 'replace', startSeq: 3, endSeq: 4 },
+        sourceEventSeqs: [3, 4],
+      } as SidebarSessionEvent,
+      lo('compaction/end', 15, { compactionId: 'cp0', turn: 2 }),
+      lo('step/start', 16, { turn: 2, step: 2 }),
+      sf('assistant/message', 17, { turn: 2, step: 2, message: assistantMessage('a2b'), stream: [] }),
+      lo('step/end', 18, { turn: 2, step: 2 }),
+      lo('turn/end', 19, { turn: 2, reason: { kind: 'completed' } }),
+      ...turn(20, 3, { callId: 'c-tail', result: 'tail result' }).events,
+    ]
+    // The consumed compaction shadows cp0's checkpoint plus turn 1's nodes.
+    events.push(...compactionGroup(events.length, [3, 4, 14]))
+    const { seed } = buildSidechatInheritance(events)
+    expect(seed.length).toBe(events.length)
+    // Control: the same log without the consumed group (its four trailing
+    // events) cuts at cp0 instead and trims — only the bracket split, not
+    // the log, disables the optimization.
+    const control = events.slice(0, -4)
+    const controlSeed = buildSidechatInheritance(control).seed
+    expect(controlSeed.length).toBeLessThan(control.length)
+  })
+
+  it('falls back when a command/run is dropped while its command/done survives', () => {
+    // A slash command runs before turn 1 and settles inside turn 2; the
+    // consumed compaction shadows turn 1's surface, so the keep window
+    // keeps the done without its run — the bracket gate falls back instead
+    // of shipping a seed the host's commands invariant rejects. When both
+    // records ride the keep window, the done's sourceEventSeq remaps onto
+    // the rebased run.
+    const base = [
+      lo('command/run', 0, { commandId: 'cmd1', name: 'compact', source: { kind: 'user' } }),
+      lo('turn/start', 1, { turn: 1 }),
+      lo('step/start', 2, { turn: 1, step: 1 }),
+      sf('system/message', 3, {
+        turn: 1, step: 1,
+        message: { id: 'm-sys', role: 'system', content: [{ type: 'text', text: 'system prompt' }], source: { kind: 'system-prompt' } },
+      }),
+      sf('user/message', 4, userMessage('m-q1', 'q1')),
+      sf('assistant/message', 5, { turn: 1, step: 1, message: assistantMessage('a1'), stream: [] }),
+      lo('step/end', 6, { turn: 1, step: 1 }),
+      lo('turn/end', 7, { turn: 1, reason: { kind: 'completed' } }),
+    ]
+    const events = [
+      ...base,
+      lo('turn/start', 8, { turn: 2 }),
+      lo('command/done', 9, { commandId: 'cmd1', kind: 'success', text: 'ok', sourceEventSeq: 4 }),
+      lo('step/start', 10, { turn: 2, step: 1 }),
+      sf('user/message', 11, userMessage('m-q2', 'q2')),
+      sf('assistant/message', 12, { turn: 2, step: 1, message: assistantMessage('a2'), stream: [] }),
+      lo('step/end', 13, { turn: 2, step: 1 }),
+      lo('turn/end', 14, { turn: 2, reason: { kind: 'completed' } }),
+      ...turn(15, 3, { callId: 'c-tail', result: 'tail result' }).events,
+    ]
+    events.push(...compactionGroup(events.length, [4, 5]))
+    const { seed } = buildSidechatInheritance(events)
+    expect(seed.length).toBe(events.length)
+
+    // Together: a command that runs INSIDE the keep window and settles
+    // there — both records ride, and the done cites the rebased run.
+    const together = [
+      ...base,
+      lo('turn/start', 8, { turn: 2 }),
+      lo('step/start', 9, { turn: 2, step: 1 }),
+      sf('user/message', 10, userMessage('m-q2', 'q2')),
+      lo('command/run', 11, { commandId: 'cmd1', name: 'compact', source: { kind: 'user' } }),
+      lo('command/done', 12, { commandId: 'cmd1', kind: 'success', text: 'ok', sourceEventSeq: 11 }),
+      sf('assistant/message', 13, { turn: 2, step: 1, message: assistantMessage('a2'), stream: [] }),
+      lo('step/end', 14, { turn: 2, step: 1 }),
+      lo('turn/end', 15, { turn: 2, reason: { kind: 'completed' } }),
+      ...turn(16, 3, { callId: 'c-tail', result: 'tail result' }).events,
+    ]
+    together.push(...compactionGroup(together.length, [4, 5]))
+    const trimmed = buildSidechatInheritance(together)
+    expect(trimmed.seed.length).toBeLessThan(together.length)
+    const done = trimmed.seed.find(event => event.type === 'command/done') as { data?: { sourceEventSeq?: number }; seq?: number }
+    const runIdx = trimmed.seed.findIndex(event => event.type === 'command/run')
+    expect(runIdx).toBeGreaterThanOrEqual(0)
+    expect(done?.data?.sourceEventSeq).toBe(runIdx)
+    expect(visibleSequence(trimmed.seed)).toEqual(visibleSequence(together))
+    expect(invariantFailures(trimmed.seed)).toEqual([])
   })
 
   it('reuses the previous compaction when the newest summary is orphaned', () => {

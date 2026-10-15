@@ -380,7 +380,8 @@ function compactionTail(events: readonly SidechatLogEvent[]): SidechatLogEvent[]
   // a turn number at or past that first kept turn shifts down by the gap;
   // head-side numbers (below it) stay untouched. `step` numbers restart per
   // turn, so verbatim scaffolding inside a kept turn stays correct.
-  const expectedFirstKeptTurn = headEvents.length > 0 ? 2 : 1
+  const headOwnsTurn1 = headEvents.some(event => event.type === 'turn/start')
+  const expectedFirstKeptTurn = headOwnsTurn1 ? 2 : 1
   let firstKeptTurn: number | undefined
   // The first kept turn/start can sit in the keep interval OR — when every
   // pre-cut survivor is the protected head — only in the tail after the
@@ -442,7 +443,39 @@ function compactionTail(events: readonly SidechatLogEvent[]): SidechatLogEvent[]
   }
   if (!turnSequenceValid(seed)) return undefined
   if (!inboxSplicesValid(seed)) return undefined
+  if (!bracketsValid(seed)) return undefined
   return seed
+}
+
+/**
+ * Relational pre-check mirroring the host's grouped-record rules: a
+ * successful `compaction/end` requires a `compaction/summary` of the same
+ * compactionId earlier in the log, and a `command/done` requires its
+ * `command/run` (same commandId) before it. Dropping a summary or a run
+ * with the forgotten span while keeping its partner would ship a seed the
+ * host's invariant companions reject, so any unmatched partner falls back
+ * to the full copy.
+ */
+function bracketsValid(seed: readonly SeedEvent[]): boolean {
+  const summarized = new Set<string>()
+  const ranCommands = new Set<string>()
+  for (const event of seed) {
+    const data = dataOf(event)
+    if (event.type === 'compaction/summary') {
+      const id = data.compactionId
+      if (typeof id === 'string') summarized.add(id)
+    } else if (event.type === 'compaction/end') {
+      const id = data.compactionId
+      if (data.error === undefined && (typeof id !== 'string' || !summarized.has(id))) return false
+    } else if (event.type === 'command/run') {
+      const id = data.commandId
+      if (typeof id === 'string') ranCommands.add(id)
+    } else if (event.type === 'command/done') {
+      const id = data.commandId
+      if (typeof id !== 'string' || !ranCommands.has(id)) return false
+    }
+  }
+  return true
 }
 
 /**
@@ -458,20 +491,24 @@ function inboxSplicesValid(seed: readonly SeedEvent[]): boolean {
   for (const event of seed) {
     if (event.type !== 'agent/inbox/spliced') continue
     const data = dataOf(event)
+    // Host strictness: only the two known targets, a numeric start and
+    // removedCount, and an array of messages with string ids.
+    if (data.target !== 'next-turn' && data.target !== 'next-step') return false
     const inbox = data.target === 'next-step' ? nextStep : nextTurn
     const rawStart = data.start
     const rawRemoved = data.removedCount
-    const removedCount = typeof rawRemoved === 'number' ? rawRemoved : 0
-    const inserted = Array.isArray(data.inserted) ? data.inserted as Array<Record<string, unknown>> : []
+    const removedCount = typeof rawRemoved === 'number' ? rawRemoved : Number.NaN
+    const inserted = Array.isArray(data.inserted) ? data.inserted as Array<Record<string, unknown>> : undefined
     const start = typeof rawStart === 'number' ? rawStart : Number.NaN
-    if (!Number.isSafeInteger(start) || start < 0 || start > inbox.length
+    if (inserted === undefined
+      || !Number.isSafeInteger(start) || start < 0 || start > inbox.length
       || !Number.isSafeInteger(removedCount) || removedCount < 0
       || start + removedCount > inbox.length) return false
     inbox.splice(start, removedCount, ...inserted)
     const ids = new Set<string>()
     for (const message of [...nextTurn, ...nextStep]) {
       const id = message.id
-      if (typeof id !== 'string') continue
+      if (typeof id !== 'string') return false
       if (ids.has(id)) return false
       ids.add(id)
     }
@@ -746,6 +783,11 @@ function rebaseEvent(
   if (turnOffset > 0 && typeof sourceData.turn === 'number'
     && firstKeptTurn !== undefined && sourceData.turn >= firstKeptTurn) {
     seed.data = { ...seed.data, turn: sourceData.turn - turnOffset }
+  }
+  // A settled command cites the seq of the run it settled; remap it alongside.
+  if (event.type === 'command/done' && typeof sourceData.sourceEventSeq === 'number') {
+    const mapped = rebase.get(sourceData.sourceEventSeq)
+    if (mapped !== undefined) seed.data = { ...seed.data, sourceEventSeq: mapped }
   }
   // Compaction metering records cite the surface span they priced. When the
   // span survived the rebase, remap the citations; when it did not (the
