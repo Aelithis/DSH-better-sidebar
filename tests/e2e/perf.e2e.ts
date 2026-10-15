@@ -450,7 +450,14 @@ test('measure: steady-state recurring work while the visited session is parked',
   const visited = record.visitedTabs
   expect(
     sessionCwdIdle,
-    `session.cwd must be polled once per session (${visited} visited tabs must not multiply it)`,
-  ).toBeLessThanOrEqual(visited)
+    `session.cwd must be polled once per session, not per visited tab (${visited} tabs; `
+    + 'the pre-fix code reported one poller per mounted body AND one for the shell)',
+    // Budget, not an exact count: the window is 15 s against a 5 s cadence, so
+    // ONE poller already reports 3–4, and whether the host sidebar really ended
+    // up collapsed decides between one and two pollers (the plugin shell adds
+    // one while its workbench is on screen). Pre-fix this was 15 for four
+    // visited tabs — `visited * 2` still separates "one per session" from "one
+    // per tab" without depending on that visual state.
+  ).toBeLessThan(visited * 2)
 })
 
