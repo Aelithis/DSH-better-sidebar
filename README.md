@@ -89,18 +89,17 @@ If something fails, check the FAQ table in https://github.com/omdsh-dev/DSH-bett
 
 ## 🆕 Recent Updates
 
+**v0.27.0** - full release history at [Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases) · [CHANGELOG](./CHANGELOG_EN.md)
+
+- **Git page rebuilt**: Source Control groups, a read-only commit graph with branch filtering, and a shared Commit details / Content / Diff pane
+- **Accurate change tracking**: separate staged/unstaged counts, nested-repository discovery, session-relative paths, PTC file operations and long polling
+- **Selection stays in place**: fixed the integration regression that displaced selected files and drew stray borders; added real-host layout coverage
+- **Side Chat**: new child sessions seed from the latest summarizing compaction instead of copying the full parent log
+
 **v0.26.1** — full release history at [Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases) · [CHANGELOG](./CHANGELOG_EN.md)
 
 - ⚡ **Fixed the steady-state cost behind "fine on 0.24, then it got slow"** (community reports: the sidebar turns laggy after being open a long time, DSH turns laggy after many turns, a restart clears it for a while; an artifact-level A/B puts the line at v0.25.0): both 500 ms timers are now visibility-gated (the host right-panel state is one shared module-level poller; the blank-session fallback only runs while it actually renders), the per-tab 5 s session-root poll became **one per session and only while visible**, the file-tree watch and side-chat push stop when parked, `keepMounted` keeps its semantics while every cache/registry is now bounded, and the host cwd resolver gained in-flight dedupe with a 3 s → 15 s TTL
 - 📊 Measured in the real mount lane (4 visited tabs, 15 s idle window): live 500 ms timers **3 → 1**, live 5 s timers **5 → 0**, `session.cwd` requests **15 → 0**, hit tests **1,620 → 0**, forced layouts **5,190 → 30**
-
-**v0.26.0** — full release history at [Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases) · [CHANGELOG](./CHANGELOG_EN.md)
-
-- 🚀 **Streaming everywhere**: uploads / downloads / HTML preview / archiving have no size caps anymore; huge files open as a read-only paged preview
-- 📄 New **`.jsonl` / `.ndjson` viewer**: collapsible record cards, editable and savable
-- 💬 **Side Chat goes realtime**: pushed message delivery, visible queue with per-message revoke, per-thread model selection
-- 🧩 **Tasks panel rebuilt**: expand by group, token usage & duration, canvas animations
-- 🖥️ **Multiple terminal tabs** in the bottom workbench; ⚡ git status polling no longer stalls the UI (30s baseline, auto-backoff)
 
 ## 🔌 Plugin Ecosystem
 
