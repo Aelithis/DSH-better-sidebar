@@ -631,6 +631,60 @@ describe('session cwd resolution over the API route', () => {
     }
   })
 
+  it('git.graph routes selected repositories and worktrees and maps stale cursors', async () => {
+    const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), 'sidebar-graph-route-')))
+    const cwd = join(scratch, 'workspace')
+    mkdirSync(cwd)
+    const run = (dir: string, args: string[]): void => {
+      const result = spawnSync('git', ['-C', dir, '-c', 'user.name=Test', '-c', 'user.email=test@dsh.invalid', '-c', 'commit.gpgsign=false', ...args], { encoding: 'utf8' })
+      if (result.status !== 0) throw new Error(result.stderr)
+    }
+    const a = join(cwd, 'a')
+    const b = join(cwd, 'b')
+    const linked = join(scratch, 'linked')
+    try {
+      for (const path of [a, b]) {
+        run(scratch, ['init', '-q', '-b', 'main', path])
+        run(path, ['commit', '-q', '--allow-empty', '-m', path === a ? 'a-root' : 'b-root'])
+      }
+      run(b, ['worktree', 'add', '-q', '--detach', linked])
+      run(linked, ['commit', '-q', '--allow-empty', '-m', 'detached-linked'])
+      const route = mount({ sessions: { get: () => ({ header: { cwd } }) } })
+      const base = { sessionId: 'graph-route', cwd }
+      // `git rev-parse --show-toplevel` answers in git's own spelling — the
+      // resolved path joined by '/' — while `join()` produced the host
+      // separator and (on Windows) Windows' case-insensitive drive/comparison
+      // rules apply. Compare path identity, then the rows that selection
+      // produced, so the assertion stays about WHICH checkout was selected.
+      const pathKey = (path: string): string => {
+        const slashed = path.replaceAll('\\', '/').replace(/\/+$/, '')
+        return process.platform === 'win32' ? slashed.toLowerCase() : slashed
+      }
+      const reportedRoot = (result: { value?: { cwd: string } }): string =>
+        pathKey((result.value as unknown as { root: string }).root)
+      const basePage = await invoke(route, 'git.graph', base)
+      expect(basePage).toMatchObject({ ok: true, value: { entries: [{ subject: 'a-root' }] } })
+      expect(reportedRoot(basePage)).toBe(pathKey(a))
+      const childPage = await invoke(route, 'git.graph', { ...base, repoRoot: b })
+      expect(childPage).toMatchObject({ ok: true, value: { entries: [{ subject: 'b-root' }] } })
+      expect(reportedRoot(childPage)).toBe(pathKey(b))
+      const payload = { ...base, repoRoot: b, worktree: linked, count: 1 }
+      const first = await invoke(route, 'git.graph', payload)
+      expect(first).toMatchObject({ ok: true, value: { entries: [{ subject: 'detached-linked' }], hasMore: true } })
+      expect(reportedRoot(first)).toBe(pathKey(linked))
+      const cursor = (first.value as unknown as { nextCursor: string }).nextCursor
+      expect(typeof cursor).toBe('string')
+      expect(await invoke(route, 'git.graph', { ...payload, cursor })).toMatchObject({ ok: true, value: { entries: [{ subject: 'b-root' }], hasMore: false } })
+      run(linked, ['commit', '-q', '--allow-empty', '-m', 'HEAD moved'])
+      expect(await invoke(route, 'git.graph', { ...payload, cursor })).toMatchObject({ ok: false, status: 409, error: { code: 'graph-stale' } })
+      expect(await invoke(route, 'git.graph', { ...payload, branch: '--all' })).toMatchObject({ ok: false, status: 400, error: { code: 'bad-request' } })
+      expect(await invoke(route, 'git.graph', { ...payload, worktree: a })).toMatchObject({ ok: false })
+    } finally {
+      // scratch is the canonical mkdtemp directory allocated by this test.
+      rmSync(scratch, { recursive: true, force: true })
+    }
+  })
+
   it('uses the client summary cwd while the session is detached', async () => {
     const route = mount()
     const result = await invoke(route, 'session.cwd', { sessionId: 's-detached', cwd: '/tmp/summary-cwd' })
