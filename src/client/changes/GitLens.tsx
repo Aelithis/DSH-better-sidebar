@@ -194,13 +194,16 @@ const NO_ENTRIES: readonly GitStatusEntry[] = []
 function entriesKey(entries: readonly GitStatusEntry[]): string {
   let key = ''
   for (const entry of entries) {
-    const counts = entry.counts
-    const lines = counts === undefined
-      ? ''
-      : 'additions' in counts ? `${counts.additions}/${counts.deletions}` : 'binary'
+    const lines = `${sideKey(entry.staged)}/${sideKey(entry.unstaged)}`
     key += `${entry.xy}\u0000${entry.path}\u0000${lines}\n`
   }
   return key
+}
+
+/** One side's counts as a key fragment ('' when that side has none). */
+function sideKey(counts: GitLineCounts | undefined): string {
+  if (counts === undefined) return ''
+  return 'additions' in counts ? `${counts.additions}/${counts.deletions}` : 'binary'
 }
 
 /** The `+N` / `−M` pair, ink and sign included: shared by a file row and its
@@ -881,8 +884,10 @@ export function GitLens(props: GitLensProps) {
     return {
       stagedEntries: staged,
       unstagedEntries: unstaged,
-      stagedTree: buildChangeTree(staged),
-      unstagedTree: buildChangeTree(unstaged),
+      // Each band's rows carry THAT band's reading: a path changed on both
+      // sides sits in both trees, and neither may see the other's number.
+      stagedTree: buildChangeTree(staged, 'staged'),
+      unstagedTree: buildChangeTree(unstaged, 'unstaged'),
     }
     // The key stands in for `entries`: same content ⇒ same tree objects ⇒ the
     // memoized rows below keep their props and never re-render.

@@ -11,7 +11,7 @@
  * Commits use the user's git global identity untouched (never sets
  * user.name/user.email).
  */
-import { readdir } from 'node:fs/promises'
+import { readdir, realpath } from 'node:fs/promises'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
@@ -21,11 +21,21 @@ export interface GitStatusEntry {
   path: string
   /** Two-letter index/worktree status (X Y), e.g. 'M ', ' M', 'A ', '??'. */
   xy: string
-  /** How many lines this path gained and lost, index and worktree sides
-   *  SUMMED (both are measured against HEAD). Absent when git has no numstat
-   *  row for the path — an untracked file never gets one — so "no counts" is
-   *  never rendered as a fabricated `0`. */
-  counts?: GitLineCounts
+  /** How many lines the INDEX side gained and lost (`git diff --cached`, index
+   *  against HEAD). Absent when git has no numstat row for the path on that
+   *  side — an untracked file has none — so "no counts" is never rendered as a
+   *  fabricated `0`. */
+  staged?: GitLineCounts
+  /** How many lines the WORKTREE side gained and lost (`git diff`, worktree
+   *  against the index). Absent for the same reason as {@link staged}.
+   *
+   *  The two sides are kept APART, never added up: a path can hold a change on
+   *  each side ('MM'), and the change panel renders such a path once per band
+   *  with that band's own reading. Summing the two readings would double-count
+   *  every line both diffs see — e.g. stage a line and keep editing the same
+   *  region, and `1 + 1` lines would be reported as a 2-line change on BOTH
+   *  the staged row and the unstaged one. */
+  unstaged?: GitLineCounts
 }
 
 /** One path's line-count summary from `git diff --numstat`. A binary change is
@@ -602,7 +612,15 @@ async function discoverRepoRoots(cwd: string): Promise<string[]> {
           subdirs.push(entry.name)
         }
       }
-      if (hasGit && dir !== cwd && !roots.some(existing => pathIdentity(existing) === pathIdentity(dir))) roots.push(dir)
+      if (hasGit && dir !== cwd) {
+        // Symlink-resolved form, because the scan builds paths by joining
+        // dirent names while `rev-parse --show-toplevel` reports the real one:
+        // on macOS every tmpdir lives under `/var`, a symlink to `/private/var`
+        // (and the panel would otherwise show the same repository twice in two
+        // spellings). Unresolvable names keep the joined path.
+        const root = await realpath(dir).catch(() => dir)
+        if (!roots.some(existing => pathIdentity(existing) === pathIdentity(root))) roots.push(root)
+      }
       for (const name of subdirs.sort((left, right) => left.localeCompare(right))) next.push(join(dir, name))
     }
     level = next
@@ -645,30 +663,6 @@ const GIT_STATUS_LIMIT = 2_000
  * 59k-entry untracked walk is still stopped after ~200 KB instead of 9 MB.
  */
 const GIT_STATUS_MAX_FIELDS = (GIT_STATUS_LIMIT + 1) * 2
-
-/**
- * Fold one path's counts from both numstat sides into a running map. A file
- * changed in the index AND in the worktree is measured on each side against
- * HEAD, so the two readings ADD UP; a binary reading on either side wins,
- * because then there is no line count to add.
- */
-function addLineCounts(into: Map<string, GitLineCounts>, from: Map<string, GitLineCounts>): void {
-  for (const [path, counts] of from) {
-    const previous = into.get(path)
-    if (previous === undefined) {
-      into.set(path, counts)
-      continue
-    }
-    if (!('additions' in previous) || !('additions' in counts)) {
-      into.set(path, { binary: true })
-      continue
-    }
-    into.set(path, {
-      additions: previous.additions + counts.additions,
-      deletions: previous.deletions + counts.deletions,
-    })
-  }
-}
 
 /** Byte budget one numstat pathspec may carry (well under every platform's
  *  command-line cap, so a repository with thousands of tracked modifications
@@ -741,6 +735,9 @@ function numstatPathsof(porcelainZ: string): string[] | undefined {
  * whole-repo walks. `--literal-pathspecs` is required: porcelain paths are
  * literal file names, and without it a name like `:colon.txt` is parsed as
  * pathspec magic and silently loses its counts.
+ *
+ * Each side's reading lands on its own field of the entry
+ * ({@link GitStatusEntry} documents why the two are never summed).
  */
 export async function status(cwd: string, selected?: string): Promise<GitStatusResult> {
   const repositories = await repoRoots(cwd)
@@ -776,19 +773,24 @@ export async function status(cwd: string, selected?: string): Promise<GitStatusR
     stagedNumstat = staged
   }
   const branch = await branchPromise
-  const lineCounts = new Map<string, GitLineCounts>()
-  addLineCounts(lineCounts, parseNumstat(stagedNumstat))
-  addLineCounts(lineCounts, parseNumstat(unstagedNumstat))
+  const stagedCounts = parseNumstat(stagedNumstat)
+  const unstagedCounts = parseNumstat(unstagedNumstat)
   const truncated = parsed.length > GIT_STATUS_LIMIT
   const bounded = truncated ? parsed.slice(0, GIT_STATUS_LIMIT) : parsed
   return {
     isRepo: true,
     branch,
-    // Paths git has no numstat row for (untracked files) keep their entry
-    // untouched: the absence IS the information.
+    // Paths git has no numstat row for on either side (untracked files) keep
+    // their entry untouched: the absence IS the information.
     entries: bounded.map((entry): GitStatusEntry => {
-      const counts = lineCounts.get(entry.path)
-      return counts === undefined ? entry : { ...entry, counts }
+      const staged = stagedCounts.get(entry.path)
+      const unstaged = unstagedCounts.get(entry.path)
+      if (staged === undefined && unstaged === undefined) return entry
+      return {
+        ...entry,
+        ...(staged !== undefined ? { staged } : {}),
+        ...(unstaged !== undefined ? { unstaged } : {}),
+      }
     }),
     truncated,
     root,
