@@ -136,11 +136,8 @@ function mountReadingPane(path: string, markdown: string, sessionId: string = ne
     onClose: () => {},
     onExpand: () => {},
   }))
-  // Reading mode is off by default: the raw diff is what a change shows first.
-  const toggle = [...mounted.container.querySelectorAll('button')]
-    .find(button => button.textContent === 'Reading')
-  if (toggle === undefined) throw new Error('reading toggle not found')
-  click(toggle)
+  // The pane's content tab renders markdown by default (the reading view IS
+  // the content view now) — no toggle click needed to reach the surface.
   return { container: mounted.container, tabs, unmount: mounted.unmount }
 }
 

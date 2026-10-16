@@ -9,7 +9,7 @@
  */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import {
-  Button, IconBranchOutlineRegular, IconCheckOutlineRegular, IconChevronRightOutlineRegular,
+  IconBranchOutlineRegular, IconCheckOutlineRegular, IconChevronRightOutlineRegular,
   IconCloseFillRegular, IconCodeOutlineRegular, IconCopyOutlineRegular, IconEllipsisOutlineRegular,
   IconPlusOutlineRegular,
   IconRefreshOutlineRegular, IconSparkleRegular, IconTrashOutlineRegular, Menu, writeClipboard,
@@ -22,7 +22,7 @@ import { usePolling } from '../use-polling.ts'
 import { baseName, relativeTo } from '../paths.ts'
 import { resolveSidebarPath } from '../paths.ts'
 import { isZh, t } from '../locales.ts'
-import { GitGraph } from './GitGraph.tsx'
+import { GitGraphSection, type GraphDetailsSelection } from './GitGraphSection.tsx'
 import type { SidebarDiffRef, SidebarStore } from '../state.ts'
 import {
   ConfirmDialog, IconButton, Notice, StatusBadge, invalidateGitStatus, statusOfXY,
@@ -135,7 +135,6 @@ interface FileMenuState {
 
 /** History batch size: the log loads lazily in pages so a long history never
  *  floods the panel at once (the end of the log is reached by paging). */
-const LOG_BATCH = 20
 
 /** Cadence of the background worktree re-list: the shared status store already
  *  polls the selected checkout's status, so the inventory (a different call)
@@ -336,6 +335,10 @@ const DirRow = memo(function DirRow(props: {
   )
 })
 
+/** The commit facts the history menu and the preview ref read — satisfied by
+ *  the graph's own rows (`git.graph`) without the lens inventing a log entry. */
+type CommitRow = Pick<GitLogEntry, 'hash' | 'hashFull' | 'subject'>
+
 export interface GitLensProps {
   scope: SessionScope
   /** @deprecated The sidebar store is no longer read here (the fence guard it
@@ -346,15 +349,29 @@ export interface GitLensProps {
   onPreview: (ref: SidebarDiffRef) => void
   /** The ref currently previewed (row highlight); null when the pane is closed. */
   selectedRef: SidebarDiffRef | null
-  /** Poll the inventory only while the tab is actually visible. */
+  /** Preview one commit the GRAPH selected. Unlike a change-row preview this
+   *  does not move the bottom pane to `diff`: the FIRST graph selection lands
+   *  on `details` (the tab decides when the entry arrives). Defaults to
+   *  {@link GitLensProps.onPreview}. */
+  onGraphPreview?: (ref: SidebarDiffRef) => void
+  /** Drop a preview whose commit left the graph (a refresh that lost the row). */
+  onClearPreview?: () => void
+  /** The graph's selected commit, reported upward for the tab's bottom pane
+   *  (`details` tab, see {@link CommitDetails}). Null when nothing is selected
+   *  there; a HIDDEN graph keeps its report, the pane below is shared. */
+  onDetailsChange?: (selection: GraphDetailsSelection | null) => void
+  /** The tab is on screen: the lens retains its store slot. */
   visible: boolean
+  /** THIS lens is the one on screen inside the tab. A hidden (retained) lens
+   *  neither polls nor keeps fetching — only its state is kept. */
+  active?: boolean
   /** The tab's context, for the registered file/folder icon chain (absent →
    *  the host's built-in artwork, exactly like the file tree falls back). */
   ctx?: Context
 }
 
 export function GitLens(props: GitLensProps) {
-  const { scope, onOpenFile, onPreview, selectedRef, visible, ctx } = props
+  const { scope, onOpenFile, onPreview, selectedRef, visible, active = visible, ctx } = props
 
   const service = ctx?.get('betterSidebar')
   /** The file row's artwork: a registered icon wins, else the host's own
@@ -369,23 +386,25 @@ export function GitLens(props: GitLensProps) {
   const [worktrees, setWorktrees] = useState<GitWorktree[]>([])
   const [selectedWorktree, setSelectedWorktree] = useState<string | undefined>()
   const [repoRoot, setRepoRoot] = useState<string | undefined>()
+  /** The scope the Graph section reads with: the session's, plus the selected
+   *  child repository once discovery picked one. */
+  const graphScope = useMemo<SessionScope>(
+    () => (repoRoot === undefined ? scope : { ...scope, repoRoot }),
+    [scope, repoRoot],
+  )
   /** Every repository of the session workspace, kept once discovered: the
    *  status of a SELECTED child reports only itself, so the selector's option
    *  list cannot be re-derived from the current snapshot alone. */
   const [repoChoices, setRepoChoices] = useState<string[]>([])
   const [branchNames, setBranchNames] = useState<string[]>([])
-  const [logEntries, setLogEntries] = useState<GitLogEntry[]>([])
-  /** Whether the history was fully paged (a batch shorter than LOG_BATCH). */
-  const [logEnded, setLogEnded] = useState(false)
-  const [logLoading, setLogLoading] = useState(false)
-  const [logLoadingMore, setLogLoadingMore] = useState(false)
+  /** Bumped by every explicit refresh, the repo/worktree switch and the
+   *  branch switch: the commit graph (a child of the Graph section) re-reads
+   *  its own bounded page on each tick instead of duplicating status here. */
+  const [graphRefresh, setGraphRefresh] = useState(0)
   const [changesOpen, setChangesOpen] = useState(true)
   const [graphOpen, setGraphOpen] = useState(true)
   const [moreOpen, setMoreOpen] = useState(false)
   const [branchOpen, setBranchOpen] = useState(false)
-  /** The history's own failure state: an empty list must not claim "no commits"
-   *  when the log call failed. */
-  const [logFailed, setLogFailed] = useState(false)
   /** Commit drafts, one per scope: the Commit button asks only for a message
    *  and a staged row, so a draft typed against another project would submit
    *  verbatim under this one. Keyed rather than cleared on a scope swap, so a
@@ -433,7 +452,7 @@ export function GitLens(props: GitLensProps) {
   /** The open file-row context menu (cursor position for the portaled Menu). */
   const [fileMenu, setFileMenu] = useState<FileMenuState | null>(null)
   /** The open history-row context menu. */
-  const [historyMenu, setHistoryMenu] = useState<{ entry: GitLogEntry; x: number; y: number } | null>(null)
+  const [historyMenu, setHistoryMenu] = useState<{ entry: CommitRow; x: number; y: number } | null>(null)
   /** The pending destructive action awaiting confirmation. */
   const [confirm, setConfirm] = useState<ConfirmState | null>(null)
   /** Collapsed directory rows, keyed per GROUP + path: a directory that has
@@ -495,11 +514,25 @@ export function GitLens(props: GitLensProps) {
   const statusWorktree = selectedWorktree !== undefined && selectedWorktree !== primaryWorktree
     ? selectedWorktree
     : undefined
+  // `visible` keeps the slot ALIVE (the tab is on screen, the lens may be
+  // hidden behind the session lens and must not lose its snapshot); `poll:
+  // active` states the cadence only while this lens is the one being looked
+  // at. A retained slot serves its last answer, so switching lenses back shows
+  // the previous rows until the fresh fetch lands.
   const status = useGitStatus(
     { sessionId: scope.sessionId, cwd: scope.cwd, repoRoot },
-    { worktree: statusWorktree, visible },
+    { worktree: statusWorktree, visible, poll: active },
   )
-  const snapshot: GitStatusResult | null = status.snapshot
+  /** The last answer seen for THIS scope. While the lens is hidden the shared
+   *  store may forget the slot (nothing in the session is watching it, and the
+   *  store drops a slot whose last consumer left), so a RETAINED lens keeps
+   *  painting the rows it already had instead of flashing its loading state the
+   *  moment the user switches back. A scope change starts it over. */
+  const lastStatus = useRef<{ key: string; value: GitStatusResult | null }>({ key: '', value: null })
+  const statusKey = `${scope.sessionId}\u0000${scope.cwd ?? ''}\u0000${repoRoot ?? ''}\u0000${statusWorktree ?? ''}`
+  if (lastStatus.current.key !== statusKey) lastStatus.current = { key: statusKey, value: null }
+  if (status.snapshot !== null) lastStatus.current.value = status.snapshot
+  const snapshot: GitStatusResult | null = status.snapshot ?? lastStatus.current.value
   useEffect(() => {
     const repositories = snapshot?.repositories
     if (repositories !== undefined && repositories.length > 1) setRepoChoices(repositories)
@@ -519,11 +552,7 @@ export function GitLens(props: GitLensProps) {
     setSuggesting(false)
     setCommitting(false)
     setBranchNames([])
-    setLogEntries([])
-    setLogEnded(false)
-    setLogLoading(false)
-    setLogLoadingMore(false)
-    setLogFailed(false)
+    setGraphRefresh(value => value + 1)
     setActionError(null)
     setFileMenu(null)
     setHistoryMenu(null)
@@ -532,24 +561,14 @@ export function GitLens(props: GitLensProps) {
     setBranchOpen(false)
   }
 
-  /** Load the branch choices and the first history page of one checkout. */
+  /** Load the branch choices of one checkout; its history is the commit
+   *  graph's own business (the Graph section reads `git.graph` in pages). */
   const loadTarget = useCallback(async (target: string | undefined): Promise<void> => {
     const generation = scopeGen.current
     const gitScope = gitScopeNow()
-    setLogLoading(true)
-    const [branchResult, logResult] = await Promise.all([
-      api.gitBranch(gitScope, target).catch(() => ({ current: '', names: [] as string[] })),
-      api.gitLog(gitScope, LOG_BATCH, 0, target).then(
-        entries => ({ entries, failed: false }),
-        () => ({ entries: [] as GitLogEntry[], failed: true }),
-      ),
-    ])
+    const branchResult = await api.gitBranch(gitScope, target).catch(() => ({ current: '', names: [] as string[] }))
     if (generation !== scopeGen.current || target !== chosenPathRef.current) return
-    setLogLoading(false)
     setBranchNames(branchResult.names)
-    setLogEntries(logResult.entries)
-    setLogEnded(logResult.entries.length < LOG_BATCH)
-    setLogFailed(logResult.failed)
   }, [gitScopeNow])
 
   /** One listing pass: re-read the worktree inventory, apply the first-pass
@@ -599,6 +618,10 @@ export function GitLens(props: GitLensProps) {
     }
     // A silent tick only keeps the inventory (and its change counts) fresh.
     if (silent && !targetChanged) return
+    // A non-silent pass is the user asking for the truth (refresh, checkout,
+    // stage/commit): the Graph section re-reads its bounded page too, since the
+    // branch may have moved under it.
+    setGraphRefresh(value => value + 1)
     await loadTarget(target)
   }, [gitScopeNow, loadTarget])
 
@@ -673,7 +696,7 @@ export function GitLens(props: GitLensProps) {
   /** The inventory poll: a linked checkout created mid-session shows up
    *  without a manual refresh (the status poll itself belongs to the store). */
   const pollInventory = useCallback((signal: AbortSignal): Promise<void> => refresh(true, signal), [refresh])
-  usePolling(visible, pollInventory, { intervalMs: WORKTREE_POLL_MS, mode: 'self-scheduling' })
+  usePolling(visible && active, pollInventory, { intervalMs: WORKTREE_POLL_MS, mode: 'self-scheduling' })
 
   /** Lock one target's mutation and refresh even a partially failed sync. */
   const runAction = async (
@@ -858,42 +881,20 @@ export function GitLens(props: GitLensProps) {
     void runAction(pending.onConfirm)
   }
 
-  /** Append the next history page (lazy: only when the user asks for more). */
-  const loadMoreLog = async (): Promise<void> => {
-    if (logLoadingMore || logEnded) return
-    const generation = scopeGen.current
-    const target = chosenPathRef.current
-    setLogLoadingMore(true)
-    setViewError(null)
-    try {
-      const next = await api.gitLog(gitScopeNow(), LOG_BATCH, logEntries.length, target)
-      // A worktree switch clears the old history; never append a late page
-      // from that checkout into the new one.
-      if (generation !== scopeGen.current || target !== chosenPathRef.current) return
-      setLogEntries(entries => [...entries, ...next])
-      if (next.length < LOG_BATCH) setLogEnded(true)
-    } catch (reason) {
-      if (generation === scopeGen.current && target === chosenPathRef.current) {
-        setViewError(`${t('historyLoadError')}: ${errorMessage(reason)}`)
-      }
-    } finally {
-      if (generation === scopeGen.current && target === chosenPathRef.current) setLogLoadingMore(false)
-    }
-  }
 
   /** Copy `text` to the clipboard (best-effort; no visual feedback needed — the menu closes). */
   const copy = (text: string): void => {
     void writeClipboard(text)
   }
 
-  const openHistoryMenu = (event: MouseEvent, entry: GitLogEntry): void => {
+  const openHistoryMenu = (event: MouseEvent, entry: CommitRow): void => {
     event.preventDefault()
     event.stopPropagation()
     setHistoryMenu({ entry, x: event.clientX, y: event.clientY })
   }
 
   /** The preview ref for one commit. */
-  const commitRefOf = (entry: GitLogEntry): SidebarDiffRef => ({
+  const commitRefOf = (entry: CommitRow): SidebarDiffRef => ({
     kind: 'commit',
     hash: entry.hash,
     hashFull: entry.hashFull,
@@ -907,6 +908,7 @@ export function GitLens(props: GitLensProps) {
     if (selectedRef === null || selectedRef.kind !== 'worktree') return false
     return selectedRef.path === path && selectedRef.staged === staged
       && (selectedRef.worktree ?? '') === (selectedWorktree ?? '')
+      && (selectedRef.repoRoot ?? '') === (repoRoot ?? '')
   }
 
   const entries = snapshot?.entries ?? NO_ENTRIES
@@ -1158,18 +1160,18 @@ export function GitLens(props: GitLensProps) {
               {t('gitGraph')}
             </button>
           </div>
-          {graphOpen && <div data-scm-graph>
-            {logLoading && <Notice kind="loading">{t('loading')}</Notice>}
-            {logEntries.length === 0 && logFailed && <Notice kind="error">
-              {t('historyLoadError')} <Button variant="ghost" size="sm" onClick={() => { void refresh(false) }}>{t('retry')}</Button>
-            </Notice>}
-            {logEntries.length === 0 && !logFailed && !logLoading && logEnded && <Notice kind="empty">{t('changesNoHistory')}</Notice>}
-            <GitGraph entries={logEntries} selectedHash={selectedRef?.kind === 'commit' ? selectedRef.hashFull : undefined}
-              onPreview={entry => { onPreview(commitRefOf(entry)) }} onContextMenu={openHistoryMenu} />
-            {!logEnded && !logLoading && <button type="button" className={css.logMore}
-              disabled={logLoadingMore || busy || suggesting} onClick={() => { void loadMoreLog() }}>
-              {logLoadingMore ? t('loading') : t('loadMore')}
-            </button>}
+          {graphOpen && <div data-scm-graph className={css.graphArea}>
+            <GitGraphSection
+              scope={graphScope}
+              worktree={selectedWorktree}
+              visible={visible && active && graphOpen}
+              refreshTick={graphRefresh}
+              selectedRef={selectedRef}
+              onPreview={props.onGraphPreview ?? onPreview}
+              onClearPreview={() => { props.onClearPreview?.() }}
+              onDetailsChange={props.onDetailsChange}
+              onContextMenu={openHistoryMenu}
+            />
           </div>}
         </section>}
       </div>

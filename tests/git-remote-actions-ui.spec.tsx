@@ -32,7 +32,10 @@ function mockGit(entries: Array<{ path: string; xy: string }>): void {
   ] as GitWorktree[])
   vi.spyOn(api, 'gitStatus').mockResolvedValue({ isRepo: true, branch: 'main', entries } as GitStatusResult)
   vi.spyOn(api, 'gitBranch').mockResolvedValue({ current: 'main', names: ['main'] })
-  vi.spyOn(api, 'gitLog').mockResolvedValue([])
+  // The lens's history surface is the Graph section (#969): a quiet page.
+  vi.spyOn(api, 'gitGraph').mockResolvedValue({
+    isRepo: true, root: MAIN, entries: [], branches: [], hasMore: false, snapshot: 'one',
+  })
 }
 
 function mountGit(root: Root): void {

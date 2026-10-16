@@ -33,7 +33,17 @@ async function mount(readStatus: (scope: SessionScope) => GitStatusResult) {
   vi.spyOn(api, 'gitWorktrees').mockResolvedValue([{ path: CWD, branch: 'main', current: true, changes: 2 }])
   vi.spyOn(api, 'gitBranch').mockResolvedValue({ current: 'main', names: ['main', 'feature'] })
   vi.spyOn(api, 'gitCommitModel').mockResolvedValue({ pinned: false })
-  vi.spyOn(api, 'gitLog').mockResolvedValue([{ hash: 'abc1234', hashFull: 'a'.repeat(40), parents: [], subject: 'Initial', author: 'Ada', date: '2026-10-13', refs: 'HEAD -> main' }])
+  vi.spyOn(api, 'gitGraph').mockResolvedValue({
+    isRepo: true,
+    root: CWD,
+    entries: [{
+      hash: 'abc1234', hashFull: 'a'.repeat(40), parents: [],
+      subject: 'Initial', author: 'Ada', date: '2026-10-13', refs: ['HEAD', 'main'], message: 'Initial\n',
+    }],
+    branches: [{ ref: 'refs/heads/main', name: 'main', hashFull: 'a'.repeat(40) }],
+    hasMore: false,
+    snapshot: 'one',
+  })
   const render = (sessionId: string) => <GitLens scope={{ sessionId, cwd: CWD }} store={store} visible
     selectedRef={null} onOpenFile={() => {}} onPreview={() => {}} />
   const view = renderRoot(render('scm-A'))
@@ -81,9 +91,9 @@ it('orders distinct conflict/index/worktree groups, folds independently, and kee
     await write(input(container), 'kept draft')
     await click(changes)
     expect(input(container)).toBeNull()
-    expect(container.querySelector('[data-graph-row]')).not.toBeNull()
+    expect(container.querySelector('[data-graph-commit]')).not.toBeNull()
     await click(graph)
-    expect(container.querySelector('[data-graph-row]')).toBeNull()
+    expect(container.querySelector('[data-graph-commit]')).toBeNull()
     expect(footer.querySelector('button[aria-haspopup="menu"]')).not.toBeNull()
     await click(changes)
     expect(input(container).value).toBe('kept draft')
@@ -270,7 +280,7 @@ it('checks out a plain branch and refreshes placeholder, resources, graph and fo
   const view = await mount(() => snapshot)
   try {
     expect(input(view.container).placeholder).toBe('Message (Ctrl+Enter to commit on "main")')
-    const logCalls = vi.mocked(api.gitLog).mock.calls.length
+    const graphCalls = vi.mocked(api.gitGraph).mock.calls.length
     await click(view.container.querySelector<HTMLButtonElement>('[data-git-footer] button[aria-haspopup="menu"]')!)
     const feature = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find(button => button.textContent === 'feature')!
     await click(feature)
@@ -279,6 +289,6 @@ it('checks out a plain branch and refreshes placeholder, resources, graph and fo
     expect(input(view.container).placeholder).toBe('Message (Ctrl+Enter to commit on "feature")')
     expect(view.container.querySelectorAll('[data-group]')).toHaveLength(0)
     expect(view.container.querySelector('[data-git-footer]')!.textContent).toContain('2↓ 0↑')
-    expect(vi.mocked(api.gitLog).mock.calls.length).toBeGreaterThan(logCalls)
+    expect(vi.mocked(api.gitGraph).mock.calls.length).toBeGreaterThan(graphCalls)
   } finally { view.unmount() }
 })

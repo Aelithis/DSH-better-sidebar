@@ -46,7 +46,13 @@ ${script.slice(start)}
     expect(calls).toHaveLength(3)
     expect(calls[0]).toContain(`--cookie-jar ${scratch}/auth.cookies`)
     expect(calls[0]).toContain(launch)
-    expect(calls[0]).not.toMatch(/--location|-[^-\s]*L/)
+    // No redirect-following flag. Check the FLAGS, never the whole line: the
+    // scratch path is a mkdtemp name, and a random suffix can put an `L` right
+    // after a `-` (`dsh-aggregate-auth-6mLM51`), which a line-wide regex reads
+    // as a `-L` flag (the Windows lane caught exactly that).
+    const shortFlags = calls[0]!.split(/\s+/).filter(token => token.startsWith('-') && !token.startsWith('--'))
+    expect(shortFlags.some(flag => flag.includes('L'))).toBe(false)
+    expect(calls[0]).not.toContain('--location')
     for (const call of calls.slice(1)) {
       expect(call).toContain(`--cookie ${scratch}/auth.cookies`)
       expect(call).toContain('-X POST http://127.0.0.1:4199/sidebar/api/')

@@ -16,7 +16,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { act } from 'react-dom/test-utils'
 import { GitLens } from '../src/client/changes/GitLens.tsx'
 import { createSidebarStore } from '../src/client/state.ts'
-import { api, type GitLogEntry, type GitStatusEntry, type GitStatusResult, type GitWorktree } from '../src/client/api.ts'
+import { api, type GitStatusEntry, type GitStatusResult, type GitWorktree } from '../src/client/api.ts'
 import type { BetterSidebarService } from '../src/client/service.ts'
 import { t } from '../src/client/locales.ts'
 import type { Context } from '../src/context-types.ts'
@@ -41,19 +41,28 @@ function statusFor(target?: string): GitStatusResult {
     : { isRepo: true, branch: 'main', entries: [{ path: 'main-change.ts', xy: ' M' }] }
 }
 
-function logFor(target?: string, index = 0): GitLogEntry[] {
+/** One `git.graph` page for a checkout; the subject names the checkout. */
+function graphFor(target?: string, index = 0, hasMore = false): Awaited<ReturnType<typeof api.gitGraph>> {
   const agent = target === AGENT
   const digit = agent ? 'a' : 'b'
   const suffix = index.toString(16).padStart(8, '0')
-  return [{
-    hash: `${digit.repeat(6)}${suffix.slice(-1)}`,
-    hashFull: `${digit.repeat(32)}${suffix}`,
-    parents: [],
-    subject: agent ? `Agent checkout commit ${index}` : `Main checkout commit ${index}`,
-    author: 'Test',
-    date: '2026-08-20 00:00:00 +0800',
-    refs: agent ? 'HEAD -> agent' : 'HEAD -> main',
-  }]
+  return {
+    isRepo: true,
+    root: target ?? MAIN,
+    entries: [{
+      hash: `${digit.repeat(6)}${suffix.slice(-1)}`,
+      hashFull: `${digit.repeat(32)}${suffix}`,
+      parents: [],
+      subject: agent ? `Agent checkout commit ${index}` : `Main checkout commit ${index}`,
+      author: 'Test',
+      date: '2026-08-20 00:00:00 +0800',
+      refs: ['HEAD', agent ? 'agent' : 'main'],
+      message: `${agent ? 'Agent' : 'Main'} checkout commit ${index}\n`,
+    }],
+    branches: [{ ref: `refs/heads/${agent ? 'agent' : 'main'}`, name: agent ? 'agent' : 'main', hashFull: `${digit.repeat(32)}${suffix}` }],
+    hasMore,
+    snapshot: `${digit}${suffix}`,
+  }
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -140,7 +149,7 @@ describe('GitLens (changes tab, git lens) linked-worktree consistency', () => {
       current: target === AGENT ? 'agent' : 'main',
       names: target === AGENT ? ['agent'] : ['main'],
     }))
-    const log = vi.spyOn(api, 'gitLog').mockImplementation(async (_scope, _count, _skip, target) => logFor(target))
+    const graph = vi.spyOn(api, 'gitGraph').mockImplementation(async (_scope, _options, target) => graphFor(target))
 
     const container = document.createElement('div')
     document.body.append(container)
@@ -156,8 +165,10 @@ describe('GitLens (changes tab, git lens) linked-worktree consistency', () => {
       expect(container.textContent).toContain('Agent checkout commit')
       expect(container.textContent).not.toContain('Main checkout commit')
       expect(branch).toHaveBeenCalledWith(expect.anything(), AGENT)
-      expect(log).toHaveBeenCalledWith(expect.anything(), 20, 0, AGENT)
-      expect(container.querySelector('select')).toBeNull()
+      expect(graph).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ count: 50 }), AGENT, expect.anything())
+      // The repo / worktree pickers moved into More Actions (#944); the only
+      // select left is the Graph section's own branch filter.
+      expect([...container.querySelectorAll('select')]).toHaveLength(1)
       const options = openMoreSubmenu(container, t('worktree'))
       expect(options.map(button => button.textContent)).toEqual(['main · main (0)', 'agent · agent (1)'])
       await act(async () => { options[0]!.click() })
@@ -168,25 +179,30 @@ describe('GitLens (changes tab, git lens) linked-worktree consistency', () => {
       expect(container.textContent).toContain('Main checkout commit')
       expect(container.textContent).not.toContain('Agent checkout commit')
       expect(branch).toHaveBeenLastCalledWith(expect.anything(), MAIN)
-      expect(log).toHaveBeenLastCalledWith(expect.anything(), 20, 0, MAIN)
+      // Re-read for the main checkout. GitLens passes `selectedWorktree`
+      // straight through, and the primary checkout is spelled as "no
+      // narrowing" (undefined) or by its own path depending on how it was
+      // chosen — the rows above are the real evidence.
+      expect([undefined, MAIN]).toContain(graph.mock.calls.at(-1)?.[2])
     } finally {
       act(() => { root.unmount() })
       container.remove()
     }
   })
 
-  it('drops a late history page when the selected worktree changes', async () => {
-    const lateAgentPage = deferred<GitLogEntry[]>()
+  it('drops a late graph page when the selected worktree changes', async () => {
+    const lateAgentPage = deferred<Awaited<ReturnType<typeof api.gitGraph>>>()
     vi.spyOn(api, 'gitWorktrees').mockResolvedValue(inventories)
     vi.spyOn(api, 'gitStatus').mockImplementation(async (_scope, target) => statusFor(target))
     vi.spyOn(api, 'gitBranch').mockImplementation(async (_scope, target) => ({
       current: target === AGENT ? 'agent' : 'main',
       names: target === AGENT ? ['agent'] : ['main'],
     }))
-    vi.spyOn(api, 'gitLog').mockImplementation(async (_scope, _count, skip, target) => {
-      if (target === AGENT && skip === 20) return lateAgentPage.promise
-      if (target === AGENT) return Array.from({ length: 20 }, (_value, index) => logFor(AGENT, index)[0]!)
-      return logFor(MAIN)
+    vi.spyOn(api, 'gitGraph').mockImplementation(async (_scope, options, target) => {
+      // The SECOND agent page is the one that lands late.
+      if (target === AGENT && options?.cursor !== undefined) return lateAgentPage.promise
+      if (target === AGENT) return graphFor(AGENT, 0, true)
+      return graphFor(MAIN)
     })
 
     const container = document.createElement('div')
@@ -197,14 +213,14 @@ describe('GitLens (changes tab, git lens) linked-worktree consistency', () => {
       await flushEffects()
 
       const loadMore = [...container.querySelectorAll<HTMLButtonElement>('[data-scm-section="graph"] button')]
-        .find(button => button.textContent === t('loadMore'))
+        .find(button => button.textContent === t('graphLoadMore'))
       expect(loadMore).not.toBeUndefined()
       await act(async () => { loadMore!.click() })
 
       await chooseMoreOption(container, t('worktree'), 'main · main (0)')
       expect(container.textContent).toContain('Main checkout commit 0')
 
-      lateAgentPage.resolve(logFor(AGENT, 99))
+      lateAgentPage.resolve(graphFor(AGENT, 99))
       await flushEffects()
       expect(container.textContent).toContain('Main checkout commit 0')
       expect(container.textContent).not.toContain('Agent checkout commit 99')
@@ -234,7 +250,7 @@ describe('GitLens (changes tab, git lens) linked-worktree consistency', () => {
     const branch = vi.spyOn(api, 'gitBranch').mockImplementation(async (scope) => (
       scope.repoRoot === REPO_B ? { current: 'b-main', names: ['b-main'] } : { current: 'a-main', names: ['a-main'] }
     ))
-    vi.spyOn(api, 'gitLog').mockResolvedValue([])
+    vi.spyOn(api, 'gitGraph').mockResolvedValue(graphFor(undefined))
 
     const container = document.createElement('div')
     document.body.append(container)
@@ -293,7 +309,7 @@ describe('GitLens (changes tab, git lens) linked-worktree consistency', () => {
       current: target === AGENT ? 'agent' : 'main',
       names: target === AGENT ? ['agent'] : ['main'],
     }))
-    vi.spyOn(api, 'gitLog').mockImplementation(async (_scope, _count, _skip, target) => logFor(target))
+    vi.spyOn(api, 'gitGraph').mockImplementation(async (_scope, _options, target) => graphFor(target))
 
     const container = document.createElement('div')
     document.body.append(container)
@@ -330,7 +346,7 @@ describe('GitLens (changes tab, git lens) linked-worktree consistency', () => {
       current: target === AGENT ? 'agent' : 'main',
       names: target === AGENT ? ['agent'] : ['main'],
     }))
-    vi.spyOn(api, 'gitLog').mockImplementation(async (_scope, _count, _skip, target) => logFor(target))
+    vi.spyOn(api, 'gitGraph').mockImplementation(async (_scope, _options, target) => graphFor(target))
 
     const container = document.createElement('div')
     document.body.append(container)
@@ -369,7 +385,7 @@ describe('GitLens (changes tab, git lens) linked-worktree consistency', () => {
       current: target === AGENT ? 'agent' : 'main',
       names: target === AGENT ? ['agent'] : ['main'],
     }))
-    vi.spyOn(api, 'gitLog').mockImplementation(async (_scope, _count, _skip, target) => logFor(target))
+    vi.spyOn(api, 'gitGraph').mockImplementation(async (_scope, _options, target) => graphFor(target))
 
     const container = document.createElement('div')
     document.body.append(container)
@@ -403,7 +419,7 @@ describe('GitLens (changes tab, git lens) linked-worktree consistency', () => {
       current: target === AGENT ? 'agent' : 'main',
       names: target === AGENT ? ['agent'] : ['main'],
     }))
-    vi.spyOn(api, 'gitLog').mockImplementation(async (_scope, _count, _skip, target) => logFor(target))
+    vi.spyOn(api, 'gitGraph').mockImplementation(async (_scope, _options, target) => graphFor(target))
 
     const container = document.createElement('div')
     document.body.append(container)
@@ -443,7 +459,7 @@ describe('GitLens (changes tab, git lens) linked-worktree consistency', () => {
       isRepo: true, branch: 'main', entries: [{ path: 'src/a.ts', xy: ' M' }],
     })
     vi.spyOn(api, 'gitBranch').mockResolvedValue({ current: 'main', names: ['main', 'feature'] })
-    vi.spyOn(api, 'gitLog').mockResolvedValue([])
+    vi.spyOn(api, 'gitGraph').mockResolvedValue(graphFor(undefined))
     vi.spyOn(api, 'gitCheckout').mockRejectedValue(new Error('dirty worktree'))
 
     const container = document.createElement('div')
@@ -488,7 +504,7 @@ describe('GitLens (changes tab, git lens) change tree', () => {
     vi.spyOn(api, 'gitWorktrees').mockResolvedValue([{ path: MAIN, branch: 'main', current: true, changes }])
     vi.spyOn(api, 'gitStatus').mockResolvedValue({ isRepo: true, branch: 'main', entries })
     vi.spyOn(api, 'gitBranch').mockResolvedValue({ current: 'main', names: ['main'] })
-    vi.spyOn(api, 'gitLog').mockResolvedValue([])
+    vi.spyOn(api, 'gitGraph').mockResolvedValue(graphFor(undefined))
     mountGit(root)
     await flushEffects()
   }
@@ -683,7 +699,7 @@ describe('GitLens (changes tab, git lens) change tree', () => {
         }
       })
       vi.spyOn(api, 'gitBranch').mockResolvedValue({ current: 'main', names: ['main'] })
-      vi.spyOn(api, 'gitLog').mockResolvedValue([])
+      vi.spyOn(api, 'gitGraph').mockResolvedValue(graphFor(undefined))
 
       mountGit(root, { ctx })
       await flushEffects()
@@ -808,7 +824,7 @@ describe('GitLens (changes tab, git lens) change tree', () => {
             isRepo: true, branch: 'main', entries: [{ path: 'src/a.ts', xy: ' M', unstaged: { additions: 7, deletions: 0 } }],
           })
         vi.spyOn(api, 'gitBranch').mockResolvedValue({ current: 'main', names: ['main'] })
-        vi.spyOn(api, 'gitLog').mockResolvedValue([])
+        vi.spyOn(api, 'gitGraph').mockResolvedValue(graphFor(undefined))
 
         mountGit(root)
         await flushEffects()
@@ -881,7 +897,7 @@ describe('GitLens (changes tab, git lens) scope swap', () => {
       current: target === AGENT ? 'agent' : 'main',
       names: target === AGENT ? ['agent'] : ['main'],
     }))
-    vi.spyOn(api, 'gitLog').mockImplementation(async (_scope, _count, _skip, target) => logFor(target))
+    vi.spyOn(api, 'gitGraph').mockImplementation(async (_scope, _options, target) => graphFor(target))
     const discard = vi.spyOn(api, 'gitDiscard')
 
     const { container, root } = makeRoot()
@@ -930,7 +946,7 @@ describe('GitLens (changes tab, git lens) scope swap', () => {
       current: target === AGENT ? 'agent' : 'main',
       names: target === AGENT ? ['agent'] : ['main'],
     }))
-    vi.spyOn(api, 'gitLog').mockImplementation(async (_scope, _count, _skip, target) => logFor(target))
+    vi.spyOn(api, 'gitGraph').mockImplementation(async (_scope, _options, target) => graphFor(target))
 
     const { container, root } = makeRoot()
     // Re-queried on every use: a re-render may hand back a different node, and

@@ -26,6 +26,8 @@ import type {
   SidebarUpdateTeamTaskRequest,
 } from '../context-types.ts'
 import type { WorkflowRunView } from '../workflow-runs.ts'
+import type { GitGraphOptions, GitGraphResult } from '../git-graph.ts'
+export type { GitGraphOptions, GitGraphResult, GitGraphEntry, GitGraphBranch } from '../git-graph.ts'
 
 /** One wire failure. */
 export class SidebarApiError extends Error {
@@ -530,6 +532,9 @@ export const api = {
     call<{ current: string; names: string[] }>('git.branch', gitPayload(scope, worktree, {}), signal),
   gitCheckout: (scope: SessionScope, branch: string, worktree?: string) =>
     call<{ ok: true }>('git.checkout', gitPayload(scope, worktree, { branch })),
+  /** Read-only topological history; stale cursors require a fresh first page. */
+  gitGraph: (scope: SessionScope, options: GitGraphOptions = {}, worktree?: string, signal?: AbortSignal) =>
+    call<GitGraphResult>('git.graph', gitPayload(scope, worktree, { ...options }), signal),
   /** Recent commit history, lazily pageable (skip/count; defaults 0/30). */
   gitLog: (scope: SessionScope, count?: number, skip?: number, worktree?: string, signal?: AbortSignal) =>
     call<GitLogEntry[]>('git.log', gitPayload(scope, worktree, {

@@ -5,9 +5,13 @@
  * A 36px header carries the host conversation Tabs and the current
  * lens's refresh action; both lenses preview their selections in a shared
  * resizable bottom pane ({@link DiffPane}), and git targets expand into the
- * dedicated diff tab docked in the workbench's diff pane. The active lens and
- * the pane height persist in the tab's meta, so the tab reopens exactly where
- * it was left.
+ * dedicated diff tab docked in the workbench's diff pane. The bottom pane is
+ * ONE region with a tab strip when a Git Graph commit supplies a second view:
+ * `details` (that commit's card, {@link CommitDetails}) and `diff` (the shared
+ * preview). Every other preview — a worktree file, a history row, a session op
+ * — keeps the pane diff-only, exactly as before. The active lens, the pane
+ * height and the pane tab persist in the tab's meta, so the tab reopens
+ * exactly where it was left.
  *
  * The session events ride the host's `changes.ops` route (the client runtime
  * exposes no event-log face): the tab pulls the delta past its cursor and
@@ -27,6 +31,8 @@ import { usePolling } from '../use-polling.ts'
 import type { SidebarDiffRef } from '../state.ts'
 import { IconButton, Notice } from '../ui/index.ts'
 import { GitLens } from './GitLens.tsx'
+import { CommitDetails } from './CommitDetails.tsx'
+import type { GraphDetailsSelection } from './GitGraphSection.tsx'
 import { SessionLens } from './SessionLens.tsx'
 import { DiffPane, clampPaneHeight, diffTabOf, type ChangesPreview } from './DiffPane.tsx'
 import { extractFileOps, knownContentBefore, type FileOp } from './ops.ts'
@@ -49,12 +55,20 @@ export function opCountOf(sessionId: string): number | undefined {
   return opCounts.get(sessionId)
 }
 
-type Lens = 'git' | 'session'
+type Lens = 'git' | 'graph' | 'session'
+
+/** The bottom pane's views: `details` (a graph commit's card, hosted while a
+ *  graph selection lives), `content` (an op target's file-content view) and
+ *  `diff` (what changed). Which of the latter two exist depends on the target
+ *  — a read op has no diff — so an id persisted here may be unlisted for the
+ *  current target; the pane falls back to its built-in home then. */
+type PaneTabId = 'details' | 'content' | 'diff'
 
 /** The persisted tab meta (JSON-serializable; rides the layout). */
 interface ChangesMeta {
   lens?: Lens
   previewH?: number
+  paneTab?: PaneTabId
 }
 
 /** What the user selected to preview: a git ref, or the IDENTITY of a session
@@ -70,6 +84,15 @@ export function ChangesTab({ ctx, store, scope, tab, visible, onOpenFile, onOpen
   const lensId = useId()
   const [lens, setLens] = useState<Lens>(meta.lens === 'session' ? 'session' : 'git')
   const [selection, setSelection] = useState<PreviewSelection | null>(null)
+  /** The Git Graph's selected commit (its card + the ref tones it needs), or
+   *  null while nothing is selected there. Null keeps the pane diff-only. */
+  const [graphDetails, setGraphDetails] = useState<GraphDetailsSelection | null>(null)
+  /** The pane's active tab: null only before anything picks one, so the FIRST
+   *  graph commit lands on `details` while a tab already chosen (including one
+   *  restored from the meta) is kept — the `diff` default with no strip. */
+  const [bottomTab, setBottomTab] = useState<PaneTabId | null>(
+    meta.paneTab === 'details' || meta.paneTab === 'content' || meta.paneTab === 'diff' ? meta.paneTab : null,
+  )
   const [paneHeight, setPaneHeight] = useState<number>(() => clampPaneHeight(
     typeof meta.previewH === 'number' ? meta.previewH : PANE_HEIGHT_DEFAULT,
   ))
@@ -127,7 +150,7 @@ export function ChangesTab({ ctx, store, scope, tab, visible, onOpenFile, onOpen
       // only while nothing has ever loaded.
       if (generation === pollGen.current && signal?.aborted !== true) setOpsError(true)
     } finally {
-      pullingRef.current = false
+      if (generation === pollGen.current) pullingRef.current = false
     }
     // Granular scope fields: the scope object's identity churns, only its
     // sessionId / cwd fields gate the poll target.
@@ -135,11 +158,13 @@ export function ChangesTab({ ctx, store, scope, tab, visible, onOpenFile, onOpen
   }, [scope.sessionId, scope.cwd])
   useEffect(() => {
     pollGen.current += 1
+    pullingRef.current = false
     eventsRef.current = []
     opsRef.current = []
     seqRef.current = -1
     primedRef.current = false
     setOpsError(false)
+    return () => { pollGen.current += 1 }
   }, [scope.sessionId])
   // One catch-up whenever the tab becomes visible (the badge count follows the
   // tab being opened); the CADENCE below runs only while this lens is showing.
@@ -159,11 +184,27 @@ export function ChangesTab({ ctx, store, scope, tab, visible, onOpenFile, onOpen
     return { kind: 'op', path: selection.path, op, prior: knownContentBefore(ops, selection.path, op) }
   }, [selection, ops])
 
-  /** Persist a meta patch onto the tab (lens choice, pane height). */
+  /** Persist a meta patch onto the tab (lens choice, pane height, pane tab). */
   const patchMeta = (patch: ChangesMeta): void => {
     ctx.get('betterSidebar')?.updateTab(tab.id, {
       meta: { ...(tab.meta as ChangesMeta | undefined ?? {}), ...patch },
     }, scope.sessionId)
+  }
+
+  /** Switch the bottom pane's tab (a strip click) and persist the choice
+   *  beside lens / previewH, so the pane reopens on the same view. */
+  const chooseBottomTab = (next: PaneTabId): void => {
+    if (next === bottomTab) return
+    setBottomTab(next)
+    patchMeta({ paneTab: next })
+  }
+
+  /** The graph lens's selected commit, or null. Its arrival is what arms the
+   *  pane's two-tab strip, and the FIRST one of a tab's life lands on `details`
+   *  (the graph's own card); a tab the user already worked on keeps its tab. */
+  const reportGraphDetails = (selection: GraphDetailsSelection | null): void => {
+    setGraphDetails(selection)
+    if (selection !== null && bottomTab === null) chooseBottomTab('details')
   }
 
   const chooseLens = (next: Lens): void => {
@@ -175,11 +216,21 @@ export function ChangesTab({ ctx, store, scope, tab, visible, onOpenFile, onOpen
   /** Preview one git change (worktree file or commit) from the Git lens. */
   const previewGit = (ref: SidebarDiffRef): void => {
     setSelection({ kind: 'git', ref })
+    chooseBottomTab('diff')
   }
 
-  /** Preview one session op by callId (the tab re-derives it each render). */
+  /** Preview one commit from the GRAPH lens: the pane stays on whatever tab
+   *  the user is on (the default is decided when the entry arrives). */
+  const previewGraphCommit = (ref: SidebarDiffRef): void => {
+    setSelection({ kind: 'git', ref })
+  }
+
+  /** Preview one session op by callId (the tab re-derives it each render). A
+   *  READ lands on the content tab — nothing changed, so there is no diff —
+   *  a write/edit lands on the diff. */
   const previewOp = (path: string, op: FileOp): void => {
     setSelection({ kind: 'op', path, callId: op.callId })
+    chooseBottomTab(op.kind === 'read' ? 'content' : 'diff')
   }
 
   /** Expand the current git preview into the dedicated diff tab, docked
@@ -208,7 +259,7 @@ export function ChangesTab({ ctx, store, scope, tab, visible, onOpenFile, onOpen
               type="button"
               role="tab"
               aria-selected={lens === value}
-              aria-controls={`${lensId}-panel`}
+              aria-controls={`${lensId}-${value}-panel`}
               tabIndex={lens === value ? 0 : -1}
               className={`wSkVaW_tab${lens === value ? ' wSkVaW_tabActive' : ''}`}
               onClick={() => { chooseLens(value) }}
@@ -231,32 +282,41 @@ export function ChangesTab({ ctx, store, scope, tab, visible, onOpenFile, onOpen
             session lens needs the tab-level action. */}
         {lens === 'session' && <IconButton
           className={css.headAction}
-          icon={<IconRefreshOutlineRegular />}
+          size="sm"
+          icon={<IconRefreshOutlineRegular size={14} />}
           label={t('refresh')}
           onClick={() => { void pull() }}
         />}
       </div>
-      <div className={css.lensBody} id={`${lensId}-panel`} role="tabpanel" aria-labelledby={`${lensId}-${lens}`}>
-        {lens === 'git'
-          ? (
-            <GitLens
-              ctx={ctx}
-              scope={scope}
-              store={store}
-              visible={visible}
-              onOpenFile={onOpenFile ?? (() => { /* no-op */ })}
-              onPreview={previewGit}
-              selectedRef={previewTarget !== null && previewTarget.kind === 'git' ? previewTarget.ref : null}
-            />
-          )
-          : (
-            <SessionLens
-              ops={ops}
-              loadError={opsError && ops.length === 0}
-              onPreview={previewOp}
-              selectedCallId={selection !== null && selection.kind === 'op' ? selection.callId : null}
-            />
-          )}
+      {/* Both lenses stay MOUNTED and only the active one is shown: the Git
+          lens then keeps its expanded groups, its commit draft and the Graph
+          section's scroll and selection while the session lens is on screen
+          (the graph's own `visible` gate keeps it from fetching meanwhile).
+          The host keeps tab bodies the same way (`keepMounted`). */}
+      <div className={css.lensBody} id={`${lensId}-git-panel`} role="tabpanel"
+        aria-labelledby={`${lensId}-git`} hidden={lens !== 'git'}>
+        <GitLens
+          ctx={ctx}
+          scope={scope}
+          store={store}
+          visible={visible}
+          active={lens === 'git'}
+          onOpenFile={onOpenFile ?? (() => { /* no-op */ })}
+          onPreview={previewGit}
+          selectedRef={previewTarget !== null && previewTarget.kind === 'git' ? previewTarget.ref : null}
+          onGraphPreview={previewGraphCommit}
+          onClearPreview={() => { setSelection(null) }}
+          onDetailsChange={reportGraphDetails}
+        />
+      </div>
+      <div className={css.lensBody} id={`${lensId}-session-panel`} role="tabpanel"
+        aria-labelledby={`${lensId}-session`} hidden={lens !== 'session'}>
+        <SessionLens
+          ops={ops}
+          loadError={opsError && ops.length === 0}
+          onPreview={previewOp}
+          selectedCallId={selection !== null && selection.kind === 'op' ? selection.callId : null}
+        />
       </div>
       {previewTarget !== null && (
         <DiffPane
@@ -268,6 +328,23 @@ export function ChangesTab({ ctx, store, scope, tab, visible, onOpenFile, onOpen
           onHeightCommit={(height) => { setPaneHeight(height); patchMeta({ previewH: height }) }}
           onClose={() => { setSelection(null) }}
           onExpand={expandPreview}
+          // The tab set is PINNED, not derived: the three views are the same
+          // panel in every lens (details of the selected commit, the file's own
+          // content, the patch). A view with nothing to show renders its empty
+          // state instead of vanishing, and the lens above never changes the
+          // strip.
+          tabs={[
+            { id: 'details', label: t('graphDetails') },
+            { id: 'content', label: t('changesContentTab') },
+            { id: 'diff', label: t('changesDiffTab') },
+          ]}
+          activeTab={bottomTab ?? 'diff'}
+          onSelectTab={(id) => { if (id === 'details' || id === 'content' || id === 'diff') chooseBottomTab(id) }}
+          bodies={{
+            details: graphDetails === null
+              ? <div className={css.altBody}><Notice kind="empty" tone="page">{t('changesNoCommit')}</Notice></div>
+              : <CommitDetails entry={graphDetails.entry} remotes={graphDetails.remotes} slot={graphDetails.slot} />,
+          }}
         />
       )}
       {selection !== null && selection.kind === 'op' && previewTarget === null && (
