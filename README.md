@@ -32,6 +32,10 @@
 
 Switch to **Git Graph** at the top of the Git panel for commit nodes, forks and merge edges across local branches, remote-tracking branches and HEAD. The branch selector only filters history — it **never checks out or fetches**; each commit is one line (lane edges + ref pills + subject), hover shows the author and short hash, and selecting one opens its full message and diff in the bottom pane. History loads in pages; reference changes during pagination prompt a refresh; reads are bounded (200 commits per page, offset 10,000, 1,000 branches) and report an explicit error past a limit. This first version shows no tags and offers no history-changing actions.
 
+### 🧭 dsh-context diagnostics (optional)
+
+With the `dsh-context` plugin installed, three places offer a one-click jump into that conversation's **Context** view: an agent node's detail card on the Tasks page, a background job's output window (the job's real owner session — never merely the session its row was watched under), and the session header. The entries **appear only** while dsh-context's `Context` page is actually registered: a deployment without it (or with that page hidden) shows no control at all, and while one jump is in flight every entry point is disabled. A failed jump is reported once, in a dismissible alert at the frame's bottom edge; nothing is polled while idle.
+
 ## 🚀 Installation
 
 ```sh
