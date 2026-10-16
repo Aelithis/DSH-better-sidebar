@@ -128,6 +128,12 @@
 - **文件/文件夹图标**：回退链是「具体 `names`/`exts` 注册 → catch-all（`exts: []`）→ 宿主 `FileTypeIcon`」。插件**不持有**扩展名表、图标数据或图标 chunk（#429 的 563 条数据与 `fileIconTheme` 开关在 rc.2 适配时删除，因为宿主已导出官方图形）。**语义雷区**：宿主分类器覆盖任意路径，所以注册 `exts: []` 会接管所有未具体命中的行——只想补几个类型的插件必须用 `exts`/`names`。
 - **内置 tab 图标**：内置类型（文件 / 文件变动 / 任务管理 / 侧边对话 / diff / 终端）的 glyph 集中在 `src/client/builtins/tab-icons.tsx`（颜色在 `tab-icons.module.css`，全部 `--dsw-alias-*`），三处消费面自动同步：底部工作台 tab 条、原生指南胶囊、原生 tab 芯片。**原生芯片的图标是插件自己画的**——宿主的 `SidebarRightTabDefinition` 没有 icon 字段，但 `sidebar.right.pane.tab.title` 槽就是芯片内容（`NativeTabTitle` 渲染 `[glyph][title]`，glyph `aria-hidden` 以免改可访问名）。
 - **git 状态轮询只有一条，且它很贵**（[docs/plans/2026-10-13-git-poll-ladder-and-idle-notify.md](docs/plans/2026-10-13-git-poll-ladder-and-idle-notify.md)）：全插件只有 `src/client/ui/git-status.ts` 一个 store，一次抓取 = `git status --untracked-files=all` + 两条全仓库 `--numstat`（4 个进程）。因此：**基线 30 s**（`POLL_BASE_MS`），往返超 750 ms / 2 s / 5 s 依次退到 2×/6×/停止自动轮询（快响应自动回落，事件驱动刷新永远可用）；**空闲轮询不 `notify`**（`notify()` 自增的 `slot.version` 就是 `useSyncExternalStore` 的 snapshot，无条件自增会让文件树的每一行每 tick 重渲染一次）；消费者分两类——`poll: true`（文件树、变动页）持有定时器，`poll: false`（编辑器 gutter）只读答案、**永不持有定时器**。新写读 git 的组件前先读这个 store 的头注释：**不要把功能开关当作 `visible` 传进去**（#212 就是这么让编辑器整页生命周期持有轮询的），也**不要自建第二个轮询器**。
+- **稳态开销：周期任务必须先答「它什么时候停」**（[docs/plans/2026-10-15-perf-steady-state.md](docs/plans/2026-10-15-perf-steady-state.md)）：v0.25 起原生 tab 一律 `keepMounted`，**每个挂载过的 body 都是永久的**，宿主对 mounted DOM 没有 LRU，插件无法单方面设界——所以下面四条是硬约束，`tests/steady-state.spec.tsx` 与 perf lane 的 `steady-state` 指标共同守护：
+  - **可见性门控**：轮询器 / socket / 观察者只在「有人真的看得见」时存在（tab 的 `visible`、面板是否渲染、`document.hidden` 三者都要看）；隐藏即停表，**重新可见必须立刻补刷一次**，否则数据陈旧。停周期任务**不得**停掉事件驱动刷新（手动刷新、保存后刷新、watcher 推送）。
+  - **单例归属**：凡「每会话」或「每资源」的东西全插件唯一，用引用计数或 leader 选举持有，**绝不按页签 / 按挂载的 body 复制**——N 个 body 就是 N 份永久成本（`use-session-root.ts` 的 5 s 轮询、`ops-stream.ts` 的 2.5 s 流、`ui/git-status.ts` 都是这个形状）。
+  - **有界缓存**：模块级 Map/数组一律带上限与淘汰（照 `fs-tree.ts` 的 512 或 `ui/git-status.ts` 的槽位回收）；「只增不减」的表在 `keepMounted` 下等于内存单调增长。淘汰只能发生在 release / 会话消失之后，**在用项与有在飞请求的键永不淘汰**。
+  - **宿主路由要按最坏输入估成本**：`cwdOf()`（12 个 `/sidebar/*` 路由共用）会做 `git rev-parse` 子进程与 4 000 事件回溯扫描——新增任何周期调用它之前先看 `src/active-worktree.ts` 的 TTL 与在飞去重是否覆盖了你的节奏。
+
 
 ---
 

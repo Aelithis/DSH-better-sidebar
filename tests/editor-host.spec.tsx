@@ -114,10 +114,17 @@ setupReactAct()
  *    hit the SUITE clock (15s, a real `fs.watch` + 150ms debounce) in a local
  *    run under heap pressure — i.e. the worker, not the wait, ran out of
  *    runway. The suite's own clock is now 30s (`vitest.config.ts`).
- * The affected `describe` raises its clock to 35s, so a genuinely missing row
+ *  - 20s → 60s: 2026-10-15, the same two cases in the SAME commit produced a
+ *    green run and a red one. Measured on both: this file takes **609ms** in
+ *    the green CI run (108ms locally) and **50554ms** in the red one, where
+ *    the tree had received its three `fs.trees` answers (all landing before
+ *    the wait even started) and still never rendered a row. That is an ~80x
+ *    stall of the worker, not a slow wait, so the budget buys margin without
+ *    weakening the assertion: a tree that never lists the row still fails.
+ * The affected `describe` raises its clock to 120s, so a genuinely missing row
  * still fails on the ASSERTION, never on the test clock.
  */
-const RENDER_WAIT_MS = 20_000
+const RENDER_WAIT_MS = 60_000
 
 /**
  * Wait until the tree has rendered the row for `name` — the precondition of
@@ -655,7 +662,7 @@ describe('EditorHost (files window)', () => {
  */
 // 35s clock: the tree wait above budgets 20s (and reports for 5s more when it
 // expires), so the ASSERTION stays the thing that fails, not the test clock.
-describe('EditorHost native-tab context-menu actions', { timeout: 35_000 }, () => {
+describe('EditorHost native-tab context-menu actions', { timeout: 120_000 }, () => {
   /** A service whose openTab calls are recorded (surface undefined = native). */
   function spyService(store: ReturnType<typeof createSidebarStore>): {
     service: ReturnType<typeof createBetterSidebarService>

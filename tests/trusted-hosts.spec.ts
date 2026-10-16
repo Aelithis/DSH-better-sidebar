@@ -15,13 +15,14 @@
  * name.
  */
 import { describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { Writable } from 'node:stream'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../src/index.ts'
 import type { SidebarWebRoute, SidebarWebUpgradeRoute } from '../src/context-types.ts'
+import { removeTree } from './temp-tree.ts'
 
 interface FakeRes {
   status: number
@@ -274,7 +275,7 @@ describe('remote-access trust (webRuntime.trustedHosts)', () => {
       return { status: res.status, headers: res.headers }
     } finally {
       cleanup()
-      rmSync(directory, { recursive: true, force: true })
+      removeTree(directory)
     }
   }
 

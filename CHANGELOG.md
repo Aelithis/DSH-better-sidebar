@@ -1,6 +1,16 @@
 # Changelog
 
-> 本文档收录 dsh-better-sidebar 的完整发布历史（最新版摘要见 [README](README.md)；同步发布于 [GitHub Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases)）。
+> 本文档收录 dsh-better-sidebar 的完整发布历史（最新版摘要见 [README](README_ZH.md)；同步发布于 [GitHub Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases)）。
+
+### v0.26.1
+
+- ⚡ **稳态开销治理：0.25 引入的常驻轮询、每 tab 成本与 `keepMounted` 的无界复利**（社区反馈「0.24 没问题，之后就会卡」——侧栏在前台开久了卡、多轮对话后 DSH 卡、重装重启又暂时好；分界线经产物级 A/B 落在 v0.25.0，v0.26.0 的 git 轮询修复没触及这些；方法与全部实测数字见 [docs/plans/2026-10-15-perf-steady-state.md](docs/plans/2026-10-15-perf-steady-state.md)）：
+  - **两个 500ms 表先治**（v0.25 引入，实测单 tick 0.5→9.7ms、最坏约 3 500 次强制布局读取/秒，且**无论是否可见都在跑**）：宿主右侧面板展开态改**全模块一条共享表**（引用计数，隐藏即 `clearInterval`，恢复即补读）；空白会话的兜底入口只在它**真的渲染**时建表（此前 interval 注册在 early return 之前，渲染 `null` 也照跑），让位走查 400→100 步（400px），隐藏期间不测量不写 state。同批：`settings-nav-icon` 的 `document.body` 观察者改 **rAF 合帧**并去掉 `characterData`（流式 token 改动文本节点不再逐次触发全文档查询）、`use-center-column` 的 1.5s 兜底表只在「一列都没有」时 armed（此前周期与复核窗口等长，注释声称的 query-free 快路径永不生效）、`session-phase` 隐藏时不请求且值未变不 `setState`（blank 会话不再每秒重渲染）。
+  - **「每 tab」收敛成「每会话」**：`use-session-root` 重写为按会话引用计数的共享 store——一条 5s 表，只在 ≥1 个**可见**订阅者时存在，页面隐藏停表、恢复/聚焦/取消 park 立刻补刷；native tab body 传自己的 `visible`（宿主对 parked body 报 false）。文件树目录 watch 与侧边聊推送同样按可见性门控（parked 不建 socket、不做重列、恢复即重连补刷）。**此前每访问一个页签就永久多一条「每 5s 一次 `git rev-parse` 子进程 + 4 000 条事件回扫」**——`cwdOf()` 被 12 条 `/sidebar/*` 路由共用，实测每次未命中 9.6–44.7ms。
+  - **`keepMounted` 保留语义、加上界**（切走不卸载仍然成立，草稿/滚动/展开态照旧）：`git-status.slots` 释放归零即删并按 256 上限淘汰、`ops-stream.streams` LRU 32（保留 `seq` 游标，parked 页签回来仍折到错过的写操作）、`state.bySession` LRU 32 且 `getSessionStates()` 不再每次整份复制（`syncExpanded` 原先每次 store notify 都 O(会话数) 复制）、`previewScrollMemory` 64、`commitDrafts` 32、`pendingAnchors` 写入时按 TTL 清扫。
+  - **宿主侧**：`active-worktree` 加在飞去重（并发 8 次只 spawn 一次）、`ACTIVE_ROOT_TTL_MS` 3s→15s（与客户端 5s 轮询错配导致**每次都未命中**）、三个模块级缓存加 LRU 上界（512/512/256）；`git.ts` 的两条 `--numstat` 加 pathspec（未忽略的大目录下从「两条全仓库 diff」变成零条，未跟踪路径不参与）并给 `runGit` 加 **8 MiB 输出上限**与产出侧行数上限；单层 `fs.tree` 补 `ProbeGate`、折叠探测每层封顶 32 且截断层不探测；`sidechat.events` 冷线程加 `(revision, size)` memo；`agent-opens` 每会话队列封顶 64；teardown 主动关闭三个 `noServer` WSS 的**已接受连接**（ws@8 的 `close()` 不会终止在连 socket，句柄会活到浏览器断开）。
+  - 🧪 测试：新增 `tests/steady-state.spec.tsx`（跨模块门禁：非 blank 会话只允许**一条** 500ms 表且**不得**有 5s 表、页面隐藏时零表、兜底入口在场但渲染 `null` 时命中测试必须为 0、`session.cwd` 请求必须为 0；末节是**客户端 `setInterval(` 站点清单**——新增未登记的周期任务即红，登记了门控词却删掉门控也红）、`tests/right-panel-open.spec.tsx`、`tests/session-phase.spec.tsx`、`tests/session-root-poll.spec.tsx`、`tests/unbounded-caches.spec.ts`；扩展 `dock-fallback` / `settings-nav-icon` / `center-column-locator` / `file-tree-dir-watch` / `use-sidechat-push` / `state` / `active-worktree` / `git-worktree` / `fs-tree-probe-gate` / `sidechat-routes` / `smoke` / `agent-opens` / `git-status-poll` / `subagent-live-polling` / `subagent-jobs-view` 共 15 份既有 spec；判别性由逐条「临时回退 → 对应用例变红 → 还原」实测。`tests/e2e/perf.e2e.ts` 新增 `steady-state` 指标与两条硬断言（兜底入口不渲染即不得命中测试；`session.cwd` 必须按会话而非按访问过的页签计数）。
+  - **明确未做**：关闭 `keepMounted`（用户选定保留语义 + 加上界）、文件树/侧聊列表虚拟化、CSS `:has` 回潮、任何宿主侧改动、给 perf lane 加耗时阈值门禁。**无公开接入 API 变化**（`ctx.betterSidebar` / TabDescriptor / FileViewerDescriptor / localStorage 格式均未动）。
 
 ### v0.26.0
 
@@ -18,7 +28,7 @@
   - 🧪 测试：`tests/editor-host.spec.tsx` 新增「a listing dropped by a refresh tick does not strand the level on Loading…」（首答延迟 300 ms、tick 在飞行中使其失效、tick 触发的强制重列人为挂死）；去掉本修复该用例当场红并打印现场。
 
 - 🖥️ **底部工作台可以同时开多个终端 Tab（[#927](https://github.com/omdsh-dev/DSH-better-sidebar/issues/927)，PR [#926](https://github.com/omdsh-dev/DSH-better-sidebar/pull/926)）**：`terminal-bottom` 去掉 `single: true` 改为提供 `createTab`——每开一个 mint 一个 `terminal-bottom:<uuid>` 的 id，并在 `meta.terminalInstance` 里记下自己的实例；宿主侧的出现键与内容身份都带上它（`dsh-better-sidebar:terminal-bottom:<instance>[#run]`），于是两个 tab **各自一个 shell**、刷新后各回各的进程，关掉一个只结束它自己那条。**旧 tab（`meta` 里没有 `terminalInstance`）读出来仍是 `undefined`，身份与改造前逐字节相同**，恢复绑定不丢。**维护者收尾**：`nextTerminalMeta()` 必须把实例一起带过去——`patchTab` 是**整份替换 `meta`**，只回 `terminalRun` 会让「新建终端」之后的 tab 掉回旧命名空间，于是两个都换过进程的 tab 撞在同一个 `…terminal-bottom#1` 上、被宿主（按 `(sessionId, key)` 记忆一个 model）发成**同一个 shell**。设计文档 `docs/plans/2026-10-05-bottom-terminal-tab.md` 的「一个终端」限制随之标注放开。
-  - 🧪 测试：`tests/terminal-tab.spec.tsx` +3（实例随「新建终端」保留、旧 tab 不长出实例；两个实例各自 `#1` 不撞、且都不等于旧的裸 `#1`；两个实例渲染出两个宿主终端与两条不同的 `(session,key,contentId)`），描述符关闭钩子补一条「带实例的 tab 只结束自己的终端」。判别性：把 `nextTerminalMeta` 退回只回 `terminalRun`，前两条当场红。
+  - 🧪 测试：`tests/terminal-tab.spec.tsx` +3（实例随「新建终端」保留、旧 tab 不长出实例；两个实例各自 `#1` 不撞、且都不等于旧的裸 `#1`；两个实例渲染出两个宿主终端与两条不同的 `(session,key,contentId)`），描述符关闭钩子补一条「带实例的 tab 只结束自己的终端」。判别性：把 `nextTerminalMeta` 退回只回 `terminalRun`，前两条当场红。（贡献者 PR [#926](https://github.com/omdsh-dev/DSH-better-sidebar/pull/926) @eleven-lings）
 
 - 💬 **侧边对话补齐到接近原生：实时推送 + 排队可见 + per-thread 模型选择 + 底栏重构**（PR [#925](https://github.com/omdsh-dev/DSH-better-sidebar/pull/925)；设计、真机证据与「哪些做不到」的清单见 [docs/plans/2026-10-12-sidechat-native-surface.md](docs/plans/2026-10-12-sidechat-native-surface.md)）：
   - **实时推送**：新增 `/sidebar/ws/sidechat`（`src/sidechat-push.ts`，客户端 `src/client/use-sidechat-push.ts`）。宿主把 `session/event`（60 ms 去抖）与 `agent/assistant-stream`（250 ms 去抖）压成**纯失效帧** `{threadId}`——不带事件体、客户端收到才带 `afterSeq` 增量重拉，协议面最小、单一事实源、断线自愈；每 socket 最多观察 64 个线程，空闲时**零帧**，重连指数退避 1→15 s，轮询降级为 15 s 兜底。
@@ -40,10 +50,10 @@
   - **落地没有光标，还会被预览的阅读位置覆盖**：落地只 `dispatch({ selection })`，而 CodeMirror **只在获焦的编辑器里画光标**、零长度选择本身什么都不画——文件短时一页装得下又没有光标，读者无从判断落在哪。且「进入编辑态按预览滚动位置恢复」那条副作用**声明在落地之后**，同一次提交里会把选择与滚动重新写回读者刚才预览的位置：先在预览里滚动、再点带行号的引用，跳转被静默抹掉。现在行号引用这条路上 `view.focus()`（普通打开不动读者焦点，他可能正从聊天输入框点链接），并在落地前清空 `previewSyncRef`。
   - 🧪 测试：新增 `tests/editor-line-nav-mode.spec.tsx`（4 例，**真 `TextEditor` 过真 `EditorHost`**：落地后能切回预览 / 页头刷新不回弹 / 同文件新行号仍落地 / 换文件不继承行号），`tests/text-editor-line-jump.spec.tsx` +6（落地获焦 / 普通打开不抢焦点 / markdown 翻转后仍获焦 / 消费契约两例 / 预览位置覆盖），`tests/markdown-surface.spec.tsx` +2（真实宿主 `MarkdownText` 下点 `#L42` 与 `#L20-L25` 进记录、标题锚点仍只走 parked 片段），`tests/native-tab-line.spec.ts` +2（换 path 清行号 / 只改 title 保留），`tests/markdown-navigation.spec.ts` +1（`lineOfHostFragment`），`tests/file-open-claim.spec.ts` +1（种子透传与「不传就不带这个键」）。判别性：去掉 `previewSyncRef` 清空 → 预览覆盖用例红（期望第 3 行的 offset 8、实得按比例算出的 14）；去掉两个记录层的清行号 → 对应两条红。（回归报告 [#914](https://github.com/omdsh-dev/DSH-better-sidebar/issues/914)；贡献者 PR [#916](https://github.com/omdsh-dev/DSH-better-sidebar/pull/916) @yanzhaohui1999）
 
-- 💾 **带基线保存时目标已不存在判冲突（[#911](https://github.com/omdsh-dev/DSH-better-sidebar/pull/911)）**：文件读进来之后被删掉或改名走，此前会当成「没有基线可比」直接写回，`mkdir -p` 于是把用户刚删掉的文件（连同父目录）**无提示重建出来**，界面还报「已保存」。数字基线只可能来自一次成功的读取，所以「读不到」是冲突而不是新建意图——现在同样回 409 `fs-conflict`，文案分成「已不存在」与「已在磁盘上被改过」两种；新建走 `fs.createFile`、上传走上传路径，都不受影响。
+- 💾 **带基线保存时目标已不存在判冲突（[#911](https://github.com/omdsh-dev/DSH-better-sidebar/pull/911)）**：文件读进来之后被删掉或改名走，此前会当成「没有基线可比」直接写回，`mkdir -p` 于是把用户刚删掉的文件（连同父目录）**无提示重建出来**，界面还报「已保存」。数字基线只可能来自一次成功的读取，所以「读不到」是冲突而不是新建意图——现在同样回 409 `fs-conflict`，文案分成「已不存在」与「已在磁盘上被改过」两种；新建走 `fs.createFile`、上传走上传路径，都不受影响。（贡献者 PR [#911](https://github.com/omdsh-dev/DSH-better-sidebar/pull/911) @UNscientific-9）
   - 🧪 测试：`tests/fs-write-route.spec.ts` +2（删文件后保存 → 409 且文件不复活、无临时残留；父目录被删 → 409 且目录不重建）。
 
-- 🧭 **改动块内以 `---` / `+++` 开头的正文不再被当成文件头（[#910](https://github.com/omdsh-dev/DSH-better-sidebar/pull/910)）**：删掉一行以 `-- ` 开头的源码（SQL / Lua / Haskell 注释、文档里的命令行参数行）在 git diff 里就是 `--- …`，与文件头分隔行**逐字节同形**——解析器据此把该文件**从这一行往后的改动整段丢掉**，而且不报错。现在两条头部分支只在**尚未进入 hunk** 时生效，并补了「真文件头跟在 hunk 之后仍能解析」的反证用例。
+- 🧭 **改动块内以 `---` / `+++` 开头的正文不再被当成文件头（[#910](https://github.com/omdsh-dev/DSH-better-sidebar/pull/910)）**：删掉一行以 `-- ` 开头的源码（SQL / Lua / Haskell 注释、文档里的命令行参数行）在 git diff 里就是 `--- …`，与文件头分隔行**逐字节同形**——解析器据此把该文件**从这一行往后的改动整段丢掉**，而且不报错。现在两条头部分支只在**尚未进入 hunk** 时生效，并补了「真文件头跟在 hunk 之后仍能解析」的反证用例。（贡献者 PR [#910](https://github.com/omdsh-dev/DSH-better-sidebar/pull/910) @UNscientific-9）
   - 🧪 测试：`tests/diff-rows.spec.ts` 3 例（删除的 `-- foo` 留在 hunk 内、新增的 `++ i;` 不改文件名、真文件头仍能开场）。
 
 - 📜 **超大文件的预览改成 VS Code 那种追加式滚动**：第一版做的是「上一页/下一页」的显式翻页（新页替换当前页），现在改为**滚到底自动取下一页并拼接**——读者读过的内容不会被抽走，行号跨页连续，「加载全部」就是一路追加到 EOF（必须串行：每一页的 `offset` 就是上一页响应的 `nextOffset`）。超限提示条最右侧新增「加载全部」按钮，加载中显示已读字节进度，到 EOF 后自动置灰。
@@ -85,7 +95,7 @@
 - 🎨 **树模式实时行的图标按活动类别取**：`tool-icons.tsx`（工具名映射，只有一处写死的调用）换成 `activity-icons.tsx` 的 `activityGlyph(kind)`——读文件 / 搜索 / 编辑 / 命令 / 网页 / 子代理 / 计划 / 提问 / 通用工具各用自己的宿主图标，尚未派发时是思考图标；`Record<ProcessActivity, …>` 让上游新增类别编译失败而不是静默兜底。
 - 🧪 测试：`tests/tasks-page.spec.tsx` 新增一个 `FakeChatLocale`（挂宿主 `chat` 命名空间，否则只能断言到 fallback 的 detail）并补 5 条（原生状态取代状态词、无数据回退、根卡真实状态、浮窗活动块位置与「无数据不渲染」、一次只开一组＋全局收起折回、徽标真实计数）；`tests/tasks-model.spec.ts` 补 4 条（按组展开的双向隔离、组 id、`expandedGroups` 盖过残留手工折叠、根节点带 live）；新增 `tests/activity-icons.spec.ts`（类别全覆盖 + 读/命令/搜索/网页互不同型 + `undefined` 走思考图标）。[设计文档](docs/plans/2026-10-11-tasks-status-and-group-fold.md)。
 
-- 🔌 **预览插件目录收录音频预览插件**：[`@huanlin/dsh-plugin-better-sidebar-plugin-audio`](https://github.com/HuanLinOTO/dsh-plugin-better-sidebar-plugin-audio)——设置页「添加插件」弹窗的预览插件目录里可一键复制安装命令（20 份词典同步 `pluginAudioName` / `pluginAudioDesc`，条目写进 `tests/plugin-list.spec.ts` 的目录断言，README 的预览插件表格 3 → 4）。
+- 🔌 **预览插件目录收录音频预览插件**：[`@huanlin/dsh-plugin-better-sidebar-plugin-audio`](https://github.com/HuanLinOTO/dsh-plugin-better-sidebar-plugin-audio)——设置页「添加插件」弹窗的预览插件目录里可一键复制安装命令（20 份词典同步 `pluginAudioName` / `pluginAudioDesc`，条目写进 `tests/plugin-list.spec.ts` 的目录断言，README 的预览插件表格 3 → 4）。（贡献者 PR [#881](https://github.com/omdsh-dev/DSH-better-sidebar/pull/881) @HuanLinOTO）
 
 ### v0.25.0
 

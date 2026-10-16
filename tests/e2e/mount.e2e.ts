@@ -731,6 +731,18 @@ test('the bottom workbench opens the plugin terminal (#774) without shadowing th
   // seeded editor tab is open on arrival — clicking unconditionally would
   // collapse it, and every later query would then measure the slid-off
   // (translateY(102%)) panel.
+  //
+  // It is also HIDDEN while the host right sidebar is open (the plugin's own
+  // rule: that corner belongs to the host's Split/Fullscreen/Collapse cluster),
+  // so the sidebar opened above must be collapsed again before the toggle can
+  // be clicked at all. Waiting for it while the panel is open was a race the
+  // suite used to win by landing inside the 500 ms re-check window — and lost
+  // on 2026-10-15 (identical commit, one run green and one red).
+  await page.locator('[data-sidebar-right-toggle]').first().click()
+  await expect(
+    page.locator('[data-sidebar-right-expand]').first(),
+    'the right sidebar must be collapsed before the workbench toggle can render',
+  ).toBeVisible({ timeout: 30_000 })
   const bottomExpand = page.locator('[data-dsh-bottom-toggle]:visible').first()
   await expect(bottomExpand).toBeAttached({ timeout: 60_000 })
   if ((await bottomExpand.getAttribute('data-active')) !== 'true') await bottomExpand.click()
@@ -782,6 +794,10 @@ test('the bottom workbench opens the plugin terminal (#774) without shadowing th
   // Shadowing check: the plugin's entry is bottom-only, so the host's own
   // guide STILL lists exactly one `terminal` capsule — with the plugin's
   // terminal now open beside it — and never one for `terminal-bottom`.
+  // The sidebar was collapsed to reach the workbench toggle above, so it is
+  // re-opened here: this check IS about the host's guide being intact.
+  await page.locator('[data-sidebar-right-expand]').first().click()
+  await expect(guide).toBeVisible({ timeout: 30_000 })
   await expect(
     hostTerminalEntry,
     'the plugin must not shadow the host terminal',

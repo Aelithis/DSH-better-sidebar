@@ -16,13 +16,14 @@
  *   spellings into one mojibake document.
  */
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../src/index.ts'
 import { encodeText } from '../src/text-encoding.ts'
 import { PAGE_BYTES } from '../src/editor-limits.ts'
 import type { SidebarWebRoute } from '../src/context-types.ts'
+import { removeTree } from './temp-tree.ts'
 
 interface FakeContext {
   webRuntime: { trustedHosts: readonly string[] }
@@ -40,7 +41,7 @@ interface FakeContext {
 
 const roots: string[] = []
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  for (const root of roots.splice(0)) removeTree(root)
 })
 
 /** A fresh workspace under the OS temp dir, cleaned up after the test. */
