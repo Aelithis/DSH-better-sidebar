@@ -41,10 +41,10 @@ function fakeContext(): Context {
   } as unknown as Context
 }
 
-function mount(root: Root, tab: SidebarTab = { id: 'git', type: 'git', title: 'Changes' }): void {
+function mount(root: Root, tab: SidebarTab = { id: 'git', type: 'git', title: 'Changes' }, ctx: Context = fakeContext()): void {
   act(() => {
     root.render(createElement(ChangesTab, {
-      ctx: fakeContext(),
+      ctx,
       store: createSidebarStore(),
       scope: { sessionId: 'session', cwd: MAIN },
       tab,
@@ -66,7 +66,7 @@ function mockGit(entries: GitStatusEntry[]): void {
   vi.spyOn(api, 'gitLog').mockResolvedValue([])
 }
 
-/** One lens tab of the header's segmented control. */
+/** One lens tab of the header's official conversation Tabs. */
 function lensTab(container: HTMLElement, label: string): HTMLButtonElement | undefined {
   return [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
     .find(tab => tab.textContent === label)
@@ -87,6 +87,66 @@ afterEach(() => {
 })
 
 describe('ChangesTab', () => {
+  it('uses the official underline Tabs with keyboard navigation, persisted lens and refresh', async () => {
+    mockGit([])
+    const ops = vi.spyOn(api, 'changesOps').mockResolvedValue({ events: [], lastSeq: 0 })
+    const updateTab = vi.fn()
+    const ctx = { get: () => ({ updateTab }) } as unknown as Context
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root: Root = createRoot(container)
+    try {
+      mount(root, { id: 'git', type: 'git', title: 'Changes', meta: { lens: 'session', previewH: 240 } }, ctx)
+      await flushEffects()
+
+      const tabs = container.querySelector<HTMLElement>('[role="tablist"]')!
+      const git = lensTab(container, t('changesGitLens'))!
+      const session = lensTab(container, t('changesSessionLens'))!
+      const panel = container.querySelector<HTMLElement>('[role="tabpanel"]')!
+      expect(tabs.classList.contains('wSkVaW_tabs')).toBe(true)
+      expect(tabs.getAttribute('aria-label')).toBe(t('changes'))
+      expect(git.classList.contains('wSkVaW_tab')).toBe(true)
+      const selected = (button: HTMLButtonElement): void => {
+        expect(button.classList.contains('wSkVaW_tabActive')).toBe(true)
+        expect(button.getAttribute('aria-selected')).toBe('true')
+        expect(button.tabIndex).toBe(0)
+        expect(button.getAttribute('aria-controls')).toBe(panel.id)
+        expect(panel.getAttribute('aria-labelledby')).toBe(button.id)
+      }
+      selected(session)
+      expect(git.tabIndex).toBe(-1)
+      session.focus()
+      const key = async (button: HTMLButtonElement, name: string): Promise<void> => {
+        const event = new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true })
+        await act(async () => { button.dispatchEvent(event) })
+        expect(event.defaultPrevented).toBe(true)
+      }
+      await key(session, 'ArrowRight') // wraps to the first tab
+      selected(git)
+      expect(document.activeElement).toBe(git)
+      expect(session.classList.contains('wSkVaW_tabActive')).toBe(false)
+      expect(session.getAttribute('aria-selected')).toBe('false')
+      expect(updateTab).toHaveBeenLastCalledWith('git', { meta: { lens: 'git', previewH: 240 } }, 'session')
+      await key(git, 'ArrowLeft') // wraps to the last tab
+      selected(session)
+      await key(session, 'Home')
+      selected(git)
+      await key(git, 'End')
+      selected(session)
+      expect(updateTab).toHaveBeenLastCalledWith('git', { meta: { lens: 'session', previewH: 240 } }, 'session')
+
+      const calls = ops.mock.calls.length
+      await act(async () => { container.querySelector<HTMLButtonElement>(`button[aria-label="${t('refresh')}"]`)!.click() })
+      await flushEffects()
+      expect(ops).toHaveBeenCalledTimes(calls + 1)
+      const sheet = readFileSync('src/client/changes/changes.module.css', 'utf8')
+      expect(sheet).toMatch(/\.head :global\(\.wSkVaW_tabs\) \{ gap: 24px; \}/)
+    } finally {
+      act(() => { root.unmount() })
+      container.remove()
+    }
+  })
+
   it('renders the git lens by default and previews a file row in the pane', async () => {
     mockGit([{ path: 'src/a.ts', xy: ' M' }])
     vi.spyOn(api, 'gitDiff').mockResolvedValue({
