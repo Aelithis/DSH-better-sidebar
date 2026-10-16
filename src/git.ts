@@ -613,12 +613,14 @@ async function discoverRepoRoots(cwd: string): Promise<string[]> {
         }
       }
       if (hasGit && dir !== cwd) {
-        // Symlink-resolved form, because the scan builds paths by joining
-        // dirent names while `rev-parse --show-toplevel` reports the real one:
-        // on macOS every tmpdir lives under `/var`, a symlink to `/private/var`
-        // (and the panel would otherwise show the same repository twice in two
-        // spellings). Unresolvable names keep the joined path.
-        const root = await realpath(dir).catch(() => dir)
+        // Two normalizations, both about spelling the SAME checkout one way:
+        // realpath resolves symlinks (macOS tmpdirs live under `/var`, a
+        // symlink to `/private/var`) and Windows folds the separators to the
+        // forward slashes `rev-parse --show-toplevel` reports — otherwise the
+        // scanned root and the git-reported root look like two repositories.
+        // Unresolvable names keep the joined path.
+        const resolved = await realpath(dir).catch(() => dir)
+        const root = process.platform === 'win32' ? resolved.replaceAll('\\', '/') : resolved
         if (!roots.some(existing => pathIdentity(existing) === pathIdentity(root))) roots.push(root)
       }
       for (const name of subdirs.sort((left, right) => left.localeCompare(right))) next.push(join(dir, name))
