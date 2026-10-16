@@ -13,8 +13,13 @@
 
 /* ── Lens header ───────────────────────────────────────────────────────── */
 
-.head { flex: none; display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 8px 0 12px; border-bottom: 1px solid var(--dsw-alias-border-l1); }
-.headAction { margin-left: auto; }
+/* One slim 28px bar: the lens switcher is the SAME compact tab strip the
+   bottom pane uses (a flush variant without its own hairline), so the page's
+   two switchers read as one component and the bar no longer crowds the native
+   tab chips above it. */
+.head { flex: none; display: flex; align-items: stretch; gap: 4px; height: 28px; padding: 0 4px 0 8px; border-bottom: 1px solid var(--dsw-alias-border-l1); }
+.headAction { align-self: center; margin-left: auto; }
+.head .lensTabs { flex: 1; min-width: 0; height: auto; padding: 0; border-bottom: 0; }
 
 /* ── Git lens (the former git panel) ───────────────────────────────────── */
 
@@ -581,6 +586,32 @@
 .dragHandle { flex: none; height: 8px; cursor: ns-resize; position: relative; background: var(--dsw-alias-bg-base); }
 .dragHandle::after { content: ''; position: absolute; left: calc(50% - 18px); top: 3px; width: 36px; height: 2px; border-radius: 1px; background: var(--dsw-alias-border-l2); }
 .dragHandle:hover::after, .dragHandle:focus-visible::after { background: var(--dsw-alias-state-business-primary); }
+
+/* ── Bottom pane tab strip (VS Code-style panel) ───────────────────────────
+   Only rendered when the pane really hosts two views (a graph commit's
+   `details` + its diff); a diff-only preview keeps the strip-less head. The
+   strip sits under the drag handle, so the handle stays the pane's top edge
+   and the strip doubles as the row that names the active view. */
+.paneTabs { flex: none; display: flex; align-items: center; gap: 2px; height: 28px; padding: 0 8px; border-bottom: 1px solid var(--dsw-alias-border-l1); }
+.paneTab {
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--dsw-font-xxxs-strong-11);
+  cursor: pointer;
+}
+.paneTab:hover { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+.paneTab[data-active='true'] { color: var(--dsw-alias-label-primary); border-bottom-color: var(--dsw-alias-brand-primary); }
+.paneTab:focus-visible { outline: 2px solid var(--dsw-alias-interactive-bg-hover-accent); outline-offset: -2px; }
+
+/* The non-diff tab's body: the pane owns the frame, the content fills it and
+   scrolls itself (CommitDetails' own section is the scroller). */
+.altBody { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .diffHead { display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px 10px; border-bottom: 1px solid var(--dsw-alias-border-l1); }
 /* The path keeps its tail (the file name is the identity; directories are
    context): an RTL paragraph renders an ASCII path in reading order while

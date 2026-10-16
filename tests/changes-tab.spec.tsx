@@ -3,7 +3,9 @@
  * Git lens for the session lens, a Git-lens file row opens the shared preview
  * pane (loaded through the mocked git API, rendered by the shared DiffFiles
  * stack), and the session ops ride the mocked `changes.ops` poll — the event
- * poll, the op fold and the badge cache all live in the tab.
+ * poll, the op fold and the badge cache all live in the tab. The Git Graph's
+ * commit selection turns that SAME pane into the tabbed bottom region (the
+ * `details` card + the diff), which the last describe covers.
  *
  * The copy assertions below pin the zh strings (the test environment's
  * navigator may be a real Node one with an en locale), so a bare substring
@@ -14,10 +16,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { act } from 'react-dom/test-utils'
+import { act, Simulate } from 'react-dom/test-utils'
 import { ChangesTab, opCountOf } from '../src/client/changes/ChangesTab.tsx'
 import { createSidebarStore } from '../src/client/state.ts'
-import { api, type GitStatusEntry, type GitStatusResult, type GitWorktree } from '../src/client/api.ts'
+import { api, type GitGraphEntry, type GitStatusEntry, type GitStatusResult, type GitWorktree } from '../src/client/api.ts'
 import { t } from '../src/client/locales.ts'
 import type { Context } from '../src/context-types.ts'
 import type { SidebarTab } from '../src/client/state.ts'
@@ -41,10 +43,10 @@ function fakeContext(): Context {
   } as unknown as Context
 }
 
-function mount(root: Root, tab: SidebarTab = { id: 'git', type: 'git', title: 'Changes' }): void {
+function mount(root: Root, tab: SidebarTab = { id: 'git', type: 'git', title: 'Changes' }, ctx: Context = fakeContext()): void {
   act(() => {
     root.render(createElement(ChangesTab, {
-      ctx: fakeContext(),
+      ctx,
       store: createSidebarStore(),
       scope: { sessionId: 'session', cwd: MAIN },
       tab,
@@ -53,6 +55,12 @@ function mount(root: Root, tab: SidebarTab = { id: 'git', type: 'git', title: 'C
       onOpenDiff: () => {},
     }))
   })
+}
+
+/** A tab context whose `betterSidebar.updateTab` is observable: the pane tab
+ *  choice is persisted through it, exactly like `lens` / `previewH`. */
+function metaContext(updateTab: (id: string, patch: unknown, sessionId?: string) => void): Context {
+  return { get: (name: string) => (name === 'betterSidebar' ? { updateTab } : undefined) } as unknown as Context
 }
 
 function mockGit(entries: GitStatusEntry[]): void {
@@ -77,6 +85,95 @@ async function flushEffects(): Promise<void> {
   await act(async () => { await Promise.resolve() })
 }
 
+// ── The Git Graph fixtures driving the tabbed bottom region ───────────────
+/** A real 40-char SHA-1: the details card's chip renders the full hash while
+ *  the row and the commit badge carry 7 chars, so the length itself is the
+ *  evidence the card is the one on screen. */
+const GRAPH_HASH = 'a1'.repeat(20)
+const GRAPH_SUBJECT = 'graph commit subject'
+const GRAPH_MESSAGE = 'graph commit subject\n\n## Retry loop\n\n- bullet'
+const COMMIT_DIFF = [
+  'diff --git a/src/a.ts b/src/a.ts',
+  '--- a/src/a.ts',
+  '+++ b/src/a.ts',
+  '@@ -1 +1 @@',
+  '-old line',
+  '+graph-only-diff-line',
+  '',
+].join('\n')
+const WORKTREE_DIFF = [
+  'diff --git a/src/a.ts b/src/a.ts',
+  '--- a/src/a.ts',
+  '+++ b/src/a.ts',
+  '@@ -1 +1 @@',
+  '-old line',
+  '+worktree-only-diff-line',
+  '',
+].join('\n')
+
+function graphEntry(): GitGraphEntry {
+  return {
+    hash: GRAPH_HASH.slice(0, 7),
+    hashFull: GRAPH_HASH,
+    parents: [],
+    subject: GRAPH_SUBJECT,
+    author: 'Ada',
+    date: '2026-01-01',
+    refs: ['HEAD', 'origin/main', 'topic'],
+    message: GRAPH_MESSAGE,
+  }
+}
+
+/** The graph page the graph lens loads, plus the commit patch its diff tab
+ *  renders. `branches` carries the remote ref so the card's pill tones are
+ *  observable end to end (the set is derived from this inventory). */
+function mockGraph(): void {
+  vi.spyOn(api, 'gitGraph').mockResolvedValue({
+    isRepo: true,
+    root: MAIN,
+    entries: [graphEntry()],
+    branches: [
+      { ref: 'refs/heads/main', name: 'main', hashFull: GRAPH_HASH },
+      { ref: 'refs/remotes/origin/main', name: 'origin/main', hashFull: GRAPH_HASH },
+    ],
+    hasMore: false,
+    snapshot: 'one',
+  })
+  vi.spyOn(api, 'gitCommitDiff').mockResolvedValue({ diff: COMMIT_DIFF })
+}
+
+/** The open bottom pane's frame: the drag handle's parent (the pane root). */
+function paneOf(container: HTMLElement): HTMLElement {
+  const handle = container.querySelector<HTMLElement>('[role="separator"]')
+  expect(handle, 'the bottom pane frame is open').not.toBeNull()
+  return handle!.parentElement as HTMLElement
+}
+
+/** The pane's OWN strip tabs. Scoped through the frame on purpose: the
+ *  header's lens SegmentedControl is also a `role="tablist"`, so an unscoped
+ *  query would let it satisfy the assertion. */
+function paneTabs(container: HTMLElement): HTMLButtonElement[] {
+  return [...paneOf(container).querySelectorAll<HTMLButtonElement>('[role="tab"]')]
+}
+
+/** The graph lens reports its selection one effect after the row click, and
+ *  the first `onTargetChange` remounts it (its key carries the target), so a
+ *  commit needs a couple of flushes to settle. */
+async function settle(): Promise<void> {
+  await flushEffects()
+  await flushEffects()
+}
+
+/** Switch to the graph lens and select its one commit. */
+async function openGraphCommit(container: HTMLElement): Promise<void> {
+  await act(async () => { lensTab(container, t('changesGraphLens'))!.click() })
+  await settle()
+  const row = container.querySelector<HTMLButtonElement>(`[data-graph-commit="${GRAPH_HASH}"]`)
+  expect(row, 'the mocked graph page rendered its commit row').not.toBeNull()
+  await act(async () => { row!.click() })
+  await settle()
+}
+
 beforeEach(() => {
   Object.defineProperty(globalThis.navigator, 'language', { value: 'zh-CN', configurable: true })
 })
@@ -87,6 +184,69 @@ afterEach(() => {
 })
 
 describe('ChangesTab', () => {
+  it('never sends the previous worktree when the graph follows a new session', async () => {
+    mockGit([])
+    const graph = vi.spyOn(api, 'gitGraph').mockResolvedValue({ isRepo: true, root: MAIN, entries: [], branches: [], hasMore: false, snapshot: 'one' })
+    const container = document.createElement('div'); document.body.append(container)
+    const root = createRoot(container)
+    try {
+      mount(root); await flushEffects()
+      await act(async () => { lensTab(container, t('changesGraphLens'))!.click() })
+      expect(graph.mock.calls.at(-1)![2]).toBe(MAIN)
+      act(() => { root.render(createElement(ChangesTab, {
+        ctx: fakeContext(), store: createSidebarStore(), scope: { sessionId: 'new-session', cwd: '/other' },
+        tab: { id: 'git', type: 'git', title: 'Changes' }, visible: true,
+      })) })
+      await flushEffects()
+      const calls = graph.mock.calls.filter(call => call[0].sessionId === 'new-session')
+      expect(calls.length).toBeGreaterThan(0)
+      for (const call of calls) { expect(call[2]).toBeUndefined(); expect(call[0].repoRoot).toBeUndefined() }
+    } finally { act(() => { root.unmount() }); container.remove() }
+  })
+
+  it('retains per-session commit drafts across A→B→A through the changes shell', async () => {
+    mockGit([])
+    const container = document.createElement('div'); document.body.append(container)
+    const root = createRoot(container)
+    const render = (sessionId: string) => act(() => { root.render(createElement(ChangesTab, {
+      ctx: fakeContext(), store: createSidebarStore(), scope: { sessionId, cwd: MAIN },
+      tab: { id: 'git', type: 'git', title: 'Changes' }, visible: true,
+    })) })
+    try {
+      render('A'); await flushEffects()
+      const draft = container.querySelector('textarea')!
+      act(() => { draft.value = 'Draft A'; Simulate.change(draft) })
+      render('B'); await flushEffects()
+      expect(container.querySelector('textarea')!.value).toBe('')
+      render('A'); await flushEffects()
+      expect(container.querySelector('textarea')!.value).toBe('Draft A')
+    } finally { act(() => { root.unmount() }); container.remove() }
+  })
+
+  it('retains the Git commit draft while graph is visible and persists graph lens', async () => {
+    mockGit([])
+    const graph = vi.spyOn(api, 'gitGraph').mockResolvedValue({ isRepo: true, root: MAIN, entries: [], branches: [], hasMore: false, snapshot: 'one' })
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root = createRoot(container)
+    try {
+      mount(root); await flushEffects()
+      expect(graph).not.toHaveBeenCalled()
+      const draft = container.querySelector('textarea')!
+      expect(draft).not.toBeNull()
+      act(() => { draft.value = 'Unsubmitted draft'; Simulate.change(draft) })
+      const gitRoot = container.querySelector('[data-git-root]')!
+      await act(async () => { lensTab(container, t('changesGraphLens'))!.click() })
+      expect(graph).toHaveBeenCalledTimes(1)
+      expect(gitRoot.isConnected).toBe(true)
+      expect(gitRoot.closest('[hidden]')).not.toBeNull()
+      await act(async () => { lensTab(container, t('changesGitLens'))!.click() })
+      await flushEffects()
+      expect(container.querySelector('textarea')!.value).toBe('Unsubmitted draft')
+      expect(gitRoot.closest('[hidden]')).toBeNull()
+    } finally { act(() => { root.unmount() }); container.remove() }
+  })
+
   it('renders the git lens by default and previews a file row in the pane', async () => {
     mockGit([{ path: 'src/a.ts', xy: ' M' }])
     vi.spyOn(api, 'gitDiff').mockResolvedValue({
@@ -238,15 +398,83 @@ describe('ChangesTab', () => {
       expect(container.textContent).toContain('src/a.ts')
       const chips = [...container.querySelectorAll('button[aria-pressed]')]
       expect(chips.some(chip => /写入\s*2|Write\s*2/.test(chip.textContent ?? ''))).toBe(true)
-      // The git lens (its branch picker) is unmounted by the switch.
-      expect(container.querySelector('select')).toBeNull()
+      // Retained lenses preserve drafts/targets but every picker is hidden.
+      for (const picker of container.querySelectorAll('select')) {
+        expect(picker.closest('[hidden]')).not.toBeNull()
+      }
     } finally {
       act(() => { root.unmount() })
       container.remove()
     }
   })
 
-  it('renders a .md read op in reading mode through the shared MarkdownText', async () => {
+  it('keeps the pinned strip for op previews too: content renders the file, diff the patch', async () => {
+    mockGit([])
+    mockGraph()
+    vi.spyOn(api, 'changesOps').mockResolvedValue({
+      events: [
+        { type: 'tool/call', seq: 1, time: 1, data: { name: 'write', callId: 'w1', arguments: JSON.stringify({ file_path: 'C:/repo/main/notes.md', content: '# Hello\n\nbody' }) } },
+        { type: 'tool/result', seq: 2, time: 2, data: { message: { source: { kind: 'tool', callId: 'w1' }, content: [{ type: 'tool-result', content: [{ type: 'text', text: 'ok' }] }] } } },
+        { type: 'tool/call', seq: 3, time: 3, data: { name: 'read', callId: 'r1', arguments: JSON.stringify({ file_path: 'C:/repo/main/plain.txt' }) } },
+        { type: 'tool/result', seq: 4, time: 4, data: { message: { source: { kind: 'tool', callId: 'r1' }, content: [{ type: 'tool-result', content: [{ type: 'text', text: '<content>\n1: alpha\n2: beta\n</content>' }] }] } } },
+      ],
+      lastSeq: 4,
+    })
+
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root: Root = createRoot(container)
+    try {
+      mount(root)
+      await flushEffects()
+      // A graph selection arms the details view first.
+      await openGraphCommit(container)
+
+      // Session lens, md WRITE op: the SAME three tabs, landing on the diff.
+      await act(async () => { lensTab(container, t('changesSessionLens'))!.click() })
+      await settle()
+      // The op rows carry no path text — the path is the group label's title.
+      const opRow = (pathPart: string, kind: string): HTMLButtonElement => {
+        const label = [...container.querySelectorAll<HTMLElement>('div[title]')]
+          .find(el => el.getAttribute('title')?.includes(pathPart))!
+        return label.parentElement!.querySelector<HTMLButtonElement>(`button[data-op-kind="${kind}"]`)!
+      }
+      await act(async () => { opRow('notes.md', 'write').click() })
+      await settle()
+      expect(paneTabs(container).map(tab => tab.textContent)).toEqual([t('graphDetails'), t('changesContentTab'), t('changesDiffTab')])
+      expect(paneTabs(container).map(tab => tab.getAttribute('aria-selected'))).toEqual(['false', 'false', 'true'])
+      // The diff view is the diff — the rendered document is NOT mixed into it.
+      // (The pane element is REPLACED on target switches — re-query, never
+      // hold a reference across a click.)
+      expect(paneOf(container).querySelector('h1')).toBeNull()
+      expect(paneOf(container).textContent).toContain('Hello')
+      // The content tab carries the rendered document (and the source toggle).
+      await act(async () => { paneTabs(container)[1]!.click() })
+      await settle()
+      expect(paneOf(container).querySelector('h1')?.textContent).toContain('Hello')
+
+      // A plain-text READ op: content is the source, and its diff view says a
+      // read has no diff instead of rendering an empty patch.
+      await act(async () => { opRow('plain.txt', 'read').click() })
+      await settle()
+      expect(paneTabs(container).map(tab => tab.textContent)).toEqual([t('graphDetails'), t('changesContentTab'), t('changesDiffTab')])
+      expect(paneTabs(container).map(tab => tab.getAttribute('aria-selected'))).toEqual(['false', 'true', 'false'])
+      expect(paneOf(container).textContent).toContain('alpha')
+      expect(paneOf(container).textContent).toContain('beta')
+      await act(async () => { paneTabs(container)[2]!.click() })
+      await settle()
+      expect(paneOf(container).textContent).toContain(t('changesReadNoDiff'))
+      // The details card is still one tab away (the pane outlives lens switches).
+      await act(async () => { paneTabs(container)[0]!.click() })
+      await settle()
+      expect(paneOf(container).querySelector(`section[aria-label="${t('graphDetails')}"]`)).not.toBeNull()
+    } finally {
+      act(() => { root.unmount() })
+      container.remove()
+    }
+  })
+
+  it('renders a .md read op on the CONTENT tab — rendered first, source one toggle away', async () => {
     mockGit([])
     const md = ['# Title', '', '| A | B |', '| --- | --- |', '| 1 | 2 |', '', '![pic](./img.png)', ''].join('\n')
     const numbered = md.split('\n').map((line, i) => String(i + 1) + ': ' + line).join('\n')
@@ -266,7 +494,8 @@ describe('ChangesTab', () => {
       mount(root)
       await flushEffects()
 
-      // Session lens: open the read op's preview.
+      // Session lens: open the read op's preview. A read has no diff, so the
+      // pane's only view is `content` — no strip, no mixing into a diff view.
       const sessionTab = lensTab(container, t('changesSessionLens'))
       await act(async () => { sessionTab!.click() })
       const row = container.querySelector<HTMLButtonElement>('button[data-op-kind="read"]')
@@ -275,24 +504,26 @@ describe('ChangesTab', () => {
       await act(async () => { row!.click() })
       await flushEffects()
 
-      // Reading toggle: raw first (line-numbered rows), then rendered GFM.
-      const toggle = [...container.querySelectorAll<HTMLButtonElement>('button')]
-        .find(button => (button.textContent ?? '').match(/阅读|Reading/))
-      expect(toggle).toBeDefined()
-      expect(container.querySelector('h1')).toBeNull()
-      await act(async () => { toggle!.click() })
-      await flushEffects()
+      // Rendered GFM immediately (the plugin's renderer is the point of the
+      // content tab) — no raw detour first.
       expect(container.querySelector('h1')?.textContent).toContain('Title')
       expect(container.querySelector('table')).not.toBeNull()
       // The local image destination was rewritten to the media route.
       const img = container.querySelector('img')
       expect(img?.getAttribute('src')).toContain('/sidebar/file?')
-      // Toggling back restores the raw line view.
+      // The source toggle lives on the content view; flipping it shows the
+      // line-numbered source, flipping back re-renders.
       const rawToggle = [...container.querySelectorAll<HTMLButtonElement>('button')]
         .find(button => (button.textContent ?? '').match(/原文|Raw/))
+      expect(rawToggle).toBeDefined()
       await act(async () => { rawToggle!.click() })
       await flushEffects()
       expect(container.querySelector('h1')).toBeNull()
+      const readingToggle = [...container.querySelectorAll<HTMLButtonElement>('button')]
+        .find(button => (button.textContent ?? '').match(/阅读|Reading/))
+      await act(async () => { readingToggle!.click() })
+      await flushEffects()
+      expect(container.querySelector('h1')?.textContent).toContain('Title')
     } finally {
       act(() => { root.unmount() })
       container.remove()
@@ -608,6 +839,293 @@ describe('ChangesTab', () => {
       act(() => { root.unmount() })
       container.remove()
       vi.useRealTimers()
+    }
+  })
+})
+
+/**
+ * The bottom region's tab strip. The set is PINNED to the same three views for
+ * every preview and every lens — `details` (the selected commit), `content`
+ * (the file itself, rendered for md/html/pdf) and `diff` (the patch) — so the
+ * panel above which lens is active is always the same one; a view with nothing
+ * to show renders its empty state rather than vanishing. The choice persists
+ * as `meta.paneTab` beside `lens` / `previewH`.
+ */
+describe('ChangesTab bottom pane tabs', () => {
+  it('opens ONE pane whose tablist is the same [details, content, diff] everywhere, details active by default', async () => {
+    mockGit([])
+    mockGraph()
+
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root: Root = createRoot(container)
+    try {
+      mount(root)
+      await flushEffects()
+      await openGraphCommit(container)
+
+      // ONE region: a single drag handle, and the strip is its sibling INSIDE
+      // that same frame (the header's lens control is outside it).
+      expect(container.querySelectorAll('[role="separator"]')).toHaveLength(1)
+      const pane = paneOf(container)
+      expect(pane.children[0]!.getAttribute('role')).toBe('separator')
+      expect(pane.children[1]!.getAttribute('role')).toBe('tablist')
+      const tabs = paneTabs(container)
+      expect(tabs.map(tab => tab.textContent)).toEqual([t('graphDetails'), t('changesContentTab'), t('changesDiffTab')])
+      // Details is the default for the FIRST graph selection; roving tabIndex
+      // makes it the only tab stop.
+      expect(tabs.map(tab => tab.getAttribute('aria-selected'))).toEqual(['true', 'false', 'false'])
+      expect(tabs.map(tab => tab.tabIndex)).toEqual([0, -1, -1])
+
+      // The card lives inside the pane frame, NOT inside the graph lens.
+      const details = pane.querySelector<HTMLElement>(`section[aria-label="${t('graphDetails')}"]`)
+      expect(details).not.toBeNull()
+      expect(container.querySelector('[data-git-graph]')!.contains(details!)).toBe(false)
+      expect(details!.querySelector('strong')!.textContent).toBe(GRAPH_SUBJECT)
+      // Full 40-char hash chip, and the message as MARKDOWN in its own block:
+      // the raw body's first line (the subject) was split off, so the body
+      // carries only the heading + the list — and never a duplicated title.
+      expect(details!.querySelector('code')!.textContent).toBe(GRAPH_HASH)
+      const body = details!.querySelector<HTMLElement>('[class*="messageBody"]')!
+      expect(body).not.toBeNull()
+      expect(body.querySelector('h2')!.textContent).toContain('Retry loop')
+      expect(body.querySelector('li')!.textContent).toContain('bullet')
+      expect(body.textContent).not.toContain(GRAPH_SUBJECT)
+      expect(details!.querySelector('pre')).toBeNull()
+      // The lens's remote inventory reached the card, so origin/main reads muted
+      // rather than local, and HEAD folded into the current branch's pill (the
+      // emphasised tone + the current marker) instead of a pill of its own.
+      const tones = [...details!.querySelectorAll<HTMLElement>('[data-tone]')]
+      expect(tones.map(pill => [pill.textContent, pill.getAttribute('data-tone'), pill.getAttribute('data-current')])).toEqual([
+        ['origin/main', 'remote', null],
+        ['topic', 'head', 'true'],
+      ])
+    } finally {
+      act(() => { root.unmount() })
+      container.remove()
+    }
+  })
+
+  it('swaps the pane head/body for the active tab and restores the card on the way back', async () => {
+    mockGit([])
+    mockGraph()
+
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root: Root = createRoot(container)
+    const detailsSelector = `section[aria-label="${t('graphDetails')}"]`
+    try {
+      mount(root)
+      await flushEffects()
+      await openGraphCommit(container)
+      expect(paneOf(container).querySelector(detailsSelector)).not.toBeNull()
+
+      // The CONTENT tab of a commit target has no file to show: its empty
+      // state stands in rather than the tab disappearing.
+      await act(async () => { paneTabs(container)[1]!.click() })
+      await settle()
+      expect(paneOf(container).querySelector(detailsSelector)).toBeNull()
+      expect(paneOf(container).textContent).toContain(t('changesNoContent'))
+
+      // The diff tab renders the pane's OWN head and body for the commit.
+      await act(async () => { paneTabs(container)[2]!.click() })
+      await settle()
+      const pane = paneOf(container)
+      expect(paneTabs(container).map(tab => tab.getAttribute('aria-selected'))).toEqual(['false', 'false', 'true'])
+      expect(pane.querySelector(detailsSelector)).toBeNull()
+      // The head carries the short hash + subject, the body the loaded patch.
+      expect(pane.textContent).toContain(GRAPH_SUBJECT)
+      expect(pane.textContent).toContain('graph-only-diff-line')
+      // The full hash is the details card's chip only.
+      expect(pane.textContent).not.toContain(GRAPH_HASH)
+
+      // Back to details: the card returns, the diff body is gone.
+      await act(async () => { paneTabs(container)[0]!.click() })
+      await settle()
+      expect(paneOf(container).querySelector(detailsSelector)).not.toBeNull()
+      expect(paneOf(container).textContent).not.toContain('graph-only-diff-line')
+    } finally {
+      act(() => { root.unmount() })
+      container.remove()
+    }
+  })
+
+  it('shows the SAME pinned strip for a Git-lens file preview (content + diff, no commit selected)', async () => {
+    mockGit([{ path: 'src/a.ts', xy: ' M' }])
+    vi.spyOn(api, 'gitDiff').mockResolvedValue({ diff: WORKTREE_DIFF })
+
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root: Root = createRoot(container)
+    try {
+      mount(root)
+      await flushEffects()
+      const row = container.querySelector<HTMLButtonElement>('button[data-path="src/a.ts"]')!
+      await act(async () => { row.click() })
+      await flushEffects()
+
+      expect(container.querySelectorAll('[role="separator"]')).toHaveLength(1)
+      const pane = paneOf(container)
+      // Same strip as everywhere else — the lens above does not change it.
+      expect(paneTabs(container).map(tab => tab.textContent)).toEqual([t('graphDetails'), t('changesContentTab'), t('changesDiffTab')])
+      // …landing on the diff, because that is what clicking a file means.
+      expect(paneTabs(container).map(tab => tab.getAttribute('aria-selected'))).toEqual(['false', 'false', 'true'])
+      expect(pane.textContent).toContain('src/a.ts')
+      expect(pane.textContent).toContain('worktree-only-diff-line')
+      // With no commit selected the details view explains itself.
+      await act(async () => { paneTabs(container)[0]!.click() })
+      await settle()
+      expect(paneOf(container).textContent).toContain(t('changesNoCommit'))
+    } finally {
+      act(() => { root.unmount() })
+      container.remove()
+    }
+  })
+
+  it('renders the FILE ITSELF on the content tab of a git worktree target (fs.read, no diff)', async () => {
+    mockGit([{ path: 'src/notes.md', xy: ' M' }])
+    vi.spyOn(api, 'gitDiff').mockResolvedValue({ diff: WORKTREE_DIFF })
+    const read = vi.spyOn(api, 'fsRead').mockResolvedValue({
+      kind: 'text', content: '# Live file\n\nbody line\n', size: 26,
+    })
+
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root: Root = createRoot(container)
+    try {
+      mount(root)
+      await flushEffects()
+      const row = container.querySelector<HTMLButtonElement>('button[data-path="src/notes.md"]')!
+      await act(async () => { row.click() })
+      await flushEffects()
+
+      // Opening the file for its DIFF must not pull the document: the content
+      // loader is deferred until that view is the one on screen.
+      expect(read).not.toHaveBeenCalled()
+      expect(paneOf(container).textContent).toContain('worktree-only-diff-line')
+
+      // The content view reads the live file and renders markdown (the plugin
+      // renderer), not a diff and not a <pre>.
+      await act(async () => { paneTabs(container)[1]!.click() })
+      await settle()
+      expect(read).toHaveBeenCalledTimes(1)
+      await settle()
+      const pane = paneOf(container)
+      expect(pane.querySelector('h1')?.textContent).toContain('Live file')
+      expect(pane.textContent).toContain('body line')
+      expect(pane.textContent).not.toContain('worktree-only-diff-line')
+    } finally {
+      act(() => { root.unmount() })
+      container.remove()
+    }
+  })
+
+  it('restores a persisted diff tab and writes the chosen tab back through the meta', async () => {
+    mockGit([])
+    mockGraph()
+    const updateTab = vi.fn()
+
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root: Root = createRoot(container)
+    const detailsSelector = `section[aria-label="${t('graphDetails')}"]`
+    try {
+      mount(root, { id: 'git', type: 'git', title: 'Changes', meta: { paneTab: 'diff' } }, metaContext(updateTab))
+      await flushEffects()
+      await openGraphCommit(container)
+
+      // Restored, not re-defaulted to details.
+      expect(paneTabs(container).map(tab => tab.getAttribute('aria-selected'))).toEqual(['false', 'false', 'true'])
+      expect(paneOf(container).querySelector(detailsSelector)).toBeNull()
+      expect(paneOf(container).textContent).toContain('graph-only-diff-line')
+      // The only meta write so far is the lens switch, and it carried the
+      // restored `diff` — nothing re-defaulted the pane tab to `details`.
+      expect(updateTab.mock.calls.every(call =>
+        (call[1] as { meta: { paneTab?: string } }).meta.paneTab === 'diff')).toBe(true)
+
+      // Choosing a tab persists it beside lens / previewH, on the tab meta.
+      await act(async () => { paneTabs(container)[0]!.click() })
+      await settle()
+      expect(paneOf(container).querySelector(detailsSelector)).not.toBeNull()
+      expect(updateTab).toHaveBeenLastCalledWith('git', { meta: { paneTab: 'details' } }, 'session')
+    } finally {
+      act(() => { root.unmount() })
+      container.remove()
+    }
+  })
+
+  it('keeps the details tab when the lens switches — the bottom pane is ONE shared region', async () => {
+    mockGit([])
+    mockGraph()
+
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root: Root = createRoot(container)
+    const detailsSelector = `section[aria-label="${t('graphDetails')}"]`
+    try {
+      mount(root)
+      await flushEffects()
+      await openGraphCommit(container)
+      expect(paneTabs(container)).toHaveLength(3)
+      expect(paneOf(container).querySelector(detailsSelector)).not.toBeNull()
+
+      // The pane below is independent of the lens above: switching to the
+      // session lens must NOT disarm the strip or drop the commit card — the
+      // selection lives until the graph itself loses the commit (or the tab
+      // goes away), not until the lens hides.
+      await act(async () => { lensTab(container, t('changesSessionLens'))!.click() })
+      await settle()
+      const pane = paneOf(container)
+      expect(pane.querySelector('[role="tablist"]')).not.toBeNull()
+      expect(paneTabs(container).map(tab => tab.textContent)).toEqual([t('graphDetails'), t('changesContentTab'), t('changesDiffTab')])
+      expect(pane.querySelector(detailsSelector)).not.toBeNull()
+      // The graph's own diff preview is still the diff tab's body.
+      await act(async () => { paneTabs(container)[2]!.click() })
+      await flushEffects()
+      expect(pane.textContent).toContain('graph-only-diff-line')
+      // … and the details card comes back without any graph round-trip.
+      await act(async () => { paneTabs(container)[0]!.click() })
+      await flushEffects()
+      expect(pane.querySelector(detailsSelector)).not.toBeNull()
+    } finally {
+      act(() => { root.unmount() })
+      container.remove()
+    }
+  })
+
+  it('moves the active tab with ArrowLeft / ArrowRight / Home / End', async () => {
+    mockGit([])
+    mockGraph()
+
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root: Root = createRoot(container)
+    try {
+      mount(root)
+      await flushEffects()
+      await openGraphCommit(container)
+      const selected = (): (string | null)[] =>
+        paneTabs(container).map(tab => tab.getAttribute('aria-selected'))
+      const press = async (index: number, key: string): Promise<void> => {
+        await act(async () => { Simulate.keyDown(paneTabs(container)[index]!, { key }) })
+      }
+      expect(selected()).toEqual(['true', 'false', 'false'])
+      await press(0, 'ArrowRight')
+      expect(selected()).toEqual(['false', 'true', 'false'])
+      await press(1, 'ArrowRight')
+      expect(selected()).toEqual(['false', 'false', 'true'])
+      await press(2, 'ArrowLeft')
+      expect(selected()).toEqual(['false', 'true', 'false'])
+      // End / Home jump to the last / first tab.
+      await press(1, 'End')
+      expect(selected()).toEqual(['false', 'false', 'true'])
+      await press(2, 'Home')
+      expect(selected()).toEqual(['true', 'false', 'false'])
+      // The roving tabIndex followed the selection all the way back.
+      expect(paneTabs(container).map(tab => tab.tabIndex)).toEqual([0, -1, -1])
+    } finally {
+      act(() => { root.unmount() })
+      container.remove()
     }
   })
 })

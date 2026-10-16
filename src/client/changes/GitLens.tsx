@@ -354,6 +354,8 @@ export interface GitLensProps {
   onPreview: (ref: SidebarDiffRef) => void
   /** The ref currently previewed (row highlight); null when the pane is closed. */
   selectedRef: SidebarDiffRef | null
+  /** Report the selected read target without transferring mutation ownership. */
+  onTargetChange?: (target: { repoRoot?: string; worktree?: string }) => void
   /** Poll the inventory only while the tab is actually visible. */
   visible: boolean
   /** Bumped by the tab header's refresh action (0 = never asked). */
@@ -379,6 +381,10 @@ export function GitLens(props: GitLensProps) {
   const [worktrees, setWorktrees] = useState<GitWorktree[]>([])
   const [selectedWorktree, setSelectedWorktree] = useState<string | undefined>()
   const [repoRoot, setRepoRoot] = useState<string | undefined>()
+  const onTargetChange = props.onTargetChange
+  useEffect(() => {
+    onTargetChange?.({ repoRoot, worktree: selectedWorktree })
+  }, [repoRoot, selectedWorktree, onTargetChange])
   /** Every repository of the session workspace, kept once discovered: the
    *  status of a SELECTED child reports only itself, so the selector's option
    *  list cannot be re-derived from the current snapshot alone. */
@@ -867,6 +873,7 @@ export function GitLens(props: GitLensProps) {
     if (selectedRef === null || selectedRef.kind !== 'worktree') return false
     return selectedRef.path === path && selectedRef.staged === staged
       && (selectedRef.worktree ?? '') === (selectedWorktree ?? '')
+      && (selectedRef.repoRoot ?? '') === (repoRoot ?? '')
   }
 
   const entries = snapshot?.entries ?? NO_ENTRIES
@@ -1111,7 +1118,8 @@ export function GitLens(props: GitLensProps) {
                 role="button"
                 tabIndex={0}
                 className={css.logRow}
-                data-selected={selectedRef?.kind === 'commit' && selectedRef.hashFull === entry.hashFull ? 'true' : undefined}
+                data-selected={selectedRef?.kind === 'commit' && selectedRef.hashFull === entry.hashFull
+                  && selectedRef.worktree === selectedWorktree && selectedRef.repoRoot === repoRoot ? 'true' : undefined}
                 title={`${entry.author} · ${entry.date}\n${entry.hashFull}`}
                 onClick={() => { onPreview(commitRefOf(entry)) }}
                 onKeyDown={(event) => {
