@@ -79,15 +79,16 @@ export function ChangesTab({ ctx, store, scope, tab, visible, onOpenFile, onOpen
   // ── Session-event accumulation: one catch-up pull when the tab becomes
   //    visible, then a 2.5s delta poll while the SESSION lens is on screen.
   //    The cursor is the last delivered seq, so each poll ships only what the
-  //    accumulator lacks. ───────────────────────────────────────────────────
+  //    accumulator lacks; once primed, the poll WAITS host-side for the next
+  //    tool event (25s ceiling) instead of replaying an unchanged window. ────
   const eventsRef = useRef<readonly SidebarSessionEvent[]>([])
   // The fold of eventsRef as of the last poll. extractFileOps parses every
-  // accumulated tool/call (up to EVENTS_CAP events); running it once per
-  // poll and REUSING the result across renders (the render used to re-fold
-  // the whole window, twice per tick, and the fresh array defeated the
-  // downstream memo on every poll) keeps the 2.5s tick at one fold.
+  // accumulated tool call (up to EVENTS_CAP events); running it once per
+  // poll and REUSING the result across renders keeps the 2.5s tick at one
+  // fold, and an unchanged answer never hands downstream memos a new array.
   const opsRef = useRef<readonly FileOp[]>([])
-  const seqRef = useRef(0)
+  const seqRef = useRef(-1)
+  const primedRef = useRef(false)
   const pollGen = useRef(0)
   /** One delta request in flight at a time (the poller is fixed-interval, so a
    *  slow host would otherwise run two pulls over the same cursor and append
@@ -101,14 +102,14 @@ export function ChangesTab({ ctx, store, scope, tab, visible, onOpenFile, onOpen
     if (pullingRef.current) return
     pullingRef.current = true
     try {
-      const { events, lastSeq } = await api.changesOps(scope, seqRef.current, signal)
+      const { events, lastSeq } = await api.changesOps(scope, primedRef.current ? seqRef.current : undefined, signal, primedRef.current)
       // An aborted poll belongs to a torn-down run: its answer must never
       // publish state (the transport may deliver it anyway).
       if (generation !== pollGen.current || signal?.aborted === true) return
-      // Nothing new: KEEP the previous fold's identity. Re-folding an
-      // unchanged window produced a fresh array every 2.5s, which defeated
-      // every downstream memo — the session lens re-encoded each op body into
-      // a Blob to size it, on every idle tick.
+      primedRef.current = true
+      // Nothing new: KEEP the previous fold's identity. Re-folding an unchanged
+      // window produced a fresh array every tick, which defeated every
+      // downstream memo (the session lens re-encodes each op body to size it).
       if (events.length === 0 && lastSeq <= seqRef.current && opsRef.current.length > 0) {
         setOpsError(false)
         return
@@ -138,7 +139,8 @@ export function ChangesTab({ ctx, store, scope, tab, visible, onOpenFile, onOpen
     pollGen.current += 1
     eventsRef.current = []
     opsRef.current = []
-    seqRef.current = 0
+    seqRef.current = -1
+    primedRef.current = false
     setOpsError(false)
   }, [scope.sessionId])
   // One catch-up whenever the tab becomes visible (the badge count follows the
