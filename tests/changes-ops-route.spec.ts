@@ -47,7 +47,14 @@ describe('changes.ops waiting form', () => {
     const session = runtime.sessions.create()
     const changesOps = createChangesOpsApi(runtime as Context)
     try {
-      const at = () => ({ turn: 0, step: 0, rootCallId: ToolCallId('root'), parentCallId: ToolCallId('root'), subCallId: 'root:ptc:1', name: 'write' })
+      const at = () => ({
+        turn: 0,
+        step: 0,
+        rootCallId: ToolCallId('root'),
+        parentCallId: ToolCallId('root'),
+        subCallId: ToolCallId('root:ptc:1'),
+        name: 'write',
+      })
       session.append('tool/ptc-dispatch-start', { ...at(), arguments: { file_path: 'notes.txt', content: 'x' } })
       session.append('tool/ptc-dispatch', {
         ...at(),
