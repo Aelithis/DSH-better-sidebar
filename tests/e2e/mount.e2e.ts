@@ -30,8 +30,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
-import { PAGE_URL, createHostApi, gotoPage, hostRpc, sendFirstMessage, sidebarApi } from './host'
+import { test, expect, type APIRequestContext } from '@playwright/test'
+import { PAGE_URL, createHostApi, dismissOnboarding, gotoPage, hostRpc, sendFirstMessage, sidebarApi } from './host'
 
 /** Workspace the sidebar renders against (created by the lane's seeding). */
 const WORKSPACE_PATH = process.env.DSH_E2E_WORKSPACE ?? join(tmpdir(), 'dsh-e2e-workspace')
@@ -155,44 +155,6 @@ test.beforeAll(async () => {
   await seedSession()
 })
 
-/**
- * Dismiss the keyless boot's onboarding takeovers, which mask the whole shell:
- * a versioned welcome notice ("Continue", persists its acknowledgement to
- * settings) and, once that is acknowledged, a provider-config dialog
- * ("Configure later", session-only — always present while no credential is
- * configured). Both mount only after the settings join resolves. Wait
- * (bounded) for one to appear; a DSH build without onboarding proceeds
- * straight on.
- *
- * Dismissal loops until none remain, in any stacking order — a masked click is
- * retried next round instead of failing.
- * @param page - the lane's page.
- */
-async function dismissOnboarding(page: Page): Promise<void> {
-  try {
-    await expect
-      .poll(() => page.getByRole('button', { name: /^(Continue|Configure later)$/ }).count(), { timeout: 60_000 })
-      .toBeGreaterThan(0)
-  } catch {
-    console.warn('[e2e] no onboarding takeover appeared; proceeding without dismissal')
-  }
-  for (let round = 0; round < 8; round++) {
-    let dismissed = false
-    for (const name of ['Continue', 'Configure later']) {
-      const button = page.getByRole('button', { name, exact: true }).first()
-      if ((await button.count()) === 0) continue
-      try {
-        await button.click({ timeout: 4_000 })
-        dismissed = true
-        await page.waitForTimeout(1_000)
-      } catch {
-        // Masked by the takeover stacked above it; the next round tries the
-        // other button first.
-      }
-    }
-    if (!dismissed) break
-  }
-}
 
 test.afterAll(async () => {
   await api?.dispose()

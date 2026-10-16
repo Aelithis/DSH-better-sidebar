@@ -7,7 +7,7 @@
   <a href="https://github.com/omdsh-dev/DSH-better-sidebar/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/omdsh-dev/DSH-better-sidebar/actions/workflows/ci.yml/badge.svg" /></a>
   <a href="https://github.com/omdsh-dev/DSH-better-sidebar/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/omdsh-dev/DSH-better-sidebar" /></a>
   <a href="https://opensource.org/licenses/MIT"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg" /></a>
-  <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="支持的 DSH 版本：0.2.0-rc.2+" src="https://img.shields.io/badge/DSH-0.2.0--rc.2%2B-4d6bfe" /></a>
+  <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="支持的 DSH 版本：0.2.1-alpha.5+" src="https://img.shields.io/badge/DSH-0.2.1--alpha.5%2B-4d6bfe" /></a>
 </div>
 
 <div align="center">
@@ -35,17 +35,19 @@
 ## 🚀 安装
 
 ```sh
-dsh plugin --profile web add dsh-better-sidebar@latest
+dsh plugin --profile web add dsh-better-sidebar@0.28.0-alpha.0
 ```
 
-装完**硬刷新浏览器**（Cmd/Ctrl+Shift+R）即可。要求 DSH **0.2.0-rc.2+**。
+装完**硬刷新浏览器**（Cmd/Ctrl+Shift+R）即可。要求 DSH **0.2.1-alpha.5+**。
 
 <details>
 <summary><b>按 DSH 版本选插件版本</b></summary>
 
 | 你的 DSH 版本 | 安装命令 |
 | --- | --- |
-| **0.2.0-rc.2+**（含之后的正式版） | `dsh plugin --profile web add dsh-better-sidebar@latest` |
+| **0.2.1-alpha.5+**（本 alpha 支持线） | `dsh plugin --profile web add dsh-better-sidebar@0.28.0-alpha.0` |
+| **0.2.0-rc.2** | `dsh plugin --profile web add dsh-better-sidebar@0.26.1` |
+| **0.2.0-rc.1** | `dsh plugin --profile web add dsh-better-sidebar@0.24.1` |
 | **0.1.7-rc.1 ~ 0.1.7 正式版** | `dsh plugin --profile web add dsh-better-sidebar@0.22.1` |
 | 0.1.7-alpha.x | 没有可装版本——先升级 DSH 到 rc.1 |
 | 0.1.6 及更早（含 0.1.5 线） | `dsh plugin --profile web add dsh-better-sidebar@0.19.1` |
@@ -61,12 +63,12 @@ dsh plugin --profile web add dsh-better-sidebar@latest
 
 ```text
 帮我安装 dsh-better-sidebar 插件（DSH 侧边栏工作台），步骤：
-1. 执行 dsh plugin --profile web add dsh-better-sidebar@latest（latest 即当前正式版）
+1. 执行 dsh plugin --profile web add dsh-better-sidebar@0.28.0-alpha.0（本次 alpha，非 latest）
 2. 完成后提醒我硬刷新浏览器（Cmd/Ctrl+Shift+R）
 遇到报错先查 https://github.com/omdsh-dev/DSH-better-sidebar README 的常见问题表。
 ```
 
-**一键脚本**——克隆本仓库后执行 `bash scripts/install.sh`（macOS / Linux / Windows Git Bash；Windows 原生用 `install.ps1`），自动完成安装 + bundle 注册。
+**一键脚本**——克隆本仓库后执行 `bash scripts/install.sh 0.28.0-alpha.0`（macOS / Linux / Windows Git Bash；Windows 原生用 `./scripts/install.ps1 -Version 0.28.0-alpha.0`），自动完成安装 + bundle 注册。
 
 **更新**：重跑一次安装命令即可，然后硬刷新浏览器。
 
@@ -83,11 +85,17 @@ dsh plugin --profile web add dsh-better-sidebar@latest
 | 页面出现**两个侧边栏** | 双挂载。删掉 `~/.dsh/profiles/web/cordis.patch.yml` 里旧的手动挂载行（`- insert: ... better-sidebar ...`）；聚合包以不同 id 挂载本包时会自动退让，无需处理。 |
 | 升级后设置页的值去哪了 | DSH 0.1.7 起偏好写在 profile 里本插件的挂载行上（默认 entry id `better-sidebar`），插件首次启动会把旧 `settings.yaml` 里的配置一次性回迁，不会覆盖新设的值。 |
 | 终端无法使用 | 终端由 **DSH 自身**提供（本插件不自带 PTY），请查 DSH 侧文档；底部终端显示「宿主未提供终端能力」= 这个部署没挂终端控制器。 |
-| 提示 `dsh: command not found` | 先安装 DSH；或用 `npx -y --package @deepseek-ai/dsh dsh plugin --profile web add dsh-better-sidebar@latest`。 |
+| 提示 `dsh: command not found` | 先安装 DSH；或用 `npx -y --package @deepseek-ai/dsh@0.2.1-alpha.5 dsh plugin --profile web add dsh-better-sidebar@0.28.0-alpha.0`。 |
 
 </details>
 
 ## 🆕 最近更新
+
+**v0.28.0-alpha.0（本地适配验证完成，未发布）**
+
+- 适配 DSH **0.2.1-alpha.5+**：HTTP/WS 改用宿主 Connection admission，移除已废弃的 invariant companion 与依赖
+- 会话执行目录变化时，文件 / Git / 终端与新建侧边对话跟随当前目录
+- **0.2.0-rc.2 用户留在 npm 已发布的 v0.26.1**；v0.27.0 尚未发布，alpha 请用上方精确版本命令，不要用 `latest`
 
 **v0.27.0** - 完整发布历史见 [Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases) · [CHANGELOG](./CHANGELOG.md)
 

@@ -37,8 +37,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
-import { PAGE_URL, createHostApi, hostRpc, sendFirstMessage } from './host'
+import { test, expect, type APIRequestContext } from '@playwright/test'
+import { PAGE_URL, createHostApi, dismissOnboarding, hostRpc, sendFirstMessage } from './host'
 
 /** This lane's own workspace (lanes run serially against one server — never
  *  share seed paths with mount/drag). */
@@ -104,32 +104,6 @@ interface ResourceStat {
   duration: number
 }
 
-/** Dismiss whatever onboarding takeover is present (same dance as the other
- *  lanes) so the pointer can reach the sidebar's controls. */
-async function dismissOnboarding(page: Page): Promise<void> {
-  try {
-    await expect
-      .poll(() => page.getByRole('button', { name: /^(Continue|Configure later)$/ }).count(), { timeout: 60_000 })
-      .toBeGreaterThan(0)
-  } catch {
-    console.warn('[e2e-perf] no onboarding takeover appeared; proceeding')
-  }
-  for (let round = 0; round < 8; round++) {
-    let dismissed = false
-    for (const name of ['Continue', 'Configure later']) {
-      const button = page.getByRole('button', { name, exact: true }).first()
-      if ((await button.count()) === 0) continue
-      try {
-        await button.click({ timeout: 4_000 })
-        dismissed = true
-        await page.waitForTimeout(1_000)
-      } catch {
-        // Masked by a takeover stacked above; retry in the next round.
-      }
-    }
-    if (!dismissed) break
-  }
-}
 
 test('measure: mount latency, longtasks and bundle cost through a full tab sweep', async ({ page }) => {
   await page.addInitScript(PERF_PROBE)

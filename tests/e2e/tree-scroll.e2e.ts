@@ -19,7 +19,7 @@ import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
-import { PAGE_URL, createHostApi, hostRpc, sendFirstMessage } from './host'
+import { PAGE_URL, createHostApi, dismissOnboarding, hostRpc, sendFirstMessage } from './host'
 
 /** Git must not pick up the developer's identity/config inside the lane. */
 const GIT_ENV = {
@@ -110,31 +110,6 @@ test.afterAll(async () => {
   await api?.dispose()
 })
 
-/** Dismiss whatever onboarding takeover is present (the other lanes' dance). */
-async function dismissOnboarding(page: Page): Promise<void> {
-  try {
-    await expect
-      .poll(() => page.getByRole('button', { name: /^(Continue|Configure later)$/ }).count(), { timeout: 60_000 })
-      .toBeGreaterThan(0)
-  } catch {
-    console.warn('[e2e-scroll] no onboarding takeover appeared; proceeding')
-  }
-  for (let round = 0; round < 8; round++) {
-    let dismissed = false
-    for (const name of ['Continue', 'Configure later']) {
-      const button = page.getByRole('button', { name, exact: true }).first()
-      if ((await button.count()) === 0) continue
-      try {
-        await button.click({ timeout: 4_000 })
-        dismissed = true
-        await page.waitForTimeout(1_000)
-      } catch {
-        // Masked by the takeover stacked above; retry in the next round.
-      }
-    }
-    if (!dismissed) break
-  }
-}
 
 /** Open the native Sidebar, then the plugin's Files page inside it. */
 async function openFiles(page: Page): Promise<void> {

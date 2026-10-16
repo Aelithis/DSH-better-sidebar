@@ -44,8 +44,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { test, expect, type APIRequestContext, type Page } from '@playwright/test'
-import { PAGE_URL, createHostApi, hostRpc, sendFirstMessage } from './host'
+import { test, expect, type APIRequestContext } from '@playwright/test'
+import { PAGE_URL, createHostApi, dismissOnboarding, hostRpc, sendFirstMessage } from './host'
 import { removeTree } from '../temp-tree.ts'
 
 /** This lane's own workspace: a 40-child directory plus a small sibling. */
@@ -84,22 +84,6 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => { await api?.dispose() })
 
-async function dismissOnboarding(page: Page): Promise<void> {
-  try {
-    await expect
-      .poll(() => page.getByRole('button', { name: /^(Continue|Configure later)$/ }).count(), { timeout: 60_000 })
-      .toBeGreaterThan(0)
-  } catch { /* a build without onboarding proceeds straight to the tree */ }
-  for (let round = 0; round < 8; round++) {
-    let dismissed = false
-    for (const name of ['Continue', 'Configure later']) {
-      const button = page.getByRole('button', { name, exact: true }).first()
-      if ((await button.count()) === 0) continue
-      try { await button.click({ timeout: 4_000 }); dismissed = true; await page.waitForTimeout(1_000) } catch { /* masked */ }
-    }
-    if (!dismissed) break
-  }
-}
 
 /**
  * Install the census: follow the pane's tree body (through a replacement, so a

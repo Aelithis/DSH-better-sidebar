@@ -450,6 +450,7 @@ export const tr: Record<string, string> = {
   sideChatBlockFailed: 'Başarısız',
   sideChatBlockDone: 'Tamamlandı',
   sideChatBlockNoOutput: '(çıktı yok)',
+  sideChatBlockCommandLine: 'Komut satırı {line}',
   codeBlockTitle: 'Kod bloğu',
   codeBlockWrap: 'Satırları kaydır',
   codeBlockUnwrap: 'Satırları kaydırma',

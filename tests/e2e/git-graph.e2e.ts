@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test, expect } from '@playwright/test'
-import { createHostApi, gotoPage, hostRpc, sendFirstMessage, sidebarApi } from './host'
+import { createHostApi, dismissOnboarding, gotoPage, hostRpc, sendFirstMessage, sidebarApi } from './host'
 
 // A dedicated fixture: never initialize or write the caller's working repository.
 test('read-only Git Graph renders merge history and filters without checkout', async ({ page }, testInfo) => {
@@ -35,10 +35,7 @@ test('read-only Git Graph renders merge history and filters without checkout', a
     expect(response.ok()).toBe(true)
     await gotoPage(page)
     await expect(page.locator('[data-dsh-better-sidebar]')).toBeAttached({ timeout: 90_000 })
-    for (const label of [/^Continue$/, /^Configure later$/]) {
-      const button = page.getByRole('button', { name: label }).first()
-      try { await button.click({ timeout: 8_000 }) } catch { /* onboarding may already be dismissed */ }
-    }
+    await dismissOnboarding(page)
     await sendFirstMessage(page)
     await page.locator('[data-sidebar-right-expand]').first().click()
     await page.locator('[data-sidebar-right-guide-entry="git"]').click()

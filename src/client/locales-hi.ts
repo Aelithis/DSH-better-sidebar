@@ -450,6 +450,7 @@ export const hi: Record<string, string> = {
   sideChatBlockFailed: 'विफल',
   sideChatBlockDone: 'पूर्ण',
   sideChatBlockNoOutput: '(कोई आउटपुट नहीं)',
+  sideChatBlockCommandLine: 'कमांड की पंक्ति {line}',
   codeBlockTitle: 'कोड ब्लॉक',
   codeBlockWrap: 'पंक्तियाँ लपेटें',
   codeBlockUnwrap: 'पंक्तियाँ न लपेटें',
