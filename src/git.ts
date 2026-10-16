@@ -244,6 +244,34 @@ export function parseLogLines(output: string): GitLogEntry[] {
 }
 
 /**
+ * git's CVE-2022-24765 guard (git ≥ 2.35.2) refuses to read a repository whose
+ * owner differs from the running user — the shape behind issue #690 is a
+ * root-run DSH over a site directory owned by `www`, where changing the owner
+ * is not an option. The refusal is per command and self-describing: git names
+ * the directory it refused, which is exactly what `safe.directory` takes.
+ * Answering it with `-c safe.directory=<dir>` therefore stays narrow — no
+ * config file is written, `*` is never used, and the next command faces the
+ * guard again.
+ */
+const DUBIOUS_OWNERSHIP = /dubious ownership/i
+/** The directory named by the refusal (`fatal: detected dubious ownership in
+ *  repository at '/srv/site'`). */
+const REFUSED_REPOSITORY = /detected dubious ownership in repository at '([^']*)'/
+
+/** The repository path a dubious-ownership refusal names, or undefined when
+ *  the message carries no path (an older or reworded git) — the caller then
+ *  falls back to the cwd it already ran in. */
+export function refusedRepository(message: string): string | undefined {
+  const path = REFUSED_REPOSITORY.exec(message)?.[1]
+  return path === undefined || path === '' ? undefined : path
+}
+
+/** Child environment for every git call. `GIT_OPTIONAL_LOCKS=0` keeps the
+ *  read-only panel from taking write locks; `LC_ALL=C` keeps stdout AND stderr
+ *  stable, which is what makes the refused path above parseable. */
+const GIT_ENV = { GIT_OPTIONAL_LOCKS: '0', LC_ALL: 'C' } as const
+
+/**
  * Hard ceiling on one git command's stdout. A runaway command — a whole-repo
  * `diff` with no pathspec (the shape a repository with an unignored nested
  * `node_modules` produced: 59 631 entries / 9.24 MB), a `show` of a generated
@@ -276,21 +304,34 @@ function countNulFields(chunk: Buffer): number {
   return count
 }
 
-/** Run one git command; resolves with stdout, rejects with GitCommandError. */
-export function runGit(cwd: string, args: string[], timeoutMs = 30_000, options: RunGitOptions = {}): Promise<string> {
-  // `core.quotePath=false`: emit paths verbatim instead of C-quoting them
-  // (git's default turns a CJK/space path into an octal-escaped, quoted
-  // string, and every diff surface renders that string as the file name).
-  // The `-z`-framed porcelain callers are unaffected: git never quotes
-  // NUL-framed output.
-  const full = ['-C', cwd, '--no-pager', '-c', 'color.ui=false', '-c', 'core.quotePath=false', ...args]
+/** One spawn. `safe` directories ride in as per-invocation `safe.directory`
+ *  overrides (empty on the first attempt, so a healthy repository sees the
+ *  exact same argv it always did). */
+function spawnGit(
+  cwd: string,
+  args: string[],
+  timeoutMs: number,
+  safe: readonly string[],
+  options: RunGitOptions = {},
+): Promise<string> {
+  const full = [
+    '-C', cwd, '--no-pager', '-c', 'color.ui=false',
+    // `core.quotePath=false`: emit paths verbatim instead of C-quoting them
+    // (git's default turns a CJK/space path into an octal-escaped, quoted
+    // string, and every diff surface renders that string as the file name).
+    // The `-z`-framed porcelain callers are unaffected: git never quotes
+    // NUL-framed output.
+    '-c', 'core.quotePath=false',
+    ...safe.flatMap(dir => ['-c', `safe.directory=${dir}`]),
+    ...args,
+  ]
   const maxBytes = options.maxBytes ?? GIT_OUTPUT_MAX_BYTES
   const maxNulFields = options.maxNulFields
   return new Promise<string>((resolvePromise, reject) => {
     const child = spawn('git', full, {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+      env: { ...process.env, ...GIT_ENV },
     })
     let stdout = ''
     let outBytes = 0
@@ -344,6 +385,24 @@ export function runGit(cwd: string, args: string[], timeoutMs = 30_000, options:
         reject(new GitCommandError(stderr.trim() || `git exited with ${String(code)}`, 'git-error', args.join(' ')))
       }
     })
+  })
+}
+
+/**
+ * Run one git command; resolves with stdout, rejects with GitCommandError.
+ *
+ * A dubious-ownership refusal is retried ONCE with the refused repository
+ * (plus the cwd, which is the answer when the message named no path) trusted
+ * for that invocation only. Anything else — including a second refusal — is
+ * reported as-is, so a repository git cannot be talked into reading still
+ * surfaces its real error instead of a misleading "not a git repository".
+ */
+export function runGit(cwd: string, args: string[], timeoutMs = 30_000, options: RunGitOptions = {}): Promise<string> {
+  return spawnGit(cwd, args, timeoutMs, [], options).catch((error: unknown) => {
+    if (!(error instanceof GitCommandError) || !DUBIOUS_OWNERSHIP.test(error.message)) throw error
+    const refused = refusedRepository(error.message)
+    const trust = refused === undefined || refused === cwd ? [cwd] : [refused, cwd]
+    return spawnGit(cwd, args, timeoutMs, trust, options)
   })
 }
 
