@@ -1,5 +1,3 @@
-.lens { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; }
-.lens[hidden] { display: none; }
 .root { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; font: var(--dsw-font-xxs-12); color: var(--dsw-alias-label-primary); }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 12px; }
 .select { flex: 1; min-width: 0; max-width: 100%; height: 28px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 3px; background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); font: inherit; }
