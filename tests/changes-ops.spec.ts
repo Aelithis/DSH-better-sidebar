@@ -71,6 +71,32 @@ describe('parseReadContent', () => {
 })
 
 describe('extractFileOps', () => {
+  it('resolves paths before finding earlier content', () => {
+    const ops = extractFileOps([
+      call(1, 'write', 'first', { file_path: 'src/package.json', content: 'first' }),
+      call(2, 'edit', 'second', { path: '/repo/src/package.json', old_string: 'first', new_string: 'second' }),
+      call(3, 'read', 'third', { filePath: 'tests/package.json' }),
+    ], '/repo')
+    // The same file reached by a relative and an absolute spelling resolves to
+    // ONE path — the row text the lens prints, and the key the earlier-content
+    // lookup uses.
+    expect(ops.map(op => op.path).sort()).toEqual([
+      '/repo/src/package.json', '/repo/src/package.json', '/repo/tests/package.json',
+    ])
+    expect(knownContentBefore(ops, '/repo/src/package.json', ops.find(op => op.callId === 'second')!)).toBe('first')
+  })
+
+  it('resolves Windows relative paths and preserves absolute drive and UNC paths', () => {
+    const ops = extractFileOps([
+      call(1, 'read', 'relative', { file_path: 'src\\package.json' }),
+      call(2, 'read', 'drive', { file_path: 'D:\\other\\package.json' }),
+      call(3, 'read', 'network', { file_path: '\\\\server\\share\\package.json' }),
+    ], 'C:\\repo')
+    expect(ops.find(op => op.callId === 'relative')?.path).toBe('C:\\repo\\src\\package.json')
+    expect(ops.find(op => op.callId === 'drive')?.path).toBe('D:\\other\\package.json')
+    expect(ops.find(op => op.callId === 'network')?.path).toBe('\\\\server\\share\\package.json')
+  })
+
   it('seeds running ops from tool/call and settles them from tool/result', () => {
     const ops = extractFileOps([
       call(1, 'write', 'w1', { file_path: 'a.ts', content: 'body' }),

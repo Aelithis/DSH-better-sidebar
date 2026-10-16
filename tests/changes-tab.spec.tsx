@@ -329,8 +329,10 @@ describe('ChangesTab', () => {
       await flushEffects()
       const rows = [...container.querySelectorAll<HTMLButtonElement>('button[data-op-kind]')]
       expect(rows.map(row => row.dataset.opKind)).toEqual(['read', 'edit', 'write', 'read'])
+      // A relative tool path reaches the row resolved against the session cwd
+      // (#875); an absolute one keeps its own spelling.
       expect(rows.map(row => row.querySelector('[title]')?.getAttribute('title')))
-        .toEqual([path, path, 'src/other.txt', path])
+        .toEqual([path, path, 'C:/repo/main/src/other.txt', path])
       expect(rows[0]!.textContent).toContain(t('changesRunning'))
       for (const row of rows) {
         // Rows are direct siblings, not nested inside per-file wrappers.
