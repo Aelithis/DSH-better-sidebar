@@ -161,6 +161,35 @@ describe('skin contract: the plugin owns no color of its own', () => {
     }
   })
 
+  it('selected change rows keep their layout and separate their accent from indent guides', () => {
+    const sheet = document.createElement('style')
+    sheet.textContent = readFileSync(resolve(ROOT, 'src/client/changes/changes.module.css'), 'utf8')
+    document.head.append(sheet)
+    try {
+      const rules = Array.from(sheet.sheet!.cssRules).filter((rule): rule is CSSStyleRule => 'selectorText' in rule)
+      for (const name of ['row', 'opRow']) {
+        const selector = `.${name}[data-selected='true']`
+        const selected = rules.filter(rule => rule.selectorText.split(',').some(part => part.trim() === selector))
+        expect(selected).toHaveLength(1)
+        const style = selected[0]!.style
+        expect(style.getPropertyValue('position')).toBe('')
+        expect(style.getPropertyValue('width')).toBe('')
+        expect(style.getPropertyValue('border-left')).toBe('')
+        expect(style.getPropertyValue('background')).toBe('var(--dsw-alias-interactive-bg-active)')
+        const marker = rules.find(rule => rule.selectorText.split(',').some(part => part.trim() === `${selector}::before`))!
+        expect(marker.style.getPropertyValue('width')).toBe('2px')
+        expect(marker.style.getPropertyValue('top')).toBe('4px')
+        expect(marker.style.getPropertyValue('bottom')).toBe('4px')
+        expect(marker.style.getPropertyValue('background')).toBe('var(--dsw-alias-state-business-primary)')
+      }
+      const guide = rules.find(rule => rule.selectorText === '.guide')!
+      expect(guide.style.getPropertyValue('position')).toBe('absolute')
+      expect(guide.style.getPropertyValue('border-left')).toBe('1px solid var(--dsw-alias-border-l1)')
+    } finally {
+      sheet.remove()
+    }
+  })
+
   it('the running bar sweeps the FULL width (a band either side, not a partial blob)', () => {
     // Reader report: the first cut moved a 45%-wide band with
     // `background-position`, so the bar was only ever partially lit. The

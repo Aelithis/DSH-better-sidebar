@@ -63,8 +63,10 @@
 - CI：每一批推送都等 `ci` / `ci-windows` / `plugin-mount` 三绿；`plugin-mount` 跑真实挂载
   （含本批新增的 `tests/e2e/git-graph.e2e.ts`：真机建带合并的仓库、渲染历史、点开提交详情、
   按分支筛选，并断言读图前后 HEAD / refs / status 逐字不变）。
-- **本地 `pnpm test:mount` 跑不了**：脚本要写真实 `~/.dsh/profiles/web` 的锁文件，被文件沙箱拒绝；
-  该 lane 由 CI 的 `plugin-mount` job 覆盖。
+- **本地挂载入口**：桌面 `dsh` shim 会覆盖 `DSH_HOME`，导致 scratch 测试误用真实 profile；
+  测试改用不覆盖 `DSH_HOME` 的 CLI wrapper 后可以在独立 scratch profile 运行。
+  本机完整 lane 的终端测试仍受 PTY 沙箱限制（`posix_openpt: Operation not permitted`），
+  不削弱该断言，完整通过结果以 CI 的 `plugin-mount` 为准。
 
 ## 过程中发现并修掉的三处 CI 红
 
@@ -76,3 +78,16 @@
    `wait` 参数契约。
 3. **`tests/e2e-aggregate-auth.spec.ts` 的过宽正则**（Windows 上偶发红）：`/-[^-\s]*L/` 在整行里
    匹配到了 mkdtemp 后缀（`dsh-aggregate-auth-6mLM51`）。改为只查 **flag token**。
+
+## 选中行错位回归
+
+- **触发条件**：在 Git 更改组中点击文件打开差异。只检查未选中的初始截图不能发现此问题。
+- **根因**：整合 #969 时删除 `.logRow` 规则，连同它与 `.row` / `.opRow` 共用的声明块一起删掉，
+  留下逗号结尾的选择器。CSS 将这些选择器与后面的 `.guide` 合并，选中文件行因此收到
+  `position: absolute; top: 0; bottom: 0; width: 0; border-left: ...`，脱离分组并绘制异常长边框。
+  此问题来自维护者整合提交 `88ded478`，不是贡献者原 PR 的行为。
+- **证据**：真实挂载复现中，未暂存行点击前高 28px、位于 y=351..379；点击后高 862px、
+  位于 y=38..900，超出分组 y=239..353。恢复声明后，同一点击前后行高和坐标保持一致。
+- **修复**：只恢复两类现役行的选中背景与 `::before` 标记声明，不改变图谱尺寸、滚动结构或数据逻辑。
+- **回归门禁**：`tests/theme.spec.ts` 解析真实 CSS 规则，覆盖 `.row` 与 `.opRow`，最小复现先红后绿；
+  真实挂载测试覆盖冲突、暂存、未暂存、未跟踪文件及选中后的分组边界。临时几何探针不随代码提交。
