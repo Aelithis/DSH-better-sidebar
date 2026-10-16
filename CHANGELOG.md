@@ -2,6 +2,10 @@
 
 > 本文档收录 dsh-better-sidebar 的完整发布历史（最新版摘要见 [README](README_ZH.md)；同步发布于 [GitHub Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases)）。
 
+### Unreleased
+
+- **dsh-context 可选联动**：Context 侧栏入口可用时，在 Agent 详情、后台任务输出窗和会话标题栏提供诊断入口；后台任务仅查看明确的真实属主，不改变任务输出观察或停止命令的会话语义。跨会话先定位目标再打开 Context，复用其他分栏已有的标签；用户继续导航时取消，等待最多 10 秒。未安装、禁用或仅显示会话标签页时隐藏入口，不修改上下文、不恢复 Agent 执行，也不修改 dsh-context 偏好。全部入口共用 Cordis 作用域内的可选适配器，空闲时不新增轮询。
+
 ### v0.27.0
 
 - 🌿 **Git 页面重做：VS Code Source Control 结构 + 只读提交图（同一页签）**（[#941](https://github.com/omdsh-dev/DSH-better-sidebar/issues/941)，贡献者 PR [#944](https://github.com/omdsh-dev/DSH-better-sidebar/pull/944) @hairyf + [#969](https://github.com/omdsh-dev/DSH-better-sidebar/pull/969) @vlln）：「文件变动 > Git」的内容区改为 Source Control 结构——可折叠的 Changes（多行 Message + 仅填草稿的 Generate、Merge / Staged / Changes 三组各自独立折叠与计数、整行 hover）与 Graph 区、常驻底栏（可点击分支 + `*`/`+`/`!` 标记、upstream 的 `↓`/`↑` 与安全 Pull-then-Push）；Push/Pull 与 worktree·子仓库选择移入 More Actions；提交只消费已暂存项，冲突 / 空消息 / 无暂存时禁止，草稿按会话·仓库·worktree 隔离。Graph 区由 **#969 的有界只读引擎**渲染（专用 `git.graph` 路由：子先于父的拓扑序、分支筛选、游标失效显式返回 `graph-stale`、每页 200 / 偏移 10000 / 分支 1000 / 进程 10 s / 输出 8 MiB 上限，超限报错不静默截断；泳道连线与引用徽章用主题状态色，hover 卡片与提交详情卡；**纯读取**——不 checkout / fetch / 改任何 ref）。底部预览面板改为固定三签 `提交详情 / 内容 / 差异`（有内容才有差异，读操作落在内容签）。**设计取舍与实施偏差见 [docs/plans/2026-10-16-git-page-vscode-scm-merge.md](docs/plans/2026-10-16-git-page-vscode-scm-merge.md)**（贡献者 PR [#939](https://github.com/omdsh-dev/DSH-better-sidebar/pull/939) @hairyf 的官方下划线 Tabs 镜片切换保留；第三个「提交图」镜头刻意未上线）。
