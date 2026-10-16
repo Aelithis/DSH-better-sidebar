@@ -14,7 +14,7 @@
  * Determinism: the workspace is seeded wide enough that the tree overflows;
  * every wait is on a DOM/poll marker; the suite is serial.
  */
-import { appendFileSync, existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
@@ -28,8 +28,8 @@ const GIT_ENV = {
   GIT_CONFIG_SYSTEM: '/dev/null',
 }
 
-/** This lane's own workspace (lanes run serially against one server). */
-const WORKSPACE_PATH = process.env.DSH_E2E_SCROLL_WORKSPACE ?? join(tmpdir(), 'dsh-e2e-scroll-workspace')
+/** Isolate each run from stale fixtures and other concurrent mount lanes. */
+const WORKSPACE_PATH = process.env.DSH_E2E_SCROLL_WORKSPACE ?? mkdtempSync(join(tmpdir(), 'dsh-e2e-scroll-'))
 
 /** Rows seeded into the root, plus real directories to expand. */
 const ROOT_FILES = 80
@@ -74,9 +74,8 @@ async function seedSessions(): Promise<void> {
   }
   // A git repo with ONE staged change: the changes tab needs somewhere to put
   // an unsaved commit message, and staging is what enables its commit button.
-  // Idempotent: the lane's workspace persists between local runs, so an
-  // existing repo is reset rather than re-initialised (and `rm -rf .git` would
-  // be the only way to make a fresh `git init` + first commit work again).
+  // An explicitly supplied debug workspace may persist across runs; keep its
+  // repository and history instead of deleting or resetting its .git directory.
   const git = (...args: string[]): void => { execFileSync('git', args, { cwd: WORKSPACE_PATH, env: GIT_ENV }) }
   if (!existsSync(join(WORKSPACE_PATH, '.git'))) git('init', '-q')
   git('config', 'user.email', 'lane@example.test')
