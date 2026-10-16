@@ -219,7 +219,7 @@ export const de: Record<string, string> = {
   worktree: 'Worktree',
   checkoutError: 'Branchenwechsel fehlgeschlagen',
   history: 'Verlauf',
-  changes: 'Dateiänderungen',
+  changes: 'Git',
   changesGitLens: 'Git',
   changesSessionLens: 'Sitzung',
   changesFilterAll: 'Alle',

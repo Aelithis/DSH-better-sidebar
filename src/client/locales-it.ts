@@ -224,7 +224,7 @@ export const it: Record<string, string> = {
   worktree: 'Albero di lavoro',
   checkoutError: 'Cambio di ramo non riuscito',
   history: 'Cronologia',
-  changes: 'Modifiche',
+  changes: 'Git',
   changesGitLens: 'Git',
   changesSessionLens: 'Sessione',
   changesFilterAll: 'Tutti',

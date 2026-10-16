@@ -229,7 +229,7 @@ export const ru: Record<string, string> = {
   worktree: 'Рабочее дерево',
   checkoutError: 'Сбой переключения ветки',
   history: 'История',
-  changes: 'Изменения файлов',
+  changes: 'Git',
   changesGitLens: 'Git',
   changesSessionLens: 'Сессия',
   changesFilterAll: 'Все',

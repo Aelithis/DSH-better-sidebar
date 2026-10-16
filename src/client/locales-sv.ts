@@ -216,7 +216,7 @@ export const sv: Record<string, string> = {
   worktree: 'Arbetsträd',
   checkoutError: 'Grenbyte misslyckades',
   history: 'Historik',
-  changes: 'Filändringar',
+  changes: 'Git',
   changesGitLens: 'Git',
   changesSessionLens: 'Session',
   changesFilterAll: 'Alla',
