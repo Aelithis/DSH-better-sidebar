@@ -916,10 +916,10 @@ test('a shell-stamped render URL mounts normally; plugin chrome carries the stab
   expect(regions.layerChild, 'panels stay no-drag so their controls keep receiving clicks').toBe('no-drag')
 })
 
-test('the custom-CSS escape hatch injects the user stylesheet live', async ({ request, page }) => {
+test('the custom-CSS escape hatch injects the user stylesheet live', async ({ page }) => {
   // The one setting the removed scheme row really owned: user-space CSS. It
   // has no scheme gate any more — a non-empty customCss is always applied.
-  const update = await request.post(sidebarApi('settings.update'), {
+  const update = await api.post(sidebarApi('settings.update'), {
     data: { patch: { customCss: 'html { --dsh-e2e-marker: 1; }' } },
   })
   expect(update.ok(), `settings.update: ${update.status()}`).toBe(true)
@@ -931,6 +931,6 @@ test('the custom-CSS escape hatch injects the user stylesheet live', async ({ re
     const marker = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--dsh-e2e-marker').trim())
     expect(marker).toBe('1')
   } finally {
-    await request.post(sidebarApi('settings.update'), { data: { patch: { customCss: '' } } })
+    await api.post(sidebarApi('settings.update'), { data: { patch: { customCss: '' } } })
   }
 })

@@ -73,8 +73,6 @@ export function ChangesTab({ ctx, store, scope, tab, visible, onOpenFile, onOpen
   const [paneHeight, setPaneHeight] = useState<number>(() => clampPaneHeight(
     typeof meta.previewH === 'number' ? meta.previewH : PANE_HEIGHT_DEFAULT,
   ))
-  /** The header refresh action for the Git lens (the lens owns its own queue). */
-  const [gitRefresh, setGitRefresh] = useState(0)
 
   // ── Session-event accumulation: one catch-up pull when the tab becomes
   //    visible, then a 2.5s delta poll while the SESSION lens is on screen.
@@ -174,14 +172,6 @@ export function ChangesTab({ ctx, store, scope, tab, visible, onOpenFile, onOpen
     patchMeta({ lens: next })
   }
 
-  /** The header's refresh action: the Git lens reloads through its own queue
-   *  (a click while a refresh is in flight is queued, not dropped), the
-   *  session lens re-pulls its event delta. */
-  const refreshCurrent = (): void => {
-    if (lens === 'git') setGitRefresh(value => value + 1)
-    else void pull()
-  }
-
   /** Preview one git change (worktree file or commit) from the Git lens. */
   const previewGit = (ref: SidebarDiffRef): void => {
     setSelection({ kind: 'git', ref })
@@ -237,12 +227,14 @@ export function ChangesTab({ ctx, store, scope, tab, visible, onOpenFile, onOpen
             </button>
           ))}
         </div>
-        <IconButton
+        {/* The Git lens refreshes from its own Changes header (#944); only the
+            session lens needs the tab-level action. */}
+        {lens === 'session' && <IconButton
           className={css.headAction}
           icon={<IconRefreshOutlineRegular />}
           label={t('refresh')}
-          onClick={refreshCurrent}
-        />
+          onClick={() => { void pull() }}
+        />}
       </div>
       <div className={css.lensBody} id={`${lensId}-panel`} role="tabpanel" aria-labelledby={`${lensId}-${lens}`}>
         {lens === 'git'
@@ -252,7 +244,6 @@ export function ChangesTab({ ctx, store, scope, tab, visible, onOpenFile, onOpen
               scope={scope}
               store={store}
               visible={visible}
-              refreshTick={gitRefresh}
               onOpenFile={onOpenFile ?? (() => { /* no-op */ })}
               onPreview={previewGit}
               selectedRef={previewTarget !== null && previewTarget.kind === 'git' ? previewTarget.ref : null}

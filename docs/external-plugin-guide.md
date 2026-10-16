@@ -454,7 +454,7 @@ ctx.effect(() => {
 | id | order | single | hidden | 用途 |
 |---|---|---|---|---|
 | `editor` | 10 | 否（按 path 去重） | 否 | 唯一「文件窗口」（编辑/预览 + 资源管理）。chrome 恒合并形态：路径输入框 + 编辑器控件 + 可开关内嵌文件树（全局搜索 `fs.search`；状态存 `tab.meta.treeOpen/treeWidth`）。`editorExplorer`：关（默认）= 按 path 新开，无路径窗口 = 纯资源管理器；开 = 树点击/Enter 经 `updateTab` 原地切换（id/meta 不变），无路径窗口 = 带 chrome 空窗口。树右键「在新 Tab 中打开」「在侧边打开」（pane 右侧 split）。新会话 seed 空文件窗口（`title:'Files'`）；旧 `explorer` tab 经 `sanitizeState` 迁移。树 listing 与文件名搜索应用 `explorerExclude` 排除模式（editor 卡片齿轮弹窗可编辑；host 侧过滤，匹配条目彻底移除且永不阻塞折叠）；单目录链折叠为 `a/b/c` 面包屑行（POSIX 隐藏与排除条目不计入唯一子项判定） |
-| `git` | 20 | 是 | 是（本轮文件操作数） | 「Git」统一 tab（id 保留 `git` 以兼容持久化布局）：**Git 视角**（原 Git 面板：staged/unstaged / 提交 / 历史 / worktree·子仓库选择）+ **本轮文件视角**（原 file-trace：模型读/写/编辑实时折叠，按操作时间倒序平铺、不按文件分组，每行「操作 → 文件路径 → 大小/时间」，支持类型筛选）；会话事件经插件自有宿主路由 `changes.ops` 供给（live 日志优先、冷会话回放持久化记录，`afterSeq` 增量），badge 读 tab 轮询写入的同步缓存。页头复用宿主会话页的下划线 Tabs 样式（`wSkVaW_tabs/tab/tabActive`，宿主尚未公开组件；支持左右方向键与 Home/End 切换）。两视角共用底部可拖拽预览面板（`tab.meta.lens/previewH` 持久化），diff 渲染统一走 `src/client/diff/`（`DiffRows`/`DiffFiles`：mod 配对 + 行内高亮 + 语法着色 + 上下文折叠）；Git 目标可展开为独立 diff tab（落进工作台的 diff 分栏） |
+| `git` | 20 | 是 | 是（本轮文件操作数） | 「Git」统一 tab（id 保留 `git` 以兼容持久化布局）：**Git 视角**（Source Control：独立折叠的 Changes / Graph；Changes 内为多行 Message + 仅填草稿的 Generate、Merge Changes → Staged Changes → Changes（资源组也独立折叠，计数常驻标题最右，文件行整行 hover）；Git 刷新仅留在 Changes 标题，外层本轮文件刷新保留；真实 parent hashes 泳道图；常驻底栏为可点击分支 + `*`/`+`/`!` 标记、upstream 的 behind↓ / ahead↑ 及安全 Pull-then-Push 同步；Push/Pull 与 worktree·子仓库选择移入 More Actions；提交只消费已暂存项，冲突/空消息/无暂存时禁止，草稿按会话·仓库·worktree 隔离）+ **本轮文件视角**（原 file-trace：模型读/写/编辑实时折叠，按操作时间倒序平铺、不按文件分组，每行「操作 → 文件路径 → 大小/时间」，支持类型筛选）；会话事件经插件自有宿主路由 `changes.ops` 供给（live 日志优先、冷会话回放持久化记录，`afterSeq` 增量），primed 后用 `wait` 挂在宿主侧等下一个工具事件而不是重放整窗），badge 读 tab 轮询写入的同步缓存。页头复用宿主会话页的下划线 Tabs 样式（`wSkVaW_tabs/tab/tabActive`，宿主尚未公开组件；支持左右方向键与 Home/End 切换）。两视角共用底部可拖拽预览面板（`tab.meta.lens/previewH` 持久化），diff 渲染统一走 `src/client/diff/`（`DiffRows`/`DiffFiles`：mod 配对 + 行内高亮 + 语法着色 + 上下文折叠）；Git 目标可展开为独立 diff tab（落进工作台的 diff 分栏） |
 | `subagent` | 30 | 是 | 否 | 任务管理（工作流图/树、团队任务板、后台任务抽屉） |
 | `sidechat` | 35 | 否（`sidechat:<uuid>`，按 `meta.threadId` 去重） | 否 | 侧边对话（每对话一 Tab）：打开即建空线程（首条消息赢得标签并同步标题）；线程 = 插件自建子会话（种子继承父会话上下文，进行中回合以 `interrupted` 闭合；种子带合法 `subagent/descriptor`，SubagentView 按 `Side: ` 前缀过滤），`origin:'subagent'` 隐藏于主列表；走 `/sidebar/api/sidechat.*` 路由；头部菜单切换/重开（`parkSidechatReopen` + 确定性 id），关 Tab 释放 live agent；重开经 `collectOwnEvents` 回源到种子边界；「保存为新会话」= `session.fork`（`this` 敏感）。[设计文档](plans/2026-08-20-sidechat-tab-design.md) |
 | `diff` | -1 | 否（按 id 去重） | 是 | 差异查看（changes tab 的预览面板「展开为独立页签」触发，同一渲染栈） |
@@ -704,7 +704,7 @@ const url = ctx.betterSidebar.hostRouteUrl(
 )
 ```
 
-> 注：内置的 `api.ts` 是 better-sidebar 内部模块，外部插件 **不要** value-import 它（构建纯度门会挡）；按上表模式自己 fetch 即可，路由一律经 `hostRouteUrl()`（或等价的「相对路径 + 页面前缀」解析）。所有路由带与 `/api` 相同的 Host 头信任围栏，浏览器同源访问天然通过。
+> 注：内置的 `api.ts` 是 better-sidebar 内部模块，外部插件 **不要** value-import 它（构建纯度门会挡）；按上表模式自己 fetch 即可，路由一律经 `hostRouteUrl()`（或等价的「相对路径 + 页面前缀」解析）。所有 HTTP/WS 路由复用宿主 `ctx.connection.requestRejection(req)`：Host/Origin 与浏览器认证均由宿主裁决，只有返回 `undefined` 才准入；同源页面也必须先完成宿主登录。
 
 ---
 
@@ -1064,7 +1064,7 @@ interface SettingsDescriptor {
 
 四条必须记住的新规则：
 
-1. **命名空间 = 插件 Loader 行的 `entry.options.id`**，不是插件自选的字符串。聚合包会用别的 id 挂同一个包，所以**运行时自发现**（本插件 `src/index.ts` 的 `ownEntryId(ctx)`：按 `entry.options.name === '<包名>'` + `entry.fiber === ctx.fiber` 匹配，回退到第一个启用的同名行），**不要硬编码** id。
+1. **命名空间 = 插件 Loader 行的 `entry.options.id`**，不是插件自选的字符串。聚合包会用别的 id 挂同一个包，所以**运行时自发现**（本插件 `src/index.ts` 的 `ownEntryId(ctx)`：有效 id 的行优先按 `entry.fiber === ctx.fiber` 匹配，支持别名与 `file:` 挂载；未找到自己的 fiber 才回退到第一个启用的同包名行），**不要硬编码** id。
 2. **schema 来自插件模块导出的 `Config`**（`entry.fiber.runtime.Config`）。用户可见的字段必须**并进这个 `Config`**——本插件把 `PrefsSchema` 合并进 `Config`（`src/config.ts`），并把每个偏好字段标 `meta.volatile = true`；**这一个标记就是「改设置实时生效、不重挂插件」的全部机制**（Loader 的 `equalExceptVolatile` 跳过 volatile 字段，纯 volatile 变更提交进运行中的引用并发 `loader/volatile-update`，普通字段仍是重挂语义）。
 3. **自带设置页的插件要主动退出自动表单**：`ctx.effect(() => ctx.settings.configure({ auto: false }, ctx.fiber))`，否则 Settings 会把同一批字段渲染两遍（策略不影响读写）。
 4. **`settings/document-updated` 你监听不到，别写**：事件签名是 `'settings/document-updated'(ns, revision)`（语义是「该条目的表单值 / 可用性 / 页面策略变了，表单客户端重新读取 schema、解析值与 revision」），但它在 **settings 服务自己的 context 上 `emit`**，而 cordis 事件只向该 ctx 的**祖先**冒泡——插件 fiber 是兄弟，`ctx.on(...)` 永远不会触发。**替代做法：每次重新读取表单时重新求值**（本插件的 `settingsFace.get()` 在返回当前值前跑一遍门控同步；客户端侧另经 `remote` 服务的 `$on('settings/document-updated')` 镜像触发重新拉取）。**旧文档里的 `settings/updated` 事件在 0.1.7 已不存在**。
@@ -1078,7 +1078,7 @@ interface SettingsDescriptor {
 >
 > 这是一次**权限放开**：插件侧边栏的 fs 路由现在能读写**宿主用户能访问的任意路径**，只受 OS 权限约束。也就是说，一个能访问到本插件 `/sidebar/*` 路由的同源页面/脚本（**包括你写的第三方消费插件**）可以借这些路由读取、改写、删除该用户权限内的任何文件——例如 `~/.ssh/`、`~/.dsh/`、其他项目的源码。
 >
-> 缓解手段只有两块，别指望有第三块：① 每条路由都过同一个**浏览器信任栅栏**（Host 头 loopback / `trustedHosts`，见 §0 与 §10），所以前提是攻击面已经能发同源请求；② 宿主用户的 OS 权限本身的边界。**不要**再把「工作区围栏」当成安全边界来设计你的插件——它已经不在了。
+> 缓解手段只有两块，别指望有第三块：① 每条 HTTP/WS 路由都过宿主的**浏览器信任与认证栅栏**（`ctx.connection.requestRejection(req)`，见 §6.2），所以前提是攻击面已有宿主认可的来源与认证；② 宿主用户的 OS 权限本身的边界。**不要**再把「工作区围栏」当成安全边界来设计你的插件——它已经不在了。
 
 历史背景（`< v0.23.0`）：旧的实现用 realpath 解析后比对工作区前缀，越界回 403，并有一个 `workspaceFence` 开关（默认开）可临时关闭；开启时编辑器/文件树错误面会显示原因 + 一键关闭按钮（`FenceErrorNotice`）。用户要求删除该检查，上述代码路径随之删除（`src/path-security.ts` 现在是纯词法解析）。旧 profile 里遗留的 `workspaceFence` 键只是**未知键**——schemastery 的 object schema 对未知键是容忍的，既不报错也不再有任何效果。
 

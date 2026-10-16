@@ -82,7 +82,15 @@ export interface GitStatusEntry {
 /** Git status snapshot. */
 export interface GitStatusResult {
   isRepo: boolean
+  /** Absent when HEAD is detached; unborn branches keep their real name. */
   branch?: string
+  /** Native tracking ref (e.g. origin/main); never inferred from a remote. */
+  upstream?: string
+  /** Present only when Git can compare HEAD with the tracking ref. */
+  ahead?: number
+  behind?: number
+  detached?: boolean
+  operation?: 'merge' | 'rebase'
   entries: GitStatusEntry[]
   /** True when the host capped `entries` (huge untracked set); the panel
    *  shows a truncation notice instead of freezing (#369). */
@@ -141,6 +149,8 @@ export interface GitLogEntry {
   hash: string
   /** Full 40-char hash (advanced operations). */
   hashFull: string
+  /** Full parent hashes in Git's order; root commits have none. */
+  parents: string[]
   subject: string
   author: string
   /** ISO 8601 author date (`%ai`). */

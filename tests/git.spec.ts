@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { describe, expect, it } from 'vitest'
 import { parseUnifiedDiff } from '../src/client/diff/rows.ts'
-import { checkout, parseLogLines, parseNumstat, parsePorcelainZ, repoRoots, status } from '../src/git.ts'
+import { branches, checkout, currentBranch, log, parseLogLines, parseNumstat, parsePorcelainZ, parseStatusPorcelainV2Z, repoRoots, status } from '../src/git.ts'
 import { removeTree } from './temp-tree.ts'
 
 const execFileAsync = promisify(execFile)
@@ -136,6 +136,69 @@ describe('git parsing', () => {
     ])
   })
 
+  it('parses v2 branch metadata and keeps v1 XY and literal rename/conflict paths', () => {
+    const raw = [
+      '# branch.oid deadbeef', '# branch.head feature/topic',
+      '# branch.upstream upstream/review', '# branch.ab +2 -3',
+      '1 .M N... 100644 100644 100644 abc abc src/space name.ts',
+      '2 R. N... 100644 100644 100644 abc abc R100 src/new name.ts', 'src/old name.ts',
+      'u UU N... 100644 100644 100644 100644 abc abc abc src/conflict.ts',
+      '? newdir/line\nbreak.ts', '',
+    ].join('\0')
+    expect(parseStatusPorcelainV2Z(raw)).toEqual({
+      isRepo: true, branch: 'feature/topic', upstream: 'upstream/review', ahead: 2, behind: 3, detached: false,
+      entries: [
+        { path: 'src/space name.ts', xy: ' M' },
+        { path: 'src/new name.ts', xy: 'R ' },
+        { path: 'src/conflict.ts', xy: 'UU' },
+        { path: 'newdir/line\nbreak.ts', xy: '??' },
+      ],
+    })
+  })
+
+  it('reports nonrepo, unborn, no-upstream and detached HEAD without inventing a branch', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-git-head-'))
+    const nonrepo = join(root, 'plain')
+    const repo = join(root, 'repo')
+    const git = (...args: string[]): string => execFileSync('git', args, { cwd: repo, encoding: 'utf8' }).trim()
+    try {
+      mkdirSync(nonrepo)
+      mkdirSync(repo)
+      expect(await status(nonrepo)).toEqual({ isRepo: false, entries: [], repositories: [] })
+      git('init', '-q', '-b', 'fresh')
+      git('config', 'user.email', 't@t')
+      git('config', 'user.name', 't')
+      writeFileSync(join(repo, 'new.txt'), 'unborn\n')
+      const unborn = await status(repo)
+      expect(unborn).toMatchObject({ branch: 'fresh', detached: false, entries: [{ path: 'new.txt', xy: '??' }] })
+      expect(unborn.upstream).toBeUndefined()
+      expect(unborn.ahead).toBeUndefined()
+      expect(unborn.behind).toBeUndefined()
+      expect(unborn.operation).toBeUndefined()
+      await expect(currentBranch(repo)).resolves.toBe('fresh')
+      await expect(branches(repo)).resolves.toEqual({ current: 'fresh', names: ['fresh'] })
+      await expect(log(repo)).resolves.toEqual([])
+
+      git('commit', '-q', '--allow-empty', '-m', 'base')
+      const untracked = await status(repo)
+      expect(untracked.branch).toBe('fresh')
+      expect(untracked.upstream).toBeUndefined()
+      expect(untracked.ahead).toBeUndefined()
+      expect(untracked.behind).toBeUndefined()
+      git('checkout', '-q', '--detach')
+      const detached = await status(repo)
+      expect(detached.detached).toBe(true)
+      expect(detached.branch).toBeUndefined()
+      expect(detached.upstream).toBeUndefined()
+      expect(detached.ahead).toBeUndefined()
+      expect(detached.behind).toBeUndefined()
+      await expect(currentBranch(repo)).rejects.toThrow()
+      await expect(branches(repo)).resolves.toEqual({ current: '', names: ['fresh'] })
+    } finally {
+      removeTree(root)
+    }
+  })
+
   it('keeps untracked files inside new directories as individual rows (status --untracked-files=all)', () => {
     // status() runs with --untracked-files=all, so a new folder must surface
     // as one entry PER FILE (?? newdir/a.ts), never a collapsed ?? newdir/
@@ -220,10 +283,10 @@ describe('git parsing', () => {
     }
   })
 
-  it('parses log rows with unit separators (full hash + refs)', () => {
+  it('parses log rows with unit separators (full hash + refs + parent hashes)', () => {
     const rows = parseLogLines(
-      'abc1234\x1fFirst subject\x1fAlice\x1f2024-01-01 10:00:00 +0800\x1fabc1234def5678abc1234def5678abc1234def5678\x1fHEAD -> main, origin/main\n'
-      + 'def5678\x1fSecond subject\x1fBob\x1f2024-01-02 10:00:00 +0800\x1fdef5678abc1234def5678abc1234def5678abc1234\x1f\n',
+      'abc1234\x1fFirst subject\x1fAlice\x1f2024-01-01 10:00:00 +0800\x1fabc1234def5678abc1234def5678abc1234def5678\x1fHEAD -> main, origin/main\x1fdef5678abc1234def5678abc1234def5678abc1234 1234567890123456789012345678901234567890\n'
+      + 'def5678\x1fSecond subject\x1fBob\x1f2024-01-02 10:00:00 +0800\x1fdef5678abc1234def5678abc1234def5678abc1234\x1f\x1f\n',
     )
     expect(rows).toEqual([
       {
@@ -233,6 +296,7 @@ describe('git parsing', () => {
         date: '2024-01-01 10:00:00 +0800',
         hashFull: 'abc1234def5678abc1234def5678abc1234def5678',
         refs: 'HEAD -> main, origin/main',
+        parents: ['def5678abc1234def5678abc1234def5678abc1234', '1234567890123456789012345678901234567890'],
       },
       {
         hash: 'def5678',
@@ -241,8 +305,101 @@ describe('git parsing', () => {
         date: '2024-01-02 10:00:00 +0800',
         hashFull: 'def5678abc1234def5678abc1234def5678abc1234',
         refs: '',
+        parents: [],
       },
     ])
+  })
+
+  it('logs real merge parents and other local refs in topological order with stable pagination', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-git-graph-'))
+    const git = (...args: string[]): string => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: 'pipe' }).trim()
+    const commit = (subject: string, date: string): string => {
+      execFileSync('git', ['commit', '-q', '--allow-empty', '-m', subject], {
+        cwd: root, stdio: 'pipe', env: { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date },
+      })
+      return git('rev-parse', 'HEAD')
+    }
+    try {
+      git('init', '-q', '-b', 'main')
+      git('config', 'user.email', 't@t')
+      git('config', 'user.name', 't')
+      const base = commit('base', '2024-01-01T00:00:00Z')
+      git('branch', 'topic')
+      const main = commit('main tip', '2024-01-04T00:00:00Z')
+      git('checkout', '-q', 'topic')
+      const topic = commit('topic tip', '2024-01-03T00:00:00Z')
+      git('checkout', '-q', 'main')
+      git('merge', '-q', '--no-ff', '--no-edit', 'topic')
+      const merge = git('rev-parse', 'HEAD')
+      git('checkout', '-q', '-b', 'unmerged', base)
+      const unmerged = commit('other local ref', '2024-01-05T00:00:00Z')
+      // A detached commit reachable only from HEAD must not disappear under --all.
+      git('checkout', '-q', '--detach', merge)
+      const detached = commit('detached tip', '2024-01-02T00:00:00Z')
+      const rows = await log(root, 20)
+      expect(rows).toHaveLength(6)
+      expect(rows.find(row => row.hashFull === merge)?.parents).toEqual([main, topic])
+      expect(rows.find(row => row.hashFull === main)?.parents).toEqual([base])
+      expect(rows.find(row => row.hashFull === topic)?.parents).toEqual([base])
+      expect(rows.find(row => row.hashFull === detached)?.parents).toEqual([merge])
+      expect(rows.find(row => row.hashFull === base)?.parents).toEqual([])
+      expect(rows.find(row => row.hashFull === unmerged)?.refs).toContain('unmerged')
+      const positions = new Map(rows.map((row, index) => [row.hashFull, index]))
+      for (const [index, row] of rows.entries()) {
+        for (const parent of row.parents) expect(positions.get(parent)).toBeGreaterThan(index)
+      }
+      expect([...await log(root, 2), ...await log(root, 20, 2)]).toEqual(rows)
+    } finally {
+      removeTree(root)
+    }
+  })
+
+  it('reads merge and both rebase backends from the selected linked worktree only', async () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'dsh-git-operation-'))
+    const root = join(scratch, 'repo')
+    const linked = join(scratch, 'linked')
+    const git = (cwd: string, ...args: string[]): string => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim()
+    try {
+      mkdirSync(root)
+      git(root, 'init', '-q', '-b', 'main')
+      git(root, 'config', 'user.email', 't@t')
+      git(root, 'config', 'user.name', 't')
+      git(root, 'config', 'core.autocrlf', 'false')
+      writeFileSync(join(root, 'a.txt'), 'base\n')
+      git(root, 'add', '-A')
+      git(root, 'commit', '-q', '-m', 'base')
+      git(root, 'branch', 'topic')
+      writeFileSync(join(root, 'a.txt'), 'main\n')
+      git(root, 'commit', '-q', '-am', 'main change')
+      git(root, 'worktree', 'add', '-q', linked, 'topic')
+      writeFileSync(join(linked, 'a.txt'), 'topic\n')
+      git(linked, 'commit', '-q', '-am', 'topic change')
+
+      expect(() => git(linked, 'merge', '--no-edit', 'main')).toThrow()
+      expect(await status(linked)).toMatchObject({
+        branch: 'topic', detached: false, operation: 'merge', entries: [{ path: 'a.txt', xy: 'UU' }],
+      })
+      expect((await status(root)).operation).toBeUndefined()
+      git(linked, 'merge', '--abort')
+      expect((await status(linked)).operation).toBeUndefined()
+      for (const backend of ['--merge', '--apply']) {
+        expect(() => git(linked, 'rebase', backend, 'main')).toThrow()
+        const rebasing = await status(linked)
+        expect(rebasing).toMatchObject({ detached: true, operation: 'rebase' })
+        expect(rebasing.branch).toBeUndefined()
+        expect((await status(root)).operation).toBeUndefined()
+        git(linked, 'rebase', '--abort')
+        expect((await status(linked)).operation).toBeUndefined()
+      }
+      // `git am` shares rebase-apply storage, but is not a rebase.
+      const patch = join(scratch, 'topic.patch')
+      writeFileSync(patch, git(linked, 'format-patch', '-1', '--stdout'))
+      expect(() => git(root, 'am', patch)).toThrow()
+      expect((await status(root)).operation).toBeUndefined()
+      git(root, 'am', '--abort')
+    } finally {
+      removeTree(scratch)
+    }
   })
 
   it('parses a multi-file unified diff with aligned line numbers', () => {

@@ -16,7 +16,7 @@ import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
 
-/** A parsed `git status --porcelain=v1 -z` entry. */
+/** A parsed porcelain status entry (v1 XY convention). */
 export interface GitStatusEntry {
   path: string
   /** Two-letter index/worktree status (X Y), e.g. 'M ', ' M', 'A ', '??'. */
@@ -46,7 +46,15 @@ export type GitLineCounts = { additions: number; deletions: number } | { binary:
 /** The source-control panel snapshot. */
 export interface GitStatusResult {
   isRepo: boolean
+  /** Absent when HEAD is detached; unborn branches keep their real name. */
   branch?: string
+  /** Native tracking ref (e.g. origin/main); never inferred from a remote. */
+  upstream?: string
+  /** Present only when Git can compare HEAD with the tracking ref. */
+  ahead?: number
+  behind?: number
+  detached?: boolean
+  operation?: 'merge' | 'rebase'
   entries: GitStatusEntry[]
   /** True when the working tree had more rows than `GIT_STATUS_LIMIT`; the
    *  panel shows a truncation notice instead of freezing on a huge untracked
@@ -75,6 +83,8 @@ export interface GitLogEntry {
   hash: string
   /** Full 40-char hash (advanced operations: revert / cherry-pick). */
   hashFull: string
+  /** Full parent hashes in Git's order; root commits have none. */
+  parents: string[]
   subject: string
   author: string
   /** ISO 8601 author date (`%ai`), e.g. `2024-01-01 10:00:00 +0800`. */
@@ -113,6 +123,83 @@ export function parsePorcelainZ(output: string): GitStatusEntry[] {
     }
   }
   return entries
+}
+
+/** Native branch metadata and rows from `git status --porcelain=v2 --branch -z`.
+ * Fixed metadata fields are split off; path spaces/newlines remain literal. */
+/** One field of a `status --porcelain=v2 -z` read: a `# …` metadata line, or
+ *  one file record (a rename/copy record carries its origin as the NEXT field). */
+type PorcelainV2Token =
+  | { kind: 'meta'; line: string }
+  | { kind: 'record'; xy: string; path: string; origin?: string }
+
+/**
+ * Walk a `status --porcelain=v2 -z` read into its tokens. The fixed-width
+ * records are counted, never split by name — a path may contain spaces, so the
+ * path is everything after the Nth field. A torn tail (the row cap kills the
+ * child mid-record) yields no token; the walk never throws on it.
+ */
+function porcelainV2Tokens(output: string): PorcelainV2Token[] {
+  const tokens: PorcelainV2Token[] = []
+  const fields = output.split('\0')
+  for (let index = 0; index < fields.length; index += 1) {
+    const field = fields[index]!
+    if (field === '') continue
+    if (field.startsWith('# ')) {
+      tokens.push({ kind: 'meta', line: field })
+      continue
+    }
+    if (field.startsWith('? ')) {
+      tokens.push({ kind: 'record', xy: '??', path: field.slice(2) })
+      continue
+    }
+    if (!field.startsWith('1 ') && !field.startsWith('2 ') && !field.startsWith('u ')) continue
+    // 1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>              → 8 fixed fields
+    // 2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path>   → 9, origin next
+    // u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>    → 10
+    const fixed = field.startsWith('u ') ? 10 : field.startsWith('2 ') ? 9 : 8
+    const path = field.split(' ').slice(fixed).join(' ')
+    if (path === '') continue
+    // v2 uses '.' for the clean side; existing callers consume v1 spaces.
+    const token: PorcelainV2Token = { kind: 'record', xy: field.slice(2, 4).replaceAll('.', ' '), path }
+    if (field.startsWith('2 ')) {
+      const origin = fields[index + 1]
+      index += 1
+      if (origin !== undefined && origin !== '') token.origin = origin
+    }
+    tokens.push(token)
+  }
+  return tokens
+}
+
+/**
+ * Parse a `status --porcelain=v2 --branch -z` read. The metadata lines carry
+ * the branch identity, its tracking ref and the ahead/behind counts; the file
+ * records reuse the v1 XY convention (v2's `.` clean side folded to a space).
+ */
+export function parseStatusPorcelainV2Z(output: string): GitStatusResult {
+  const result: GitStatusResult = { isRepo: true, entries: [] }
+  for (const token of porcelainV2Tokens(output)) {
+    if (token.kind === 'record') {
+      result.entries.push({ xy: token.xy, path: token.path })
+      continue
+    }
+    const line = token.line
+    if (line.startsWith('# branch.head ')) {
+      const head = line.slice('# branch.head '.length)
+      result.detached = head === '(detached)'
+      if (!result.detached) result.branch = head
+    } else if (line.startsWith('# branch.upstream ')) {
+      result.upstream = line.slice('# branch.upstream '.length)
+    } else if (line.startsWith('# branch.ab ')) {
+      const counts = /^# branch\.ab \+(\d+) -(\d+)$/.exec(line)
+      if (counts !== null) {
+        result.ahead = Number(counts[1])
+        result.behind = Number(counts[2])
+      }
+    }
+  }
+  return result
 }
 
 /**
@@ -234,12 +321,12 @@ export function parseWorktreeList(output: string): GitWorktreeRecord[] {
   return rows
 }
 
-/** Parse `git log --pretty=format:%h%x1f%s%x1f%an%x1f%ai%x1f%H%x1f%D` rows. */
+/** Parse `git log --pretty=format:%h%x1f%s%x1f%an%x1f%ai%x1f%H%x1f%D%x1f%P` rows. */
 export function parseLogLines(output: string): GitLogEntry[] {
   const rows: GitLogEntry[] = []
   for (const line of output.split('\n')) {
     if (line === '') continue
-    const [hash, subject, author, date, hashFull, refs] = line.split('\x1f')
+    const [hash, subject, author, date, hashFull, refs, parents] = line.split('\x1f')
     if (hash === undefined || subject === undefined) continue
     rows.push({
       hash,
@@ -248,6 +335,7 @@ export function parseLogLines(output: string): GitLogEntry[] {
       date: date ?? '',
       hashFull: hashFull ?? hash,
       refs: refs ?? '',
+      parents: parents?.split(' ').filter(Boolean) ?? [],
     })
   }
   return rows
@@ -644,10 +732,23 @@ export async function repoRoot(cwd: string, selected?: string): Promise<string> 
   return roots[0]!
 }
 
-/** The current branch name (`git rev-parse --abbrev-ref HEAD`; 'HEAD' when detached). */
+/** Symbolic HEAD's real branch, including an unborn branch; rejects when detached. */
 export async function currentBranch(cwd: string): Promise<string> {
-  const out = await runGit(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])
+  const out = await runGit(cwd, ['symbolic-ref', '--quiet', '--short', 'HEAD'])
   return out.trim()
+}
+
+/** Operation markers live in THIS checkout's Git directory (not the common
+ * directory shared by linked worktrees). `git am` also uses rebase-apply, but
+ * only a rebase creates its `rebasing` marker. */
+async function currentOperation(cwd: string): Promise<GitStatusResult['operation']> {
+  const gitDir = (await runGit(cwd, ['rev-parse', '--absolute-git-dir'])).trim()
+  const names = await readdir(gitDir)
+  if (names.includes('rebase-merge')
+    || (names.includes('rebase-apply') && (await readdir(join(gitDir, 'rebase-apply')).catch((): string[] => [])).includes('rebasing'))) {
+    return 'rebase'
+  }
+  return names.includes('MERGE_HEAD') ? 'merge' : undefined
 }
 
 /** Upper bound on status rows shipped to the client. Beyond this the result
@@ -673,7 +774,7 @@ const NUMSTAT_PATHSPEC_MAX_BYTES = 8_000
 
 /**
  * The paths the two `--numstat` diffs of {@link status} actually have to look
- * at, read from the SAME porcelain output:
+ * at, read from the SAME `status --porcelain=v2 -z` output:
  *
  *  - every reported path EXCEPT untracked ones (`??`): a file absent from the
  *    index exists on neither diff side, so git can never print a numstat row
@@ -690,7 +791,6 @@ const NUMSTAT_PATHSPEC_MAX_BYTES = 8_000
  * behaviour, not a wrong answer.
  */
 function numstatPathsof(porcelainZ: string): string[] | undefined {
-  const fields = porcelainZ.split('\0')
   const paths: string[] = []
   let bytes = 0
   const add = (path: string): boolean => {
@@ -700,29 +800,21 @@ function numstatPathsof(porcelainZ: string): string[] | undefined {
     paths.push(path)
     return true
   }
-  let index = 0
-  while (index < fields.length) {
-    const field = fields[index]!
-    index += 1
-    if (field === '') continue
-    const xy = field.slice(0, 2)
-    // A torn tail (the row cap kills the child mid-record) has no path.
-    const path = field.slice(3)
-    if (path === '' || xy === '??') continue
-    if (!add(path)) return undefined
-    if (xy[0] === 'R' || xy[0] === 'C') {
-      const origin = fields[index]
-      index += 1
-      if (origin !== undefined && !add(origin)) return undefined
-    }
+  for (const token of porcelainV2Tokens(porcelainZ)) {
+    if (token.kind !== 'record' || token.xy === '??') continue
+    if (!add(token.path)) return undefined
+    if (token.origin !== undefined && !add(token.origin)) return undefined
   }
   return paths
 }
 
 /**
- * Working-tree status (untracked included). `--untracked-files=all` lists
- * the contents of new directories as individual entries, while preserving
- * repository discovery and explicit repository selection for workspace roots.
+ * Working-tree status (untracked included). The read is
+ * `status --porcelain=v2 --branch -z --untracked-files=all`: one command
+ * answers the rows AND the branch identity (name, tracking ref, ahead/behind,
+ * detached HEAD), while preserving repository discovery and explicit
+ * repository selection for workspace roots. `--untracked-files=all` lists the
+ * contents of new directories as individual entries.
  *
  * The per-path line counts (#131) ride this SAME read: one batch of three git
  * processes answers status and both numstat sides together, never one process
@@ -745,16 +837,19 @@ export async function status(cwd: string, selected?: string): Promise<GitStatusR
   const repositories = await repoRoots(cwd)
   if (repositories.length === 0) return { isRepo: false, entries: [], repositories: [] }
   const root = await repoRoot(cwd, selected)
-  const branchPromise = currentBranch(root).catch(() => 'HEAD')
-  const raw = await runGit(
-    root,
-    ['status', '--porcelain=v1', '-z', '--untracked-files=all'],
-    undefined,
-    // The row cap is enforced while git is still producing, not after parsing
-    // a megabyte of untracked paths: see {@link GIT_STATUS_MAX_FIELDS}.
-    { maxNulFields: GIT_STATUS_MAX_FIELDS },
-  )
-  const parsed = parsePorcelainZ(raw)
+  const [operation, raw] = await Promise.all([
+    currentOperation(root).catch(() => undefined),
+    runGit(
+      root,
+      ['status', '--porcelain=v2', '--branch', '--ahead-behind', '-z', '--untracked-files=all'],
+      undefined,
+      // The row cap is enforced while git is still producing, not after parsing
+      // a megabyte of untracked paths: see {@link GIT_STATUS_MAX_FIELDS}.
+      { maxNulFields: GIT_STATUS_MAX_FIELDS },
+    ),
+  ])
+  const snapshot = parseStatusPorcelainV2Z(raw)
+  const parsed = snapshot.entries
   const pathspec = numstatPathsof(raw)
   let unstagedNumstat = ''
   let stagedNumstat = ''
@@ -774,14 +869,13 @@ export async function status(cwd: string, selected?: string): Promise<GitStatusR
     unstagedNumstat = unstaged
     stagedNumstat = staged
   }
-  const branch = await branchPromise
   const stagedCounts = parseNumstat(stagedNumstat)
   const unstagedCounts = parseNumstat(unstagedNumstat)
   const truncated = parsed.length > GIT_STATUS_LIMIT
   const bounded = truncated ? parsed.slice(0, GIT_STATUS_LIMIT) : parsed
   return {
-    isRepo: true,
-    branch,
+    ...snapshot,
+    operation,
     // Paths git has no numstat row for on either side (untracked files) keep
     // their entry untouched: the absence IS the information.
     entries: bounded.map((entry): GitStatusEntry => {
@@ -926,11 +1020,11 @@ export async function commit(cwd: string, message: string, selected?: string): P
 export async function branches(cwd: string, selected?: string): Promise<{ current: string; names: string[] }> {
   const root = await repoRoot(cwd, selected)
   const [current, raw] = await Promise.all([
-    currentBranch(root).catch(() => 'HEAD'),
+    currentBranch(root).catch(() => ''),
     runGit(root, ['for-each-ref', '--format=%(refname:short)', 'refs/heads']),
   ])
   const names = raw.split('\n').filter(line => line !== '')
-  return { current, names: names.includes(current) ? names : [current, ...names] }
+  return { current, names: current !== '' && !names.includes(current) ? [current, ...names] : names }
 }
 
 /** Switch to an existing branch.
@@ -942,11 +1036,12 @@ export async function checkout(cwd: string, branch: string, selected?: string): 
   await runGit(await repoRoot(cwd, selected), ['checkout', '--end-of-options', branch])
 }
 
-/** Recent commit history (newest first), lazily pageable via skip/count. */
+/** All refs plus HEAD in child-before-parent order for graph lanes, pageable
+ * via skip/count. `--all` also permits an empty history on an unborn HEAD. */
 export async function log(cwd: string, count = 30, skip = 0, selected?: string): Promise<GitLogEntry[]> {
   const raw = await runGit(await repoRoot(cwd, selected), [
-    'log', '-n', String(count), '--skip', String(skip), '--decorate=short',
-    '--pretty=format:%h%x1f%s%x1f%an%x1f%ai%x1f%H%x1f%D',
+    'log', '--all', '--topo-order', '-n', String(count), '--skip', String(skip), '--decorate=short',
+    '--pretty=format:%h%x1f%s%x1f%an%x1f%ai%x1f%H%x1f%D%x1f%P',
   ])
   return parseLogLines(raw)
 }

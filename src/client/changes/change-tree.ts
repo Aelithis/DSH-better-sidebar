@@ -119,10 +119,12 @@ function finishChildren(draft: DirDraft): ChangeNode[] {
  * @param entries - the group's `git status` entries.
  * @param side - which band's reading to put on the leaves. The entries carry
  *   both sides (a path can be in both groups), so the tree must be told which
- *   one its rows stand for.
+ *   one its rows stand for. `undefined` leaves the leaves count-less, which is
+ *   what the MERGE band wants: a conflict is not a line-count story, and
+ *   neither side's number may be presented as "the" number for it.
  * @returns the tree's roots, ready to render in order.
  */
-export function buildChangeTree(entries: readonly GitStatusEntry[], side: ChangeSide): ChangeNode[] {
+export function buildChangeTree(entries: readonly GitStatusEntry[], side?: ChangeSide): ChangeNode[] {
   const root: DirDraft = { name: '', path: '', dirs: new Map(), files: [] }
   const seen = new Set<string>()
   for (const entry of entries) {
@@ -145,7 +147,7 @@ export function buildChangeTree(entries: readonly GitStatusEntry[], side: Change
     }
     // The FILE keeps git's own spelling (the lane previews, copies and menus
     // all resolve this path); only the directory rows use the split form.
-    const counts = entry[side]
+    const counts = side === undefined ? undefined : entry[side]
     at.files.push({
       kind: 'file',
       name: segments[segments.length - 1]!,

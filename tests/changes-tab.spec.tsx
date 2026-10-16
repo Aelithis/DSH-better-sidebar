@@ -27,6 +27,9 @@ setupReactAct()
 
 const MAIN = 'C:/repo/main'
 
+/** The unstage artwork the SCM rows draw (the horizontal half of the host's Plus). */
+const MINUS_GLYPH = 'M2 8H14'
+
 /** One synthetic tool/call + tool/result pair (write of one file). */
 function writeEvents(seq: number, path: string): Array<{ type: string; seq: number; time: number; data: Record<string, unknown> }> {
   return [
@@ -298,8 +301,9 @@ describe('ChangesTab', () => {
       expect(container.textContent).toContain('src/a.ts')
       const chips = [...container.querySelectorAll('button[aria-pressed]')]
       expect(chips.some(chip => /写入\s*2|Write\s*2/.test(chip.textContent ?? ''))).toBe(true)
-      // The git lens (its branch picker) is unmounted by the switch.
-      expect(container.querySelector('select')).toBeNull()
+      // The Git lens (including its footer branch menu) is unmounted by the switch.
+      expect(container.querySelector('[data-git-root]')).toBeNull()
+      expect(container.querySelector('[data-git-footer]')).toBeNull()
     } finally {
       act(() => { root.unmount() })
       container.remove()
@@ -447,7 +451,8 @@ describe('ChangesTab', () => {
       const empties = [...container.querySelectorAll<HTMLElement>('[data-kind="empty"]')]
         .map(node => node.textContent)
       expect(empties).toEqual([t('changesClean'), t('changesNoHistory')])
-      // The two section bands are not rendered at all when nothing changed.
+      // No resource group or tree row is rendered when nothing changed.
+      expect(container.querySelectorAll('[data-group]')).toHaveLength(0)
       expect(container.querySelectorAll('[data-path]')).toHaveLength(0)
     } finally {
       act(() => { root.unmount() })
@@ -455,7 +460,7 @@ describe('ChangesTab', () => {
     }
   })
 
-  it('reports a failed stage action in the commit bar and catches it (no unhandled rejection)', async () => {
+  it('reports a failed stage action in the footer and catches it (no unhandled rejection)', async () => {
     mockGit([{ path: 'src/a.ts', xy: ' M' }])
     vi.spyOn(api, 'gitStage').mockRejectedValue(new Error('index.lock exists'))
 
@@ -467,26 +472,84 @@ describe('ChangesTab', () => {
       await flushEffects()
 
       const stage = container.querySelector<HTMLButtonElement>(`button[aria-label="${t('stage')}"]`)
-      expect(stage).toBeDefined()
+      expect(stage).not.toBeNull()
       await act(async () => { stage!.click() })
       await flushEffects()
 
-      const alert = [...container.querySelectorAll<HTMLElement>('[role="alert"]')]
-        .find(node => (node.textContent ?? '').includes(t('changesStageFailed', { message: 'index.lock exists' })))
+      const alerts = [...container.querySelectorAll<HTMLElement>('[role="alert"]')]
+      const alert = alerts.find(node => (node.textContent ?? '').includes(t('changesStageFailed', { message: 'index.lock exists' })))
       expect(alert).toBeDefined()
-      // The ONE status line sits in the commit bar, directly under its input row.
-      const input = container.querySelector(`textarea[placeholder="${t('commitPlaceholder')}"]`)
+      expect(alerts).toHaveLength(1)
+      // The ONE action status line stays visible with the checkout/sync footer.
+      const footer = container.querySelector('[data-git-footer]')
+      const input = container.querySelector('[data-message-box] textarea')
       expect(input).not.toBeNull()
-      expect(alert!.previousElementSibling?.contains(input)).toBe(true)
+      expect(alert!.parentElement).toBe(footer)
+      expect(alert!.nextElementSibling).toBe(footer!.querySelector('[data-footer-row]'))
+      expect(container.querySelector('[data-git-scroll]')!.contains(alert!)).toBe(false)
     } finally {
       act(() => { root.unmount() })
       container.remove()
     }
   })
 
-  it('re-derives the previewed op from the latest fold when it settles', async () => {
+  it('draws stage as a plus and unstage as a minus, like the Source Control view', async () => {
+    mockGit([{ path: 'src/a.ts', xy: ' M' }, { path: 'src/b.ts', xy: 'M ' }])
+
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root: Root = createRoot(container)
+    try {
+      mount(root)
+      await flushEffects()
+
+      const iconOf = (label: string): string => {
+        const button = container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)
+        expect(button, label).not.toBeNull()
+        return button!.querySelector('svg')!.innerHTML
+      }
+      // A stage affordance that drew the unstage glyph is the #941 regression:
+      // the two directions must not share artwork (vscode: $(add) vs $(remove)).
+      // Unstage is the horizontal half alone; staging adds the vertical stroke
+      // (the host's Plus) — the two directions must not share one glyph.
+      const stage = iconOf(t('stage'))
+      const unstage = iconOf(t('unstage'))
+      expect(unstage).toContain(MINUS_GLYPH)
+      expect(unstage).not.toContain('M8 2V14')
+      expect(stage).toContain('M8 2V14')
+    } finally {
+      act(() => { root.unmount() })
+      container.remove()
+    }
+  })
+
+  it('hangs every tree row on the Source Control indent guides', async () => {
+    mockGit([{ path: 'src/a.ts', xy: ' M' }])
+
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root: Root = createRoot(container)
+    try {
+      mount(root)
+      await flushEffects()
+
+      const guides = (row: string): string[] => [...container.querySelector(`[data-row="${row}"]`)!
+        .querySelectorAll<HTMLElement>('[data-guide]')].map(node => node.style.left)
+      // A group's own column carries no line; each level below adds one, in the
+      // column the pre-SCM nested tree drew it (17px, +12 per level).
+      expect(guides('src')).toEqual([])
+      expect(guides('src/a.ts')).toEqual(['17px'])
+      // The guides are decoration: the row's own indent is untouched.
+      expect(container.querySelector<HTMLElement>('[data-row="src/a.ts"]')!.style.paddingLeft).toBe('20px')
+    } finally {
+      act(() => { root.unmount() })
+      container.remove()
+    }
+  })
+
+  it('keeps Git refresh in Changes and re-derives the session preview on manual refresh', async () => {
     mockGit([])
-    vi.spyOn(api, 'changesOps')
+    const ops = vi.spyOn(api, 'changesOps')
       // The call starts running: no result yet, so the write has no payload.
       .mockResolvedValueOnce({
         events: [{ type: 'tool/call', seq: 1, time: 1, data: { name: 'write', callId: 'w1', arguments: JSON.stringify({ file_path: 'notes.txt' }) } }],
@@ -505,6 +568,12 @@ describe('ChangesTab', () => {
     try {
       mount(root)
       await flushEffects()
+      const refreshSelector = `button[aria-label="${t('refresh')}"]`
+      const head = container.querySelector('[role="tablist"]')!.parentElement!
+      // Git has one refresh, inside Changes rather than beside the lens tabs.
+      expect(head.querySelector(refreshSelector)).toBeNull()
+      expect(container.querySelectorAll(refreshSelector)).toHaveLength(1)
+      expect(container.querySelector(`[data-scm-section="changes"] ${refreshSelector}`)).not.toBeNull()
       const sessionTab = lensTab(container, t('changesSessionLens'))
       await act(async () => { sessionTab!.click() })
 
@@ -517,10 +586,13 @@ describe('ChangesTab', () => {
 
       // The header's refresh pulls the delta; the SAME preview must pick the
       // settled payload up without the user re-clicking the row.
-      const refresh = container.querySelector<HTMLButtonElement>(`button[aria-label="${t('refresh')}"]`)
+      const refresh = head.querySelector<HTMLButtonElement>(refreshSelector)
       expect(refresh).not.toBeNull()
+      expect(container.querySelectorAll(refreshSelector)).toHaveLength(1)
+      expect(ops).toHaveBeenCalledTimes(1)
       await act(async () => { refresh!.click() })
       await flushEffects()
+      expect(ops).toHaveBeenLastCalledWith({ sessionId: 'session', cwd: MAIN }, 1, undefined, true)
       expect(container.textContent).toContain('settled-body')
     } finally {
       act(() => { root.unmount() })
@@ -628,16 +700,16 @@ describe('ChangesTab', () => {
   })
 
   /**
-   * Issue #194: the branch band and the commit box must not scroll away with
-   * the list. The lens root is therefore a FIXED frame whose only scrollable
-   * child is the list body holding the change groups and the history — the two
-   * chrome bands are its siblings, not its contents.
+   * Issue #194's single-scroller frame survives #941: Message, groups and Graph
+   * now scroll together, while the checkout/sync footer stays docked outside.
+   * The old selector band and bottom commit bar are intentionally gone.
    */
-  it('keeps the branch band and the commit bar outside the one scroll body (#194)', async () => {
+  it('scrolls Message, change groups and Graph together with the footer outside (#194, #941)', async () => {
     mockGit([{ path: 'src/a.ts', xy: ' M' }])
     vi.spyOn(api, 'gitLog').mockResolvedValue([{
       hash: 'abcdef0',
       hashFull: 'abcdef0abcdef0abcdef0abcdef0abcdef0abcd',
+      parents: [],
       subject: 'history row',
       author: 'Test',
       date: '2026-08-20 00:00:00 +0800',
@@ -653,63 +725,63 @@ describe('ChangesTab', () => {
 
       const frame = container.querySelector<HTMLElement>('[data-git-root]')
       const scroller = container.querySelector<HTMLElement>('[data-git-scroll]')
-      const head = container.querySelector<HTMLElement>('[data-git-head]')
-      const bar = container.querySelector<HTMLElement>('[data-commit-bar]')
+      const footer = container.querySelector<HTMLElement>('[data-git-footer]')
       expect(frame).not.toBeNull()
       expect(scroller).not.toBeNull()
-      expect(head).not.toBeNull()
-      expect(bar).not.toBeNull()
-      // The frame is NOT the scroller: the root must never carry the scroll body.
+      expect(footer).not.toBeNull()
       expect(frame!.hasAttribute('data-git-scroll')).toBe(false)
+      expect(container.querySelectorAll('[data-git-scroll]')).toHaveLength(1)
+      expect(scroller!.parentElement).toBe(frame)
+      expect(footer!.parentElement).toBe(frame)
+      expect(scroller!.contains(footer!)).toBe(false)
+      expect(scroller!.compareDocumentPosition(footer!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(footer!.querySelector('[data-footer-row] button[aria-haspopup="menu"]')).not.toBeNull()
+      expect(container.querySelector('[data-git-head]')).toBeNull()
+      expect(container.querySelector('[data-commit-bar]')).toBeNull()
+      expect(container.querySelector('select')).toBeNull()
 
-      // The branch band and the commit bar are the frame's own children, so
-      // neither can be carried out of the viewport by the list scrolling.
-      expect(head!.parentElement).toBe(frame)
-      expect(bar!.parentElement).toBe(frame)
-      expect(scroller!.contains(head!)).toBe(false)
-      expect(scroller!.contains(bar!)).toBe(false)
-
-      // The list body is what actually holds the change list and the history.
-      expect(scroller!.querySelector('[data-group="unstaged"] [data-path="src/a.ts"]')).not.toBeNull()
-      const historyRow = scroller!.querySelector<HTMLElement>('[role="button"]')
+      const changes = scroller!.querySelector('[data-scm-section="changes"]')
+      const graph = scroller!.querySelector('[data-scm-section="graph"]')
+      const message = changes!.querySelector('[data-message-box]')
+      const unstaged = changes!.querySelector('[data-group="unstaged"]')
+      expect(message!.querySelector('textarea')).not.toBeNull()
+      expect(unstaged!.querySelector('[data-path="src/a.ts"]')).not.toBeNull()
+      expect(changes!.querySelector('[data-group="staged"]')).toBeNull()
+      expect(message!.compareDocumentPosition(unstaged!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(changes!.compareDocumentPosition(graph!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      const historyRow = graph!.querySelector<HTMLElement>('[data-graph-row]')
       expect(historyRow).not.toBeNull()
       expect(historyRow!.textContent).toContain('history row')
-
-      // The commit box is inside its bar, and the bar sits BELOW the scroller.
-      const input = container.querySelector('textarea')
-      expect(input).not.toBeNull()
-      expect(scroller!.contains(input!)).toBe(false)
-      expect(bar!.contains(input!)).toBe(true)
-      expect(scroller!.compareDocumentPosition(bar!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(footer!.querySelector('textarea')).toBeNull()
     } finally {
       act(() => { root.unmount() })
       container.remove()
     }
   })
 
-  it('scrolls the inner body only and no longer pins the commit bar with position: sticky (#194)', () => {
-    // jsdom has no layout engine, so the sheet itself is the evidence for the
-    // docking mechanic (the same pattern the explorer's batch bar uses).
+  it('keeps one inner scroller and pins the footer to the bottom (#194, #941)', () => {
+    // jsdom has no layout engine, so the sheet itself is the docking evidence.
     const sheet = readFileSync('src/client/changes/changes.module.css', 'utf8')
     const rule = (selector: string): string => {
-      const block = sheet.match(new RegExp(`\\n\\${selector} \\{([\\s\\S]*?)\\n\\}`))?.[1]
+      const block = sheet.match(new RegExp(`\\n\\${selector} \\{([^}]+)\\}`))?.[1]
       expect(block, `the ${selector} rule must exist in changes.module.css`).toBeDefined()
       return block!
     }
 
-    // The lens root is the fixed frame: it owns no scroll axis at all.
     expect(rule('.git')).not.toContain('overflow')
     expect(rule('.git')).toContain('display: flex')
-    // The inner body is the ONE vertical scroller (and clips the width).
     expect(rule('.gitScroll')).toContain('overflow-y: auto')
     expect(rule('.gitScroll')).toContain('overflow-x: hidden')
     expect(rule('.gitScroll')).toContain('flex: 1')
-    // The commit bar is now a plain flex sibling — no sticky bottom, no
-    // stacking order over the (still sticky) group headers.
-    expect(rule('.commitBar')).not.toContain('position')
-    expect(rule('.commitBar')).not.toContain('sticky')
-    expect(rule('.commitBar')).not.toContain('z-index')
-    // The group headers still park on the inner body's top edge.
+    // Docked by flex, and sticky so a host-scrolled tab body cannot carry the
+    // branch control off the bottom of the pane either.
+    expect(rule('.gitFooter')).toContain('flex: none')
+    expect(rule('.gitFooter')).toContain('position: sticky')
+    expect(rule('.gitFooter')).toContain('bottom: 0')
+    expect(rule('.gitFooter')).not.toContain('overflow')
+    expect(rule('.messageBox')).not.toMatch(/position|sticky|overflow/)
+    expect(sheet).not.toMatch(/\.(?:selectors|select|branchLabel|commitBar|commitRow)\s*\{/)
+    // The retained group headers still park on the inner body's top edge.
     const groupHeader = rule('.group .groupHeader')
     expect(groupHeader).toContain('position: sticky')
     expect(groupHeader).toContain('top: 0')

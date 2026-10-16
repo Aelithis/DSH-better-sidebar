@@ -48,6 +48,7 @@ function logFor(target?: string, index = 0): GitLogEntry[] {
   return [{
     hash: `${digit.repeat(6)}${suffix.slice(-1)}`,
     hashFull: `${digit.repeat(32)}${suffix}`,
+    parents: [],
     subject: agent ? `Agent checkout commit ${index}` : `Main checkout commit ${index}`,
     author: 'Test',
     date: '2026-08-20 00:00:00 +0800',
@@ -74,7 +75,6 @@ function mountGit(
   root: Root,
   options: {
     scope?: { sessionId: string; cwd?: string }
-    refreshTick?: number
     visible?: boolean
     ctx?: Context
   } = {},
@@ -87,7 +87,6 @@ function mountGit(
       onPreview: () => {},
       selectedRef: null,
       visible: options.visible ?? true,
-      refreshTick: options.refreshTick ?? 0,
       ...(options.ctx === undefined ? {} : { ctx: options.ctx }),
     }))
   })
@@ -98,6 +97,37 @@ function makeRoot(): { container: HTMLDivElement; root: Root } {
   const container = document.createElement('div')
   document.body.append(container)
   return { container, root: createRoot(container) }
+}
+
+/** Menu surfaces are portaled to document.body, not into the lens container. */
+function menuItem(label: string): HTMLButtonElement {
+  const item = [...document.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')]
+    .find(button => button.textContent?.trim() === label)
+  if (item === undefined) throw new Error(`menu item not found: ${label}`)
+  return item
+}
+
+function openMoreSubmenu(container: HTMLElement, label: string): HTMLButtonElement[] {
+  const trigger = container.querySelector<HTMLButtonElement>(`button[aria-label="${t('gitMoreActions')}"]`)
+  if (trigger === null) throw new Error('More Actions button not found')
+  act(() => { trigger.click() })
+  const parent = menuItem(label)
+  expect(parent.getAttribute('aria-haspopup')).toBe('menu')
+  act(() => { parent.click() })
+  return [...document.querySelectorAll<HTMLButtonElement>('[role="menu"] [role="menu"] button[role="menuitem"]')]
+}
+
+async function chooseMoreOption(container: HTMLElement, submenu: string, label: string): Promise<void> {
+  const item = openMoreSubmenu(container, submenu).find(button => button.textContent?.trim() === label)
+  if (item === undefined) throw new Error(`submenu option not found: ${label}`)
+  await act(async () => { item.click() })
+  await flushEffects()
+}
+
+function branchButton(container: HTMLElement): HTMLButtonElement {
+  const button = container.querySelector<HTMLButtonElement>('[data-git-footer] button[aria-haspopup="menu"]')
+  if (button === null) throw new Error('footer branch button not found')
+  return button
 }
 
 afterEach(() => { vi.restoreAllMocks() })
@@ -119,24 +149,21 @@ describe('GitLens (changes tab, git lens) linked-worktree consistency', () => {
       mountGit(root)
       await flushEffects()
 
-      const selects = container.querySelectorAll<HTMLSelectElement>('select')
-      const worktreeSelect = selects[0]!
       // A clean primary + exactly one dirty linked checkout auto-selects the
       // linked checkout and loads every target-derived surface from it.
-      expect(worktreeSelect.value).toBe(AGENT)
+      expect(branchButton(container).textContent).toBe('agent*')
       expect(container.textContent).toContain('agent-change.ts')
       expect(container.textContent).toContain('Agent checkout commit')
       expect(container.textContent).not.toContain('Main checkout commit')
       expect(branch).toHaveBeenCalledWith(expect.anything(), AGENT)
       expect(log).toHaveBeenCalledWith(expect.anything(), 20, 0, AGENT)
-
-      await act(async () => {
-        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(worktreeSelect, MAIN)
-        worktreeSelect.dispatchEvent(new Event('change', { bubbles: true }))
-      })
+      expect(container.querySelector('select')).toBeNull()
+      const options = openMoreSubmenu(container, t('worktree'))
+      expect(options.map(button => button.textContent)).toEqual(['main · main (0)', 'agent · agent (1)'])
+      await act(async () => { options[0]!.click() })
       await flushEffects()
 
-      expect(worktreeSelect.value).toBe(MAIN)
+      expect(branchButton(container).textContent).toBe('main*')
       expect(container.textContent).toContain('main-change.ts')
       expect(container.textContent).toContain('Main checkout commit')
       expect(container.textContent).not.toContain('Agent checkout commit')
@@ -169,17 +196,12 @@ describe('GitLens (changes tab, git lens) linked-worktree consistency', () => {
       mountGit(root)
       await flushEffects()
 
-      const worktreeSelect = container.querySelectorAll<HTMLSelectElement>('select')[0]!
-      const loadMore = [...container.querySelectorAll<HTMLButtonElement>('button')]
-        .find(button => /Load more|加载更多/.test(button.textContent ?? ''))
+      const loadMore = [...container.querySelectorAll<HTMLButtonElement>('[data-scm-section="graph"] button')]
+        .find(button => button.textContent === t('loadMore'))
       expect(loadMore).not.toBeUndefined()
       await act(async () => { loadMore!.click() })
 
-      await act(async () => {
-        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(worktreeSelect, MAIN)
-        worktreeSelect.dispatchEvent(new Event('change', { bubbles: true }))
-      })
-      await flushEffects()
+      await chooseMoreOption(container, t('worktree'), 'main · main (0)')
       expect(container.textContent).toContain('Main checkout commit 0')
 
       lateAgentPage.resolve(logFor(AGENT, 99))
@@ -209,7 +231,7 @@ describe('GitLens (changes tab, git lens) linked-worktree consistency', () => {
         ? { isRepo: true, branch: 'b-main', entries: [{ path: 'b-change.ts', xy: ' M' }], root: REPO_B, repositories: [REPO_B] }
         : { isRepo: true, branch: 'a-main', entries: [{ path: 'a-change.ts', xy: ' M' }], root: REPO_A, repositories: [REPO_A, REPO_B] }
     ))
-    vi.spyOn(api, 'gitBranch').mockImplementation(async (scope) => (
+    const branch = vi.spyOn(api, 'gitBranch').mockImplementation(async (scope) => (
       scope.repoRoot === REPO_B ? { current: 'b-main', names: ['b-main'] } : { current: 'a-main', names: ['a-main'] }
     ))
     vi.spyOn(api, 'gitLog').mockResolvedValue([])
@@ -221,15 +243,12 @@ describe('GitLens (changes tab, git lens) linked-worktree consistency', () => {
       mountGit(root, { scope: { sessionId: 'session', cwd: WS } })
       await flushEffects()
 
-      // The workspace container's two child repositories are the repo choices.
-      const repoSelect = container.querySelectorAll<HTMLSelectElement>('select')[0]!
-      expect([...repoSelect.options].map(option => option.textContent)).toEqual(['a', 'b'])
+      // The workspace container's child repositories retain their basename labels.
+      const repoOptions = openMoreSubmenu(container, t('gitRepository'))
+      expect(repoOptions.map(button => button.textContent)).toEqual(['a', 'b'])
       const listingsBefore = worktrees.mock.calls.length
 
-      await act(async () => {
-        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(repoSelect, REPO_B)
-        repoSelect.dispatchEvent(new Event('change', { bubbles: true }))
-      })
+      await act(async () => { repoOptions[1]!.click() })
       await flushEffects()
 
       // The listing carries the selected repoRoot — a container's own listing
@@ -240,18 +259,18 @@ describe('GitLens (changes tab, git lens) linked-worktree consistency', () => {
       expect(worktrees.mock.calls.length).toBe(listingsBefore + 1)
       // The shared status follows the same selection.
       expect(status.mock.calls.at(-1)![0]).toMatchObject({ sessionId: 'session', cwd: WS, repoRoot: REPO_B })
-      expect(container.querySelector(`[title="${t('branch')}: b-main"]`)).not.toBeNull()
+      expect(branchButton(container).title).toBe(`${t('branch')}: b-main*`)
       expect(container.querySelector('[data-path="b-change.ts"]')).not.toBeNull()
       expect(container.querySelector('[data-path="a-change.ts"]')).toBeNull()
-      const worktreeSelect = container.querySelectorAll<HTMLSelectElement>('select')[1]!
-      expect(worktreeSelect.value).toBe(REPO_B)
+      // Explicit repo selection keeps that repo's PRIMARY checkout, even with
+      // one dirty linked checkout available; every derived call targets it.
+      expect(branch).toHaveBeenLastCalledWith(expect.objectContaining({ repoRoot: REPO_B }), REPO_B)
+      expect(openMoreSubmenu(container, t('worktree')).map(button => button.textContent))
+        .toEqual(['b-main · b (0)', 'b-agent · b-agent (2)'])
+      act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
 
-      await act(async () => {
-        repoSelect.value = REPO_A
-        repoSelect.dispatchEvent(new Event('change', { bubbles: true }))
-      })
-      await flushEffects()
-      expect(container.querySelector(`[title="${t('branch')}: a-main"]`)).not.toBeNull()
+      await chooseMoreOption(container, t('gitRepository'), 'a')
+      expect(branchButton(container).title).toBe(`${t('branch')}: a-main*`)
       expect(container.querySelector('[data-path="a-change.ts"]')).not.toBeNull()
       expect(container.querySelector('[data-path="b-change.ts"]')).toBeNull()
     } finally {
@@ -266,7 +285,7 @@ describe('GitLens (changes tab, git lens) linked-worktree consistency', () => {
       { path: AGENT, branch: 'agent', current: false, changes: 0 },
       { path: AGENT_2, branch: 'agent-2', current: false, changes: 5 },
     ]
-    vi.spyOn(api, 'gitWorktrees')
+    const worktrees = vi.spyOn(api, 'gitWorktrees')
       .mockResolvedValueOnce(inventories)
       .mockResolvedValue(LATER)
     vi.spyOn(api, 'gitStatus').mockImplementation(async (_scope, target) => statusFor(target))
@@ -282,15 +301,17 @@ describe('GitLens (changes tab, git lens) linked-worktree consistency', () => {
     try {
       mountGit(root)
       await flushEffects()
-      const worktreeSelect = container.querySelectorAll<HTMLSelectElement>('select')[0]!
-      expect(worktreeSelect.value).toBe(AGENT)
+      expect(branchButton(container).textContent).toBe('agent*')
 
       // A later inventory pass prefers the brand-new dirty checkout; the user
       // never chose a checkout, but the ONE automatic pass already ran.
-      mountGit(root, { refreshTick: 1 })
+      const refresh = container.querySelector<HTMLButtonElement>(`[data-scm-section="changes"] button[aria-label="${t('refresh')}"]`)
+      expect(refresh).not.toBeNull()
+      await act(async () => { refresh!.click() })
       await flushEffects()
+      expect(worktrees).toHaveBeenCalledTimes(2)
 
-      expect(worktreeSelect.value).toBe(AGENT)
+      expect(branchButton(container).textContent).toBe('agent*')
       expect(container.textContent).toContain('agent-change.ts')
       expect(container.textContent).not.toContain('agent-2-change.ts')
     } finally {
@@ -319,8 +340,12 @@ describe('GitLens (changes tab, git lens) linked-worktree consistency', () => {
       await flushEffects()
       expect(worktrees).toHaveBeenCalledTimes(1)
 
-      // The header's refresh action lands while the mount pass is in flight.
-      mountGit(root, { refreshTick: 1 })
+      // Changes refresh lands while the mount's inventory pass is in flight.
+      // Shared status already knows this is a repo, so the action is available.
+      const refresh = container.querySelector<HTMLButtonElement>(`[data-scm-section="changes"] button[aria-label="${t('refresh')}"]`)
+      expect(refresh).not.toBeNull()
+      expect(refresh!.disabled).toBe(false)
+      await act(async () => { refresh!.click() })
       await flushEffects()
       // Queued, not dropped and not started in parallel.
       expect(worktrees).toHaveBeenCalledTimes(1)
@@ -410,7 +435,7 @@ describe('GitLens (changes tab, git lens) linked-worktree consistency', () => {
     }
   })
 
-  it('keeps branch switch and history failures out of the commit bar', async () => {
+  it('keeps branch switch and history failures in the view banner, not the footer action status', async () => {
     vi.spyOn(api, 'gitWorktrees').mockResolvedValue([
       { path: MAIN, branch: 'main', current: true, changes: 1 },
     ])
@@ -428,20 +453,22 @@ describe('GitLens (changes tab, git lens) linked-worktree consistency', () => {
       mountGit(root)
       await flushEffects()
 
-      const branchSelect = container.querySelectorAll<HTMLSelectElement>('select')[0]!
-      await act(async () => {
-        Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(branchSelect, 'feature')
-        branchSelect.dispatchEvent(new Event('change', { bubbles: true }))
-      })
+      // The entire footer branch button opens a menu of PLAIN branch names;
+      // the dirty marker belongs only to the footer label, never its options.
+      expect(branchButton(container).textContent).toBe('main*')
+      act(() => { branchButton(container).click() })
+      expect([...document.querySelectorAll('[role="menuitem"]')].map(item => item.textContent)).toEqual(['main', 'feature'])
+      await act(async () => { menuItem('feature').click() })
       await flushEffects()
 
       const banner = [...container.querySelectorAll<HTMLElement>('[role="alert"]')]
         .find(node => (node.textContent ?? '').includes(`${t('checkoutError')}: dirty worktree`))
       expect(banner).toBeDefined()
-      const input = container.querySelector(`textarea[placeholder="${t('commitPlaceholder')}"]`)
+      const input = container.querySelector('[data-message-box] textarea')
       expect(input).not.toBeNull()
-      // The commit bar owns only its own status line: the branch failure is
-      // rendered ABOVE it, never under the commit input.
+      // Branch/history failures are view-level, not the shared action channel.
+      expect(banner!.parentElement).toBe(container.querySelector('[data-git-scroll]'))
+      expect(container.querySelector('[data-git-footer] [role="alert"]')).toBeNull()
       expect(banner!.compareDocumentPosition(input!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     } finally {
       act(() => { root.unmount() })
@@ -474,24 +501,24 @@ describe('GitLens (changes tab, git lens) change tree', () => {
         { path: 'src/b.ts', xy: 'M ' }, // staged side
       ])
 
-      const dirs = () => [...container.querySelectorAll<HTMLButtonElement>('button[data-dir="src"]')]
-      // One 'src' row per group: a path with changes on both sides appears in
-      // both trees.
-      expect(dirs()).toHaveLength(2)
-      expect(dirs()[0]!.getAttribute('aria-expanded')).toBe('true')
-      expect(dirs()[0]!.querySelector('svg')).not.toBeNull()
+      const dir = (group: string): HTMLButtonElement =>
+        container.querySelector<HTMLButtonElement>(`[data-group="${group}"] button[data-dir="src"]`)!
+      // One 'src' row per group, independent of the sections' display order.
+      expect(container.querySelectorAll('button[data-dir="src"]')).toHaveLength(2)
+      expect(dir('unstaged').getAttribute('aria-expanded')).toBe('true')
+      expect(dir('unstaged').querySelector('svg')).not.toBeNull()
       expect(container.querySelector('button[data-path="src/a.ts"]')).not.toBeNull()
       expect(container.querySelector('button[data-path="src/a.ts"]')!.querySelector('svg')).not.toBeNull()
 
-      await act(async () => { dirs()[0]!.click() })
+      await act(async () => { dir('unstaged').click() })
       // Folded: the unstaged subtree is gone...
-      expect(dirs()[0]!.getAttribute('aria-expanded')).toBe('false')
+      expect(dir('unstaged').getAttribute('aria-expanded')).toBe('false')
       expect(container.querySelector('button[data-path="src/a.ts"]')).toBeNull()
       // ...while the staged group's own 'src' row stays open and keeps its file.
-      expect(dirs()[1]!.getAttribute('aria-expanded')).toBe('true')
+      expect(dir('staged').getAttribute('aria-expanded')).toBe('true')
       expect(container.querySelector('button[data-path="src/b.ts"]')).not.toBeNull()
 
-      await act(async () => { dirs()[0]!.click() })
+      await act(async () => { dir('unstaged').click() })
       expect(container.querySelector('button[data-path="src/a.ts"]')).not.toBeNull()
     } finally {
       act(() => { root.unmount() })
@@ -515,7 +542,8 @@ describe('GitLens (changes tab, git lens) change tree', () => {
       // Both files hang under that one row.
       expect(container.querySelector('button[data-path="src/client/changes/a.ts"]')).not.toBeNull()
       expect(container.querySelector('button[data-path="src/client/changes/b.ts"]')).not.toBeNull()
-      // Nothing on the staged side: only the empty band, no tree rows.
+      // Nothing on the staged side: no empty group and no tree rows.
+      expect(container.querySelector('[data-group="staged"]')).toBeNull()
       expect(container.querySelectorAll('[data-group="staged"] [data-path]')).toHaveLength(0)
     } finally {
       act(() => { root.unmount() })
@@ -556,7 +584,8 @@ describe('GitLens (changes tab, git lens) change tree', () => {
 
       const unstaged = container.querySelector<HTMLElement>('[data-group="unstaged"]')!
       const staged = container.querySelector<HTMLElement>('[data-group="staged"]')!
-      expect(unstaged.textContent).toContain(t('unstaged'))
+      expect(unstaged.textContent).toContain(t('gitChanges'))
+      expect(staged.textContent).toContain(t('gitStagedChanges'))
       expect(unstaged.querySelector('[data-count]')?.textContent).toBe('2')
       expect(staged.querySelector('[data-count]')?.textContent).toBe('1')
 
@@ -739,7 +768,7 @@ describe('GitLens (changes tab, git lens) change tree', () => {
       }
     })
 
-    it('says "new file" for an untracked entry and "binary" for a blob, inventing no numbers', async () => {
+    it('marks a binary blob and invents no numbers for what git never diffs', async () => {
       const { container, root } = makeRoot()
       try {
         await mountTree(container, root, [
@@ -747,10 +776,10 @@ describe('GitLens (changes tab, git lens) change tree', () => {
           { path: 'blob.bin', xy: ' M', unstaged: { binary: true } },
         ])
 
-        expect(container.querySelector('[data-path="new.txt"] [data-lines="new"]')?.textContent)
-          .toBe(t('changesNewFile'))
         expect(container.querySelector('[data-path="blob.bin"] [data-lines="binary"]')?.textContent)
           .toBe(t('diffBinary'))
+        // An untracked row already says so with its `U` badge — no second note.
+        expect(container.querySelector('[data-path="new.txt"] [data-lines]')).toBeNull()
         // Neither row claims a count...
         expect(container.querySelector('[data-path="new.txt"] [data-lines="count"]')).toBeNull()
         expect(container.querySelector('[data-path="blob.bin"] [data-lines="count"]')).toBeNull()
@@ -822,10 +851,11 @@ describe('GitLens (changes tab, git lens) change tree', () => {
         expect(counted(container, '[data-group="staged"] [data-lines="group"]'))
           .toEqual({ added: '1', deleted: '1', text: '+1−1' })
         // The path really is listed in both bands, each row printing its own
-        // side's numbers (unstaged band first, staged second).
+        // side's numbers (Staged before Changes — the Source Control order the
+        // three bands took in #944).
         const rows = [...container.querySelectorAll<HTMLElement>('button[data-path="a.txt"] [data-lines="count"]')]
         expect(rows.map(node => `${node.getAttribute('data-added')}/${node.getAttribute('data-deleted')}`))
-          .toEqual(['5/0', '1/1'])
+          .toEqual(['1/1', '5/0'])
       } finally {
         act(() => { root.unmount() })
         container.remove()
@@ -906,7 +936,7 @@ describe('GitLens (changes tab, git lens) scope swap', () => {
     // Re-queried on every use: a re-render may hand back a different node, and
     // a detached one keeps whatever its last render set.
     const box = (): HTMLTextAreaElement | null =>
-      container.querySelector(`textarea[placeholder="${t('commitPlaceholder')}"]`)
+      container.querySelector('[data-message-box] textarea')
     const typeInto = async (text: string): Promise<void> => {
       await act(async () => {
         const node = box()
