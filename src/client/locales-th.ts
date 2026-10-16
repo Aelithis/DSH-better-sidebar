@@ -233,7 +233,7 @@ export const th: Record<string, string> = {
   worktree: 'เวิร์กทรี',
   checkoutError: 'สลับ branch ล้มเหลว',
   history: 'ประวัติ',
-  changes: 'การเปลี่ยนแปลงไฟล์',
+  changes: 'Git',
   changesGitLens: 'Git',
   changesSessionLens: 'เซสชัน',
   changesFilterAll: 'ทั้งหมด',

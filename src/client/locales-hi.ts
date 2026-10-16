@@ -233,7 +233,7 @@ export const hi: Record<string, string> = {
   worktree: 'वर्कट्री',
   checkoutError: 'ब्रांच स्विच विफल',
   history: 'इतिहास',
-  changes: 'फ़ाइल परिवर्तन',
+  changes: 'Git',
   changesGitLens: 'Git',
   changesSessionLens: 'सेशन',
   changesFilterAll: 'सभी',

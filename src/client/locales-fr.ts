@@ -226,7 +226,7 @@ export const fr: Record<string, string> = {
   worktree: 'Arborescence de travail',
   checkoutError: 'Échec du changement de branche',
   history: 'Historique',
-  changes: 'Modifications',
+  changes: 'Git',
   changesGitLens: 'Git',
   changesSessionLens: 'Session',
   changesFilterAll: 'Tout',

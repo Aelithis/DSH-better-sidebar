@@ -409,8 +409,11 @@ test('the explorer keeps its state across a tab switch and a conversation round 
   // changes window) — asserted by the strip below, since the ACTIVE tab is
   // whichever the lane last showed.
   // The changes tab is where the unsaved message lives: it is the other claim
-  // `keepMounted` makes on #712's behalf.
-  const changesTab = page.locator('[data-sidebar-right-panel]:visible [role="tab"]').filter({ hasText: /Changes|文件变动/ })
+  // `keepMounted` makes on #712's behalf. Matched through the host's tab STRIP,
+  // not by text alone: the title is a language-neutral "Git" and the tab's own
+  // lens switcher carries that same word, so an unscoped text filter would
+  // count two elements.
+  const changesTab = page.locator('[data-sidebar-right-panel]:visible [data-dockkit-strip] [role="tab"]').filter({ hasText: /Git/ })
   await expect(changesTab, 'the changes tab survives the round trip').toHaveCount(1, { timeout: 30_000 })
   await changesTab.first().click()
   const backCommitBox = page.locator('[data-sidebar-right-panel]:visible')

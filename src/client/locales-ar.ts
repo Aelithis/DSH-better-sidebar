@@ -234,7 +234,7 @@ export const ar: Record<string, string> = {
   worktree: 'شجرة العمل',
   checkoutError: 'فشل تبديل الفرع',
   history: 'السجل',
-  changes: 'تغييرات الملفات',
+  changes: 'Git',
   changesGitLens: 'Git',
   changesSessionLens: 'الجلسة',
   changesFilterAll: 'الكل',

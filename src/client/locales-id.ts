@@ -231,7 +231,7 @@ export const id: Record<string, string> = {
   worktree: 'Worktree',
   checkoutError: 'Beralih branch gagal',
   history: 'Riwayat',
-  changes: 'Perubahan berkas',
+  changes: 'Git',
   changesGitLens: 'Git',
   changesSessionLens: 'Sesi',
   changesFilterAll: 'Semua',

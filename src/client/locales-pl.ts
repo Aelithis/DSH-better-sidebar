@@ -235,7 +235,7 @@ export const pl: Record<string, string> = {
   worktree: 'Drzewo robocze',
   checkoutError: 'Przełączenie gałęzi nie powiodło się',
   history: 'Historia',
-  changes: 'Zmiany plików',
+  changes: 'Git',
   changesGitLens: 'Git',
   changesSessionLens: 'Sesja',
   changesFilterAll: 'Wszystko',

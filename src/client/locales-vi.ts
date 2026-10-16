@@ -233,7 +233,7 @@ export const vi: Record<string, string> = {
   worktree: 'Worktree',
   checkoutError: 'Chuyển branch thất bại',
   history: 'Lịch sử',
-  changes: 'Thay đổi tệp',
+  changes: 'Git',
   changesGitLens: 'Git',
   changesSessionLens: 'Phiên',
   changesFilterAll: 'Tất cả',

@@ -233,7 +233,7 @@ export const ja: Record<string, string> = {
   worktree: 'ワークツリー',
   checkoutError: 'ブランチ切り替えに失敗',
   history: '履歴',
-  changes: 'ファイル変更',
+  changes: 'Git',
   changesGitLens: 'Git',
   changesSessionLens: 'セッション',
   changesFilterAll: 'すべて',

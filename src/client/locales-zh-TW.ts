@@ -248,7 +248,7 @@ export const zhTW: Record<string, string> = {
   worktree: '工作樹',
   checkoutError: '切換分支失敗',
   history: '歷史',
-  changes: '檔案變動',
+  changes: 'Git',
   changesGitLens: 'Git',
   changesSessionLens: '本輪檔案',
   changesFilterAll: '全部',

@@ -233,7 +233,7 @@ export const tr: Record<string, string> = {
   worktree: 'Çalışma ağacı',
   checkoutError: 'Dal değiştirme başarısız',
   history: 'Geçmiş',
-  changes: 'Dosya değişiklikleri',
+  changes: 'Git',
   changesGitLens: 'Git',
   changesSessionLens: 'Oturum',
   changesFilterAll: 'Tümü',
