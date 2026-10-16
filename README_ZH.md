@@ -89,18 +89,17 @@ dsh plugin --profile web add dsh-better-sidebar@latest
 
 ## 🆕 最近更新
 
+**v0.27.0** - 完整发布历史见 [Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases) · [CHANGELOG](./CHANGELOG.md)
+
+- **Git 页面重做**：Source Control 分组、支持分支筛选的只读提交图，以及共用的「提交详情 / 内容 / 差异」预览区
+- **变更追踪修正**：暂存和未暂存行数分离、嵌套仓库发现、按会话解析路径、PTC 文件操作可见与长轮询
+- **选中行不再错位**：修复整合时引入的文件行漂移和异常边框，新增真实挂载布局回归
+- **侧边对话**：从最近一次 summarizing compaction 构造子会话，不再全量复制父日志
+
 **v0.26.1** — 完整发布历史见 [Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases) · [CHANGELOG](./CHANGELOG.md)
 
 - ⚡ **修掉「0.24 没问题、之后越用越卡」的稳态开销**（社区反馈：侧栏在前台开久了卡、多轮对话后 DSH 卡、重启又暂时好；分界线经产物级 A/B 落在 v0.25.0）：两个 500ms 表按可见性门控（右侧面板展开态改全模块一条共享表、空白会话兜底入口只在真的渲染时起表）、每 tab 的 5s 会话根轮询收敛成**每会话一条且只在可见时**、文件树 watch 与侧聊推送 parked 即停、`keepMounted` 保留语义但缓存与记账全部有界、宿主 cwd 解析加在飞去重且 TTL 3s→15s
 - 📊 真机实测（4 个访问过的页签、15s 空闲窗）：活着的 500ms 表 **3→1**、5s 表 **5→0**、`session.cwd` 请求 **15→0**、命中测试 **1620→0**、强制布局 **5190→30**
-
-**v0.26.0** — 完整发布历史见 [Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases) · [CHANGELOG](./CHANGELOG.md)
-
-- 🚀 **传输全面流式化**：上传 / 下载 / HTML 预览 / 打包再无大小上限；超大文件改为只读分页预览
-- 📄 新增 **`.jsonl` / `.ndjson` 预览**：逐条可折叠的记录卡片，可编辑保存
-- 💬 **侧边对话实时化**：消息推送到达、排队可见并可按条撤回、每个线程独立选模型
-- 🧩 **任务管理面板重构**：按组展开、Token 用量与耗时、画布动效
-- 🖥️ 底部工作台**多终端页签**；⚡ git 状态轮询不再拖慢界面（基线 30s，自动退档）
 
 ## 🔌 插件生态
 
