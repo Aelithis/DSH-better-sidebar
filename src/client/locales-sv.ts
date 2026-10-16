@@ -433,6 +433,7 @@ export const sv: Record<string, string> = {
   sideChatBlockFailed: 'Misslyckades',
   sideChatBlockDone: 'Klar',
   sideChatBlockNoOutput: '(ingen utdata)',
+  sideChatBlockCommandLine: 'Kommandorad {line}',
   codeBlockTitle: 'Kodblock',
   codeBlockWrap: 'Radbrytning',
   codeBlockUnwrap: 'Ingen radbrytning',

@@ -448,6 +448,7 @@ export const id: Record<string, string> = {
   sideChatBlockFailed: 'Gagal',
   sideChatBlockDone: 'Selesai',
   sideChatBlockNoOutput: '(tanpa output)',
+  sideChatBlockCommandLine: 'Baris perintah {line}',
   codeBlockTitle: 'Blok kode',
   codeBlockWrap: 'Bungkus baris',
   codeBlockUnwrap: 'Jangan bungkus baris',

@@ -448,6 +448,7 @@ export const ru: Record<string, string> = {
   sideChatBlockFailed: 'Ошибка',
   sideChatBlockDone: 'Готово',
   sideChatBlockNoOutput: '(нет вывода)',
+  sideChatBlockCommandLine: 'Строка команды {line}',
   codeBlockTitle: 'Блок кода',
   codeBlockWrap: 'Переносить строки',
   codeBlockUnwrap: 'Не переносить строки',

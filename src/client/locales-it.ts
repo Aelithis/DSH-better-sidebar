@@ -441,6 +441,7 @@ export const it: Record<string, string> = {
   sideChatBlockFailed: 'Non riuscito',
   sideChatBlockDone: 'Completato',
   sideChatBlockNoOutput: '(nessun output)',
+  sideChatBlockCommandLine: 'Riga di comando {line}',
   codeBlockTitle: 'Blocco di codice',
   codeBlockWrap: 'A capo automatico',
   codeBlockUnwrap: 'Nessun a capo',

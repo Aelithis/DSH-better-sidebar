@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test, expect, type Page } from '@playwright/test'
-import { createHostApi, gotoPage, hostRpc, sendFirstMessage } from './host'
+import { createHostApi, dismissOnboarding, gotoPage, hostRpc, sendFirstMessage } from './host'
 
 /**
  * A SELECTED change row must stay an in-flow 28px band inside its own
@@ -120,10 +120,7 @@ function rowGeometryProblems(page: Page, expected: SelectedRow | null): Promise<
  *  the expand control is gone once the sidebar is open). */
 async function openGitPage(page: Page): Promise<void> {
   await expect(page.locator('[data-dsh-better-sidebar]')).toBeAttached({ timeout: 90_000 })
-  for (const label of [/^Continue$/, /^Configure later$/]) {
-    const button = page.getByRole('button', { name: label }).first()
-    try { await button.click({ timeout: 8_000 }) } catch { /* onboarding may already be dismissed */ }
-  }
+  await dismissOnboarding(page)
   await sendFirstMessage(page)
   await page.locator('[data-sidebar-right-expand]').first().click()
   await page.locator('[data-sidebar-right-guide-entry="git"]').click()

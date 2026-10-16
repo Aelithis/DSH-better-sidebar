@@ -177,7 +177,7 @@ function responseRecorder(): { res: SidebarHttpResponse; wire: Wire } {
 function mountHost(): { api: SidebarWebRoute; download: SidebarWebRoute } {
   const routes: SidebarWebRoute[] = []
   const ctx = {
-    webRuntime: { trustedHosts: [] },
+    connection: { requestRejection: () => undefined },
     webServer: {
       register: (route: SidebarWebRoute) => { routes.push(route); return () => {} },
       registerUpgrade: (route: SidebarWebUpgradeRoute) => { void route; return () => {} },

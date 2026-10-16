@@ -8,10 +8,14 @@
  * afterSeq deltas, tail cap, live/persisted sources).
  */
 import { describe, expect, it, vi } from 'vitest'
+import { resolve } from 'node:path'
+import WorkingDirectoryService from '@deepseek-ai/dsh-working-directory'
+import { Session, SessionLogOffset, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
 import { SUBAGENT_DESCRIPTOR_VERSION } from '@deepseek-ai/dsh-subagent'
 import { buildSidechatApi } from '../src/sidechat-routes.ts'
 import { SidebarError } from '../src/wire.ts'
-import { SIDE_BOUNDARY_PROMPT, SIDE_INJECTION_SOURCE_KIND, SIDE_NEW_THREAD_TITLE, sideLabel } from '../src/sidechat-core.ts'
+import { buildSidechatInheritance, SIDE_BOUNDARY_PROMPT, SIDE_INJECTION_SOURCE_KIND, SIDE_NEW_THREAD_TITLE, sideLabel } from '../src/sidechat-core.ts'
 import type { Context } from '../src/context-types.ts'
 
 /** A fake live agent (inject/followup/cancel/inbox spied). */
@@ -107,8 +111,10 @@ function ctxWith(services: {
   sessionPersistence?: unknown
   llm?: unknown
   sessionController?: unknown
+  workingDirectory?: unknown
 }): Context {
   const table: Record<string, unknown> = {
+    ...(services.workingDirectory === undefined ? {} : { workingDirectory: services.workingDirectory }),
     ...(services.agents === undefined ? {} : { agents: services.agents }),
     ...(services.agentPresets === undefined ? {} : { agentPresets: services.agentPresets }),
     ...(services.sessionTitle === undefined ? {} : { sessionTitle: services.sessionTitle }),
@@ -130,6 +136,75 @@ function ev(type: string, seq: number, data: Record<string, unknown> = {}): { ty
 }
 
 describe('sidechat.start', () => {
+  it('creates a sidechat in the current execution directory, not the original header cwd', async () => {
+    const parent = agent('parent')
+    const services = happyServices(parent, agent('child'))
+    const get = vi.fn((session: unknown) => {
+      expect(session).toBe(parent.session)
+      return '/current-execution-directory'
+    })
+    const api = buildSidechatApi(ctxWith({ ...services, workingDirectory: { get } }))
+    await api['sidechat.start']({ sessionId: 'parent', question: 'current project' })
+    expect(services.create.mock.calls[0]![0]).toMatchObject({ meta: { cwd: '/current-execution-directory' } })
+    expect(get).toHaveBeenCalledOnce()
+  })
+
+  it('stamps current cwd after a truncated seed so the real working-directory projection cannot restore an older cwd', async () => {
+    const original = resolve('/original-project')
+    const previous = resolve('/previous-execution')
+    const current = resolve('/current-execution')
+    const parent = agent('parent', {
+      header: { cwd: original },
+      events: [
+        ev('working-directory/change', 0, { cwd: previous }),
+        ev('turn/start', 1, { turn: 1 }),
+        ev('step/start', 2, { turn: 1, step: 1 }),
+        ev('working-directory/change', 3, { cwd: current }),
+        ev('tool/call', 4, { turn: 1, step: 1, callId: 'pending', name: 'bash', arguments: '{}' }),
+      ],
+    })
+    type DirectoryProjection = {
+      init(header: { cwd?: string }): string | null
+      apply(state: string | null, event: SessionEvent): string | null
+    }
+    let registered: DirectoryProjection | undefined
+    // Capture the REAL alpha.5 unit contributed by the host service. These
+    // context seams do not run system-prompt assembly, fs checks, or notices.
+    const workingDirectory = new WorkingDirectoryService({
+      reflect: { provide: () => {} },
+      sessionProjections: {
+        register: (definition: DirectoryProjection) => { registered = definition },
+        stateOf: (session: { header: { cwd?: string }; snapshotEvents(): SessionEvent[] }) => {
+          if (registered === undefined) throw new Error('working-directory unit not registered')
+          return session.snapshotEvents().reduce((cwd, event) => registered!.apply(cwd, event), registered.init(session.header))
+        },
+      },
+      systemPrompt: { context: () => {}, getContextOrder: () => 0 },
+      on: () => {},
+      effect: () => {},
+    } as never, {})
+    expect(workingDirectory.get(parent.session as never)).toBe(current)
+    const services = happyServices(parent, agent('child'))
+    await buildSidechatApi(ctxWith({ ...services, workingDirectory }))['sidechat.start']({ sessionId: 'parent' })
+    const options = services.create.mock.calls[0]![0] as {
+      sessionId: SessionId; meta: Partial<SessionHeader>; seed: readonly SessionEvent[]; inheritedEventCount: number
+    }
+    const projection = registered!
+    // Control proves that merely changing meta.cwd is insufficient: the
+    // dangling-call cut dropped current but retained previous in the seed.
+    const unstamped = buildSidechatInheritance(parent.session.snapshotEvents() as never).seed
+    expect(unstamped.map(event => event.type)).toEqual(['working-directory/change'])
+    expect(unstamped.reduce((cwd, event) => projection.apply(cwd, event as SessionEvent), projection.init({ cwd: current }))).toBe(previous)
+    const child = Session.create(options.sessionId, options.seed, {
+      ...options.meta, id: options.sessionId, version: SESSION_FORMAT_VERSION, createdAt: Date.now(), isSeeded: true,
+    }, SessionLogOffset(options.inheritedEventCount))
+    expect(child.header.cwd).toBe(current)
+    expect(options.seed.every((event, index) => event.seq === index)).toBe(true)
+    expect(child.ownEvents()[0]?.type).toBe('session/end-seed')
+    expect(workingDirectory.get(child)).toBe(current)
+    expect(options.seed.at(-2)).toMatchObject({ type: 'working-directory/change', data: { cwd: current } })
+  })
+
   it('creates a seeded subagent-origin child and admits the boundary + question', async () => {
     const parent = agent('parent', {
       events: [

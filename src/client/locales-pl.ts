@@ -452,6 +452,7 @@ export const pl: Record<string, string> = {
   sideChatBlockFailed: 'Niepowodzenie',
   sideChatBlockDone: 'Zakończono',
   sideChatBlockNoOutput: '(brak wyniku)',
+  sideChatBlockCommandLine: 'Wiersz polecenia {line}',
   codeBlockTitle: 'Blok kodu',
   codeBlockWrap: 'Zawijanie wierszy',
   codeBlockUnwrap: 'Bez zawijania wierszy',

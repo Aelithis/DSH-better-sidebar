@@ -9,14 +9,12 @@
  * conversation, same provider context-cache prefix — while the shadowed
  * bulk never lands in the durable copy. The construction is verified with
  * the REAL fold (`foldSurface` from `@deepseek-ai/dsh-session/surface`) and
- * pinned against the REAL session relational invariants
- * (`@deepseek-ai/dsh-session/invariant`): when the tail cannot be proven
+ * checked by the real session seed validator: when the tail cannot be proven
  * equivalent, the builder falls back to today's verbatim full copy.
  */
 import { describe, expect, it } from 'vitest'
 import { deriveEventMessage, foldSurface } from '@deepseek-ai/dsh-session/surface'
 import { Session, SessionLogOffset, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
-import * as SessionInvariant from '@deepseek-ai/dsh-session/invariant'
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import { buildSidechatInheritance } from '../src/sidechat-core.ts'
 import type { SidebarSessionEvent } from '../src/context-types.ts'
@@ -264,23 +262,18 @@ function expectContiguous(seed: readonly { seq: number }[]): void {
   seed.forEach((event, index) => expect(event.seq).toBe(index))
 }
 
-/** Run the REAL session relational invariants over one candidate log and
- *  return the failure messages (empty = the log satisfies them). */
-function invariantFailures(log: readonly SidebarSessionEvent[]): string[] {
-  const failures: string[] = []
-  const session = { snapshotEvents: () => log }
-  const ctx = {
-    sessions: { list: () => [session] },
-    on: () => {},
-    invariants: {
-      register: (_pkg: string, installer: (c: unknown, f: (m: string) => void) => void) => {
-        installer(ctx, (message: string) => { failures.push(message) })
-        return () => {}
-      },
-    },
-  }
-  void SessionInvariant.apply(ctx as never)
-  return failures
+/** Validate a complete inherited seed through the same real constructor as the routes. */
+function expectAcceptedSeed(seed: readonly SidebarSessionEvent[]): void {
+  const id = 'session-compaction-seed-acceptance' as SessionId
+  const session = Session.create(
+    id,
+    seed as unknown as readonly SessionEvent[],
+    { version: SESSION_FORMAT_VERSION, id, createdAt: Date.now(), isSeeded: true },
+    SessionLogOffset(seed.length),
+  )
+  expect(session.snapshotEvents()).toHaveLength(seed.length + 1)
+  expect(session.ownEvents()).toHaveLength(1)
+  expect(session.ownEvents()[0]?.type).toBe('session/end-seed')
 }
 
 describe('buildSidechatInheritance compaction tail', () => {
@@ -322,15 +315,6 @@ describe('buildSidechatInheritance compaction tail', () => {
     expect(child).toEqual(parent)
   })
 
-  it('satisfies the real session relational invariants', () => {
-    const events = compactedLog()
-    const { seed } = buildSidechatInheritance(events)
-    expect(seed.length).toBeLessThan(events.length)
-    expect(invariantFailures(events)).toEqual([])
-    expect(invariantFailures(seed)).toEqual([])
-    expect(invariantFailures(buildSidechatInheritance(turn(0, 1, { callId: 'c1' }).events).seed)).toEqual([])
-  })
-
   it('is accepted by the real dsh-session seed validator', () => {
     const events = compactedLog()
     const { seed } = buildSidechatInheritance(events)
@@ -338,19 +322,8 @@ describe('buildSidechatInheritance compaction tail', () => {
     // inherited cut) — this is the layer that once rejected a seed whose
     // surfaceOp markers were stripped, so it gates every envelope decision
     // the rebasing makes.
-    const id = 'session-compaction-seed-acceptance'
-    const session = Session.create(
-      id as SessionId,
-      seed as never,
-      { version: SESSION_FORMAT_VERSION, id: id as SessionId, createdAt: Date.now(), isSeeded: true },
-      SessionLogOffset(seed.length),
-    )
-    // The constructor appends the inherited-cut marker right after the seed,
-    // and that marker is the child's first own event (log position = the
-    // inherited count) — same shape as today's full-copy threads.
-    expect(session.snapshotEvents()).toHaveLength(seed.length + 1)
-    expect(session.ownEvents()).toHaveLength(1)
-    expect(session.ownEvents()[0]?.type).toBe('session/end-seed')
+    // The constructor also appends the child's first own end-seed marker.
+    expectAcceptedSeed(seed)
   })
 
   it('falls back to the verbatim full copy when the log has no compaction', () => {
@@ -417,7 +390,7 @@ describe('buildSidechatInheritance compaction tail', () => {
     expect(seed.at(-2)?.type).toBe('step/end')
     expect(seed.at(-1)?.type).toBe('turn/end')
     expect((seed.at(-1) as { data?: { reason?: { kind?: string } } }).data?.reason?.kind).toBe('interrupted')
-    expect(invariantFailures(seed)).toEqual([])
+    expectAcceptedSeed(seed)
   })
 
   it('delivers the dangling-tool snapshot on the trimmed tail (mid-turn compaction)', () => {
@@ -432,6 +405,7 @@ describe('buildSidechatInheritance compaction tail', () => {
     expect(seed.at(-1)?.type).not.toBe('tool/call')
     expect(snapshot).not.toBeNull()
     expect(JSON.stringify(snapshot)).toContain('bash')
+    expectAcceptedSeed(seed)
   })
 
   it('skips shadowed nodes and orphaned calls when the region ends mid-turn', () => {
@@ -448,8 +422,8 @@ describe('buildSidechatInheritance compaction tail', () => {
     expect(seed.some(event => JSON.stringify(event).includes('mid result'))).toBe(false)
     expect(seed.some(event => JSON.stringify(event).includes('a2 kept'))).toBe(true)
     expect(visibleSequence(seed)).toEqual(visibleSequence(events))
+    expectAcceptedSeed(seed)
     expectContiguous(seed)
-    expect(invariantFailures(seed)).toEqual([])
   })
 
   it('remaps replace operations that stay inside the tail', () => {
@@ -484,6 +458,7 @@ describe('buildSidechatInheritance compaction tail', () => {
     expect(rebased).toBeDefined()
     expect(rebased?.surfaceOp?.startSeq).toBeLessThan(rebased?.seq ?? 0)
     expect(rebased?.surfaceOp?.endSeq).toBeLessThan(rebased?.seq ?? 0)
+    expectAcceptedSeed(seed)
   })
 
   it('trims when the protected head was rewritten mid-session (turn 1, later step)', () => {
@@ -528,7 +503,7 @@ describe('buildSidechatInheritance compaction tail', () => {
     expect(head?.data?.turn).toBe(1)
     expect(head?.data?.step).toBe(1)
     expect(visibleSequence(seed)).toEqual(visibleSequence(events))
-    expect(invariantFailures(seed)).toEqual([])
+    expectAcceptedSeed(seed)
   })
 
   it('trims when the pruner rewrote a keep-window tool result mid-turn', () => {
@@ -578,7 +553,7 @@ describe('buildSidechatInheritance compaction tail', () => {
     const record = seed.find(event => event.type === 'compaction/prune') as { data?: { shadowedSeqs?: number[] } }
     expect(record?.data?.shadowedSeqs?.[0]).toBe(replacement?.surfaceOp?.startSeq)
     expect(visibleSequence(seed)).toEqual(visibleSequence(events))
-    expect(invariantFailures(seed)).toEqual([])
+    expectAcceptedSeed(seed)
   })
 
   it('trims when the keep window opens on a turn whose inbox insert precedes its turn/start', () => {
@@ -612,16 +587,9 @@ describe('buildSidechatInheritance compaction tail', () => {
     const splices = seed.filter(event => event.type === 'agent/inbox/spliced')
     expect(splices.length).toBeGreaterThanOrEqual(2)
     expect(visibleSequence(seed)).toEqual(visibleSequence(events))
-    expect(invariantFailures(seed)).toEqual([])
     // The real validator accepts (this is the layer that rejected the
     // pre-fix seed on the real session).
-    const id = 'session-inbox-splice-acceptance'
-    Session.create(
-      id as SessionId,
-      seed as never,
-      { version: SESSION_FORMAT_VERSION, id: id as SessionId, createdAt: Date.now(), isSeeded: true },
-      SessionLogOffset(seed.length),
-    )
+    expectAcceptedSeed(seed)
   })
 
   it('drops a mid-keep compaction group atomically when its citations fall in the dropped span', () => {
@@ -685,12 +653,13 @@ describe('buildSidechatInheritance compaction tail', () => {
     const seedGroups = seed.filter(event => event.type === 'compaction/start' || event.type === 'compaction/summary' || event.type === 'compaction/end')
     expect(seedGroups).toEqual([])
     expect(visibleSequence(seed)).toEqual(visibleSequence(events))
-    expect(invariantFailures(seed)).toEqual([])
+    expectAcceptedSeed(seed)
     // Control: the same log without the consumed group (its four trailing
     // events) cuts at cp0 instead and also trims.
     const control = events.slice(0, -4)
     const controlSeed = buildSidechatInheritance(control).seed
     expect(controlSeed.length).toBeLessThan(control.length)
+    expectAcceptedSeed(controlSeed)
   })
 
   it('drops a command/done atomically when its run falls in the dropped span', () => {
@@ -732,7 +701,7 @@ describe('buildSidechatInheritance compaction tail', () => {
     expect(seed.some(event => event.type === 'command/done')).toBe(false)
     expect(seed.some(event => event.type === 'command/run')).toBe(false)
     expect(visibleSequence(seed)).toEqual(visibleSequence(events))
-    expect(invariantFailures(seed)).toEqual([])
+    expectAcceptedSeed(seed)
 
     // Together: a command that runs INSIDE the keep window and settles
     // there — both records ride, and the done's citation remaps onto the
@@ -759,7 +728,7 @@ describe('buildSidechatInheritance compaction tail', () => {
     // The citation names a non-command event (the user message), not the run.
     expect(trimmed.seed[citedIdx]?.type).toBe('user/message')
     expect(visibleSequence(trimmed.seed)).toEqual(visibleSequence(together))
-    expect(invariantFailures(trimmed.seed)).toEqual([])
+    expectAcceptedSeed(trimmed.seed)
   })
 
   it('reuses the previous compaction when the newest summary is orphaned', () => {

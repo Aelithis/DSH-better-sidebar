@@ -7,7 +7,7 @@
   <a href="https://github.com/omdsh-dev/DSH-better-sidebar/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/omdsh-dev/DSH-better-sidebar/actions/workflows/ci.yml/badge.svg" /></a>
   <a href="https://github.com/omdsh-dev/DSH-better-sidebar/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/omdsh-dev/DSH-better-sidebar" /></a>
   <a href="https://opensource.org/licenses/MIT"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-yellow.svg" /></a>
-  <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="Supported DSH versions: 0.2.0-rc.2+" src="https://img.shields.io/badge/DSH-0.2.0--rc.2%2B-4d6bfe" /></a>
+  <a href="https://www.npmjs.com/package/@deepseek-ai/dsh?activeTab=versions"><img alt="Supported DSH versions: 0.2.1-alpha.5+" src="https://img.shields.io/badge/DSH-0.2.1--alpha.5%2B-4d6bfe" /></a>
 </div>
 
 <div align="center">
@@ -35,17 +35,19 @@ Switch to **Git Graph** at the top of the Git panel for commit nodes, forks and 
 ## 🚀 Installation
 
 ```sh
-dsh plugin --profile web add dsh-better-sidebar@latest
+dsh plugin --profile web add dsh-better-sidebar@0.28.0-alpha.0
 ```
 
-Then **hard-refresh the browser** (Cmd/Ctrl+Shift+R). Requires DSH **0.2.0-rc.2+**.
+Then **hard-refresh the browser** (Cmd/Ctrl+Shift+R). Requires DSH **0.2.1-alpha.5+**.
 
 <details>
 <summary><b>Pick the plugin version for your DSH version</b></summary>
 
 | Your DSH version | Install command |
 | --- | --- |
-| **0.2.0-rc.2+** (incl. later stable) | `dsh plugin --profile web add dsh-better-sidebar@latest` |
+| **0.2.1-alpha.5+** (this alpha support line) | `dsh plugin --profile web add dsh-better-sidebar@0.28.0-alpha.0` |
+| **0.2.0-rc.2** | `dsh plugin --profile web add dsh-better-sidebar@0.26.1` |
+| **0.2.0-rc.1** | `dsh plugin --profile web add dsh-better-sidebar@0.24.1` |
 | **0.1.7-rc.1 ~ 0.1.7 stable** | `dsh plugin --profile web add dsh-better-sidebar@0.22.1` |
 | 0.1.7-alpha.x | No compatible release — upgrade DSH to rc.1 first |
 | 0.1.6 and earlier (incl. the 0.1.5 line) | `dsh plugin --profile web add dsh-better-sidebar@0.19.1` |
@@ -61,12 +63,12 @@ Always pin **exact versions** for older releases (`latest` moves forward with ea
 
 ```text
 Install the dsh-better-sidebar plugin (a sidebar workbench for DSH):
-1. Run dsh plugin --profile web add dsh-better-sidebar@latest (latest = current stable)
+1. Run dsh plugin --profile web add dsh-better-sidebar@0.28.0-alpha.0 (this alpha, not latest)
 2. Remind me to hard-refresh the browser (Cmd/Ctrl+Shift+R) afterwards
 If something fails, check the FAQ table in https://github.com/omdsh-dev/DSH-better-sidebar README first.
 ```
 
-**One-line script** — clone this repo and run `bash scripts/install.sh` (macOS / Linux / Windows Git Bash; `install.ps1` for native Windows). It handles installation + bundle registration.
+**One-line script** — clone this repo and run `bash scripts/install.sh 0.28.0-alpha.0` (macOS / Linux / Windows Git Bash; `./scripts/install.ps1 -Version 0.28.0-alpha.0` for native Windows). It handles installation + bundle registration.
 
 **Updating**: just re-run the install command, then hard-refresh the browser.
 
@@ -83,11 +85,17 @@ If something fails, check the FAQ table in https://github.com/omdsh-dev/DSH-bett
 | **Two sidebars** on the page | Double mounting. Remove the legacy manual mount line (`- insert: ... better-sidebar ...`) from `~/.dsh/profiles/web/cordis.patch.yml`; aggregate packages mounting this package under a different id are auto-yielded, no action needed. |
 | Settings values gone after upgrade | Since DSH 0.1.7, preferences live on this plugin's mount row in the profile (default entry id `better-sidebar`). The plugin migrates your old `settings.yaml` values once on first start and never overwrites newer values. |
 | Terminal unavailable | Terminals are provided by **DSH itself** (this plugin ships no PTY) — see DSH docs; "host provides no terminal capability" in the bottom terminal means this deployment has no terminal controller mounted. |
-| `dsh: command not found` | Install DSH first; or use `npx -y --package @deepseek-ai/dsh dsh plugin --profile web add dsh-better-sidebar@latest`. |
+| `dsh: command not found` | Install DSH first; or use `npx -y --package @deepseek-ai/dsh@0.2.1-alpha.5 dsh plugin --profile web add dsh-better-sidebar@0.28.0-alpha.0`. |
 
 </details>
 
 ## 🆕 Recent Updates
+
+**v0.28.0-alpha.0 (locally validated; unpublished)**
+
+- Adapt to DSH **0.2.1-alpha.5+**: use native Connection admission for HTTP/WS and remove the retired invariant companion and dependency
+- Files, Git, terminals and newly created side chats follow the session’s current working directory
+- **DSH 0.2.0-rc.2 users stay on npm-published v0.26.1**; v0.27.0 has not been published. Use the explicit alpha version above, not `latest`
 
 **v0.27.0** - full release history at [Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases) · [CHANGELOG](./CHANGELOG_EN.md)
 

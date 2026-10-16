@@ -443,6 +443,7 @@ export const fr: Record<string, string> = {
   sideChatBlockFailed: 'Échec',
   sideChatBlockDone: 'Terminé',
   sideChatBlockNoOutput: '(aucune sortie)',
+  sideChatBlockCommandLine: 'Ligne de commande {line}',
   codeBlockTitle: 'Bloc de code',
   codeBlockWrap: 'Retour à la ligne',
   codeBlockUnwrap: 'Ne pas retourner à la ligne',
