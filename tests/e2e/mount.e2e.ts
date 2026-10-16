@@ -335,7 +335,19 @@ test('plugin mounts into the DSH shell and survives a built-in tab sweep', async
     if (await page.locator('[data-sidebar-right-guide]').count() === 0) await addTab.click()
     const entry = page.locator(`[data-sidebar-right-guide-entry="${kind}"]`)
     await expect(entry, `guide entry "${kind}" must be reachable`).toHaveCount(1, { timeout: 30_000 })
+    let changesRequests = 0
+    /** Count the session-event requests the browser actually issues while idle. */
+    const countChangesRequest = (request: { url(): string }): void => {
+      if (request.url().includes('/sidebar/api/changes.ops')) changesRequests += 1
+    }
+    if (kind === 'git') page.on('request', countChangesRequest)
     await entry.click()
+    if (kind === 'git') {
+      await page.locator('[data-dsh-native-tab-host]:visible').getByRole('tab', { name: /^(Session|本轮文件)$/ }).click()
+      await page.waitForTimeout(8_000)
+      page.off('request', countChangesRequest)
+      expect(changesRequests, '空窗 8 秒内应有一次基线请求和一条等待中的增量请求').toBe(2)
+    }
     await page.waitForTimeout(1_500)
     await assertNoCrash()
   }
@@ -904,10 +916,10 @@ test('a shell-stamped render URL mounts normally; plugin chrome carries the stab
   expect(regions.layerChild, 'panels stay no-drag so their controls keep receiving clicks').toBe('no-drag')
 })
 
-test('the custom-CSS escape hatch injects the user stylesheet live', async ({ request, page }) => {
+test('the custom-CSS escape hatch injects the user stylesheet live', async ({ page }) => {
   // The one setting the removed scheme row really owned: user-space CSS. It
   // has no scheme gate any more — a non-empty customCss is always applied.
-  const update = await request.post(sidebarApi('settings.update'), {
+  const update = await api.post(sidebarApi('settings.update'), {
     data: { patch: { customCss: 'html { --dsh-e2e-marker: 1; }' } },
   })
   expect(update.ok(), `settings.update: ${update.status()}`).toBe(true)
@@ -919,6 +931,6 @@ test('the custom-CSS escape hatch injects the user stylesheet live', async ({ re
     const marker = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--dsh-e2e-marker').trim())
     expect(marker).toBe('1')
   } finally {
-    await request.post(sidebarApi('settings.update'), { data: { patch: { customCss: '' } } })
+    await api.post(sidebarApi('settings.update'), { data: { patch: { customCss: '' } } })
   }
 })

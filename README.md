@@ -22,11 +22,15 @@
 
 | | |
 |---|---|
-| **🗂️ File Management**<br/>Lazy-loading tree, git status colors, live directory watch, global search, drag-and-drop upload, multi-select batch actions, dual-source "Open with" menu.<br/><img alt="File tree with git colors" src="./docs/screenshots/files-tree.png" /><br/><img alt="Context menu: Open with + Zip and download" src="./docs/screenshots/files-menu-openwith.png" /> | **🌿 Changes**<br/>Git lens + this-session AI-changes lens in one: hierarchical tree, stage / commit / history, unified diff rendering (intra-line highlights + syntax coloring).<br/><img alt="Changes: hierarchical tree" src="./docs/screenshots/changes-tree.png" /> |
+| **🗂️ File Management**<br/>Lazy-loading tree, git status colors, live directory watch, global search, drag-and-drop upload, multi-select batch actions, dual-source "Open with" menu.<br/><img alt="File tree with git colors" src="./docs/screenshots/files-tree.png" /><br/><img alt="Context menu: Open with + Zip and download" src="./docs/screenshots/files-menu-openwith.png" /> | **🌿 Git**<br/>Source Control (Merge / Staged / Changes groups, message box with Generate, branch + sync footer) plus a this-session AI-changes lens, with a **read-only commit graph** (lanes, ref badges, branch filter, commit details) in one tab.<br/><img alt="Git: hierarchical tree" src="./docs/screenshots/changes-tree.png" /> |
 | **📝 Editable Editor & Previews**<br/>An editable CodeMirror (the stock preview is read-only), Markdown + Mermaid + floating outline, sandboxed HTML preview, `.jsonl` record cards, paged preview for huge files, streaming transfers with no size caps.<br/><img alt="Markdown + Mermaid preview" src="https://github.com/user-attachments/assets/fe0e5182-55bb-45cc-b98b-a2877c2bdd38" /> | **🧩 Tasks**<br/>Live subagent topology (workflow graph / tree modes) + background task list: exit codes, live output, force-kill.<br/><img alt="Tasks: subagent topology" src="https://github.com/user-attachments/assets/dcd8ed2f-59fa-405b-937b-2d250f5034dd" /> |
 | **💬 Side Chat (beta)**<br/>Codex-style side threads: inherit the full parent context and run independently, realtime push, visible & revocable queue, per-thread model selection, one-click promotion to a top-level session.<br/><img alt="Side Chat" src="https://github.com/user-attachments/assets/3a338c36-f5de-4000-95f3-4b1cd04f60fc" /> | **🖥️ Bottom Workbench**<br/>A self-drawn bottom panel that coexists with the native right sidebar: drag-to-split panes, multiple terminal tabs, per-session persisted layout.<br/><img alt="Dual workbench" src="https://github.com/user-attachments/assets/dfdb875e-a1a8-4d4b-8340-353736b1708f" /> |
 
 **Also**: 📂 the `sidebar_open` tool lets the model open the sidebar itself · ⚡ ~325KB core at startup, heavy chunks load on demand · 🌏 i18n follows DSH · 📱 narrow screens switch to a full-width drawer
+
+### 🌿 Git Graph (read-only commit graph)
+
+Switch to **Git Graph** at the top of the Git panel for commit nodes, forks and merge edges across local branches, remote-tracking branches and HEAD. The branch selector only filters history — it **never checks out or fetches**; each commit is one line (lane edges + ref pills + subject), hover shows the author and short hash, and selecting one opens its full message and diff in the bottom pane. History loads in pages; reference changes during pagination prompt a refresh; reads are bounded (200 commits per page, offset 10,000, 1,000 branches) and report an explicit error past a limit. This first version shows no tags and offers no history-changing actions.
 
 ## 🚀 Installation
 
@@ -85,18 +89,17 @@ If something fails, check the FAQ table in https://github.com/omdsh-dev/DSH-bett
 
 ## 🆕 Recent Updates
 
+**v0.27.0** - full release history at [Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases) · [CHANGELOG](./CHANGELOG_EN.md)
+
+- **Git page rebuilt**: Source Control groups, a read-only commit graph with branch filtering, and a shared Commit details / Content / Diff pane
+- **Accurate change tracking**: separate staged/unstaged counts, nested-repository discovery, session-relative paths, PTC file operations and long polling
+- **Selection stays in place**: fixed the integration regression that displaced selected files and drew stray borders; added real-host layout coverage
+- **Side Chat**: new child sessions seed from the latest summarizing compaction instead of copying the full parent log
+
 **v0.26.1** — full release history at [Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases) · [CHANGELOG](./CHANGELOG_EN.md)
 
 - ⚡ **Fixed the steady-state cost behind "fine on 0.24, then it got slow"** (community reports: the sidebar turns laggy after being open a long time, DSH turns laggy after many turns, a restart clears it for a while; an artifact-level A/B puts the line at v0.25.0): both 500 ms timers are now visibility-gated (the host right-panel state is one shared module-level poller; the blank-session fallback only runs while it actually renders), the per-tab 5 s session-root poll became **one per session and only while visible**, the file-tree watch and side-chat push stop when parked, `keepMounted` keeps its semantics while every cache/registry is now bounded, and the host cwd resolver gained in-flight dedupe with a 3 s → 15 s TTL
 - 📊 Measured in the real mount lane (4 visited tabs, 15 s idle window): live 500 ms timers **3 → 1**, live 5 s timers **5 → 0**, `session.cwd` requests **15 → 0**, hit tests **1,620 → 0**, forced layouts **5,190 → 30**
-
-**v0.26.0** — full release history at [Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases) · [CHANGELOG](./CHANGELOG_EN.md)
-
-- 🚀 **Streaming everywhere**: uploads / downloads / HTML preview / archiving have no size caps anymore; huge files open as a read-only paged preview
-- 📄 New **`.jsonl` / `.ndjson` viewer**: collapsible record cards, editable and savable
-- 💬 **Side Chat goes realtime**: pushed message delivery, visible queue with per-message revoke, per-thread model selection
-- 🧩 **Tasks panel rebuilt**: expand by group, token usage & duration, canvas animations
-- 🖥️ **Multiple terminal tabs** in the bottom workbench; ⚡ git status polling no longer stalls the UI (30s baseline, auto-backoff)
 
 ## 🔌 Plugin Ecosystem
 

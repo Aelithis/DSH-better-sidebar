@@ -22,11 +22,15 @@
 
 | | |
 |---|---|
-| **🗂️ 文件管理**<br/>懒加载目录树、Git 变更着色、实时 watch 刷新、全局搜索、拖拽上传、多选批量操作、「打开方式」双源菜单。<br/><img alt="文件树（Git 着色）" src="./docs/screenshots/files-tree.png" /><br/><img alt="右键菜单：打开方式 + 打包下载" src="./docs/screenshots/files-menu-openwith.png" /> | **🌿 文件变动**<br/>Git 视角 + 本轮 AI 改动视角合一：层级树、暂存 / 提交 / 历史、统一 diff 渲染（行内高亮 + 语法着色）。<br/><img alt="文件变动：层级树" src="./docs/screenshots/changes-tree.png" /> |
+| **🗂️ 文件管理**<br/>懒加载目录树、Git 变更着色、实时 watch 刷新、全局搜索、拖拽上传、多选批量操作、「打开方式」双源菜单。<br/><img alt="文件树（Git 着色）" src="./docs/screenshots/files-tree.png" /><br/><img alt="右键菜单：打开方式 + 打包下载" src="./docs/screenshots/files-menu-openwith.png" /> | **🌿 Git**<br/>Source Control（Merge / Staged / Changes 三组、带 Generate 的消息框、分支与同步底栏）+ 本轮 AI 改动视角合一，并在同一页签内给出**只读提交图**（泳道、引用徽章、分支筛选、提交详情）。<br/><img alt="Git：层级树" src="./docs/screenshots/changes-tree.png" /> |
 | **📝 可编辑编辑器与预览**<br/>可编辑的 CodeMirror（官方预览是只读）、Markdown + Mermaid + 浮动目录、HTML 沙箱预览、`.jsonl` 记录卡片、超大文件分页预览、传输无大小上限。<br/><img alt="Markdown + Mermaid 预览" src="https://github.com/user-attachments/assets/fe0e5182-55bb-45cc-b98b-a2877c2bdd38" /> | **🧩 任务管理**<br/>子代理拓扑实时预览（工作流图 / 树双模式）+ 后台任务清单：退出码、实时输出、强制终止。<br/><img alt="任务页：子代理拓扑" src="https://github.com/user-attachments/assets/dcd8ed2f-59fa-405b-937b-2d250f5034dd" /> |
 | **💬 侧边对话（beta）**<br/>Codex 风格侧边线程：继承主会话完整上下文独立运行、实时推送、排队可见可撤回、每个线程独立选模型、一键提升为顶层会话。<br/><img alt="侧边对话" src="https://github.com/user-attachments/assets/3a338c36-f5de-4000-95f3-4b1cd04f60fc" /> | **🖥️ 底部工作台**<br/>自绘底部面板与原生右侧栏同时展开：拖拽分栏、多终端页签、按会话持久化布局。<br/><img alt="双工作台" src="https://github.com/user-attachments/assets/dfdb875e-a1a8-4d4b-8340-353736b1708f" /> |
 
 **还有**：📂 `sidebar_open` 工具让模型主动打开侧边栏 · ⚡ 启动只拉 ~325KB 核心、重依赖按需加载 · 🌏 多语言跟随 DSH · 📱 窄屏自动切换全宽抽屉
+
+### 🌿 Git Graph（只读提交图）
+
+在 Git 面板顶部切到 **Git Graph**：本地分支、远程跟踪分支与 HEAD 的提交节点、分叉与合并连线。分支下拉框只筛选历史，**不会 checkout 或 fetch**；提交行是单行（泳道连线 + 引用徽章 + 标题），hover 看作者与短 hash，选中后在底部面板看完整提交信息与 diff。历史按页加载，分页期间 refs 变化会提示刷新；读取有上限（每页 200 条、偏移 10,000、分支 1,000），超限明确报错。首版不显示 tag，也不提供任何改写历史的操作。
 
 ## 🚀 安装
 
@@ -85,18 +89,17 @@ dsh plugin --profile web add dsh-better-sidebar@latest
 
 ## 🆕 最近更新
 
+**v0.27.0** - 完整发布历史见 [Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases) · [CHANGELOG](./CHANGELOG.md)
+
+- **Git 页面重做**：Source Control 分组、支持分支筛选的只读提交图，以及共用的「提交详情 / 内容 / 差异」预览区
+- **变更追踪修正**：暂存和未暂存行数分离、嵌套仓库发现、按会话解析路径、PTC 文件操作可见与长轮询
+- **选中行不再错位**：修复整合时引入的文件行漂移和异常边框，新增真实挂载布局回归
+- **侧边对话**：从最近一次 summarizing compaction 构造子会话，不再全量复制父日志
+
 **v0.26.1** — 完整发布历史见 [Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases) · [CHANGELOG](./CHANGELOG.md)
 
 - ⚡ **修掉「0.24 没问题、之后越用越卡」的稳态开销**（社区反馈：侧栏在前台开久了卡、多轮对话后 DSH 卡、重启又暂时好；分界线经产物级 A/B 落在 v0.25.0）：两个 500ms 表按可见性门控（右侧面板展开态改全模块一条共享表、空白会话兜底入口只在真的渲染时起表）、每 tab 的 5s 会话根轮询收敛成**每会话一条且只在可见时**、文件树 watch 与侧聊推送 parked 即停、`keepMounted` 保留语义但缓存与记账全部有界、宿主 cwd 解析加在飞去重且 TTL 3s→15s
 - 📊 真机实测（4 个访问过的页签、15s 空闲窗）：活着的 500ms 表 **3→1**、5s 表 **5→0**、`session.cwd` 请求 **15→0**、命中测试 **1620→0**、强制布局 **5190→30**
-
-**v0.26.0** — 完整发布历史见 [Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases) · [CHANGELOG](./CHANGELOG.md)
-
-- 🚀 **传输全面流式化**：上传 / 下载 / HTML 预览 / 打包再无大小上限；超大文件改为只读分页预览
-- 📄 新增 **`.jsonl` / `.ndjson` 预览**：逐条可折叠的记录卡片，可编辑保存
-- 💬 **侧边对话实时化**：消息推送到达、排队可见并可按条撤回、每个线程独立选模型
-- 🧩 **任务管理面板重构**：按组展开、Token 用量与耗时、画布动效
-- 🖥️ 底部工作台**多终端页签**；⚡ git 状态轮询不再拖慢界面（基线 30s，自动退档）
 
 ## 🔌 插件生态
 

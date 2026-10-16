@@ -81,9 +81,10 @@ describe('linked Git worktrees', () => {
       expect(listed.find(entry => !entry.current)).toMatchObject({ branch: 'agent', changes: 1 })
       expect(resolve(await resolveWorktree(main, agentPath))).toBe(resolve(agentPath))
       // The line counts ride the same status answer (#131): 'base' →
-      // 'changed by agent' is exactly one line replaced.
+      // 'changed by agent' is exactly one line replaced, on the worktree side
+      // (nothing is staged here, so the index side has no reading at all).
       expect((await status(await resolveWorktree(main, agentPath))).entries).toEqual([
-        { path: 'tracked.txt', xy: ' M', counts: { additions: 1, deletions: 1 } },
+        { path: 'tracked.txt', xy: ' M', unstaged: { additions: 1, deletions: 1 } },
       ])
       await expect(resolveWorktree(main, root)).rejects.toThrow('unknown linked worktree')
 
@@ -159,8 +160,8 @@ describe('linked Git worktrees', () => {
       git(main, ['add', '-A'])
       git(main, ['commit', '-q', '-m', 'base'])
 
-      // One file changed on BOTH sides (their counts add up), one changed in
-      // the worktree only, a staged rename, and an untracked file.
+      // One file changed on BOTH sides (each side keeps its OWN reading), one
+      // changed in the worktree only, a staged rename, and an untracked file.
       writeFileSync(join(main, 'both-sides.txt'), 'one\ntwo\nthree\n')
       git(main, ['add', 'both-sides.txt'])
       writeFileSync(join(main, 'both-sides.txt'), 'one\ntwo\nthree\nfour\n')
@@ -170,20 +171,28 @@ describe('linked Git worktrees', () => {
 
       const result = await status(main)
       const byPath = new Map(result.entries.map(entry => [entry.path, entry]))
-      expect(byPath.get('both-sides.txt')).toMatchObject({ xy: 'MM', counts: { additions: 2, deletions: 0 } })
-      expect(byPath.get('worktree-only.txt')).toMatchObject({ xy: ' M', counts: { additions: 1, deletions: 0 } })
+      expect(byPath.get('both-sides.txt')).toMatchObject({
+        xy: 'MM',
+        staged: { additions: 1, deletions: 0 },
+        unstaged: { additions: 1, deletions: 0 },
+      })
+      expect(byPath.get('worktree-only.txt')).toMatchObject({ xy: ' M', unstaged: { additions: 1, deletions: 0 } })
       // A rename that loses its origin from the pathspec reports `1 0` here.
-      expect(byPath.get('renamed.txt')).toMatchObject({ xy: 'R ', counts: { additions: 0, deletions: 0 } })
+      expect(byPath.get('renamed.txt')).toMatchObject({ xy: 'R ', staged: { additions: 0, deletions: 0 } })
       // No numstat row exists for an untracked file, pathspec or not.
       expect(byPath.get('untracked.txt')).toEqual({ path: 'untracked.txt', xy: '??' })
 
-      // The group total the changes tree sums: dropping ANY of the paths above
-      // (or the rename origin) changes this number.
+      // The group totals the changes tree sums, each group reading its own
+      // side: dropping ANY of the paths above (or the rename origin) changes
+      // one of these numbers.
       const totals = result.entries.reduce((sum, entry) => {
-        const counts = entry.counts
-        return counts !== undefined && 'additions' in counts
-          ? { additions: sum.additions + counts.additions, deletions: sum.deletions + counts.deletions }
-          : sum
+        for (const counts of [entry.staged, entry.unstaged]) {
+          if (counts !== undefined && 'additions' in counts) {
+            sum.additions += counts.additions
+            sum.deletions += counts.deletions
+          }
+        }
+        return sum
       }, { additions: 0, deletions: 0 })
       expect(totals).toEqual({ additions: 3, deletions: 0 })
     } finally {

@@ -200,11 +200,13 @@ describe('ops-stream session records', () => {
 
   it('keeps a parked session\'s cursor so the delta it missed is still published', async () => {
     vi.useFakeTimers()
-    // `afterSeq` is the stream's own cursor: pull #1 is the BASELINE (an
-    // unrelated, long-settled write, published to nobody), the pull after the
-    // parked period carries the write the model did meanwhile.
-    changesOps.mockImplementation(async (_scope: unknown, afterSeq: number) => (
-      afterSeq === 0
+    // The stream's own cursor rides `afterSeq`: pull #1 is the BASELINE (no
+    // cursor yet — an absent `afterSeq` is what "from the very first event"
+    // means, so a seq-0 event is not dropped; an unrelated, long-settled write
+    // is published to nobody), and the pull after the parked period carries the
+    // write the model did meanwhile.
+    changesOps.mockImplementation(async (_scope: unknown, afterSeq?: number) => (
+      afterSeq === undefined
         ? {
           events: [call(1, 'write', 'w1', { file_path: '/w/old.ts', content: 'x' }), result(2, 'w1', 'wrote')],
           lastSeq: 2,
@@ -214,6 +216,7 @@ describe('ops-stream session records', () => {
 
     const parked = await mountProbe('rejoin')
     expect(changesOps).toHaveBeenCalledTimes(1)
+    expect(changesOps.mock.calls.at(-1)?.[3]).toBe(false)
     // The baseline published nothing (the historical write is not a touch)…
     expect(latestStream?.revision).toBe(0)
 
@@ -224,10 +227,12 @@ describe('ops-stream session records', () => {
     expect(latestStream?.revision).toBe(0)
 
     // Coming back resumes from the persisted cursor and folds what was missed:
-    // the file the model rewrote while the tab was parked IS a touch.
+    // the file the model rewrote while the tab was parked IS a touch, and the
+    // primed stream asks the host to WAIT for the next event.
     parked.rerender(createElement(StreamProbe, { sessionId: 'rejoin', enabled: true }))
     await act(async () => { await Promise.resolve(); await Promise.resolve() })
     expect(changesOps.mock.calls.at(-1)?.[1]).toBe(2)
+    expect(changesOps.mock.calls.at(-1)?.[3]).toBe(true)
     expect(latestStream?.revision).toBe(1)
     expect(latestStream?.touched.get('/w/missed.ts')?.kind).toBe('write')
     parked.unmount()
@@ -235,8 +240,8 @@ describe('ops-stream session records', () => {
 
   it('re-baselines a session evicted past the record cap', async () => {
     vi.useFakeTimers()
-    changesOps.mockImplementation(async (_scope: unknown, afterSeq: number) => (
-      afterSeq === 0
+    changesOps.mockImplementation(async (_scope: unknown, afterSeq?: number) => (
+      afterSeq === undefined
         ? {
           events: [call(1, 'write', 'w1', { file_path: '/w/old.ts', content: 'x' }), result(2, 'w1', 'wrote')],
           lastSeq: 2,
@@ -256,11 +261,12 @@ describe('ops-stream session records', () => {
     }
 
     // The evicted session re-joins as a FRESH stream: its first pull is a
-    // baseline again, so the delta it missed is deliberately not published —
-    // the same state a page reload starts from. Inside the cap the same
-    // scenario DOES publish (the case above).
+    // baseline again (no cursor, no wait), so the delta it missed is
+    // deliberately not published — the same state a page reload starts from.
+    // Inside the cap the same scenario DOES publish (the case above).
     await mountProbe('cap-victim')
-    expect(changesOps.mock.calls.at(-1)?.[1]).toBe(0)
+    expect(changesOps.mock.calls.at(-1)?.[1]).toBeUndefined()
+    expect(changesOps.mock.calls.at(-1)?.[3]).toBe(false)
     expect(latestStream?.revision).toBe(0)
   })
 })
