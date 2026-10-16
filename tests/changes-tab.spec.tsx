@@ -293,7 +293,7 @@ describe('ChangesTab', () => {
 
       const sessionTab = lensTab(container, t('changesSessionLens'))
       await act(async () => { sessionTab!.click() })
-      // Two files grouped, newest first; the write chip carries its count.
+      // Two operation rows, newest first; the write chip carries its count.
       expect(container.textContent).toContain('src/b.ts')
       expect(container.textContent).toContain('src/a.ts')
       const chips = [...container.querySelectorAll('button[aria-pressed]')]
@@ -304,6 +304,77 @@ describe('ChangesTab', () => {
       act(() => { root.unmount() })
       container.remove()
     }
+  })
+
+  it('lists interleaved operations without file groups and keeps filtering and previews', async () => {
+    mockGit([])
+    const path = 'D:\\projects\\cc-switch\\test-01.txt'
+    vi.spyOn(api, 'changesOps').mockResolvedValue({
+      events: [
+        { type: 'tool/call', seq: 1, time: 1, data: { name: 'read', callId: 'r1', arguments: JSON.stringify({ file_path: path }) } },
+        { type: 'tool/result', seq: 2, time: 2, data: { message: { source: { kind: 'tool', callId: 'r1' }, content: [{ type: 'text', text: '<content>1: earlier read</content>' }] } } },
+        ...writeEvents(3, 'src/other.txt'),
+        { type: 'tool/call', seq: 5, time: 5, data: { name: 'edit', callId: 'e5', arguments: JSON.stringify({ file_path: path, old_string: 'old', new_string: 'x'.repeat(103) }) } },
+        { type: 'tool/result', seq: 6, time: 6, data: { message: { source: { kind: 'tool', callId: 'e5' }, content: [{ type: 'text', text: 'ok' }] } } },
+        { type: 'tool/call', seq: 7, time: 7, data: { name: 'read', callId: 'r7', arguments: JSON.stringify({ file_path: path }) } },
+      ],
+      lastSeq: 7,
+    })
+
+    const container = document.createElement('div')
+    document.body.append(container)
+    const root: Root = createRoot(container)
+    try {
+      mount(root, { id: 'git', type: 'git', title: 'Changes', meta: { lens: 'session' } })
+      await flushEffects()
+      const rows = [...container.querySelectorAll<HTMLButtonElement>('button[data-op-kind]')]
+      expect(rows.map(row => row.dataset.opKind)).toEqual(['read', 'edit', 'write', 'read'])
+      expect(rows.map(row => row.querySelector('[title]')?.getAttribute('title')))
+        .toEqual([path, path, 'src/other.txt', path])
+      expect(rows[0]!.textContent).toContain(t('changesRunning'))
+      for (const row of rows) {
+        // Rows are direct siblings, not nested inside per-file wrappers.
+        expect(row.parentElement).toBe(rows[0]!.parentElement)
+        const label = row.querySelector('[data-tone]')!
+        const filePath = row.querySelector('[title]')!
+        expect(filePath.textContent).toBe(filePath.getAttribute('title'))
+        expect(label.compareDocumentPosition(filePath) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+        expect(row.lastElementChild).toBe(filePath.nextElementSibling)
+      }
+      expect([...rows[0]!.parentElement!.children]).toEqual(rows)
+      expect(rows[1]!.lastElementChild!.firstElementChild!.textContent).toBe('103 B')
+
+      await act(async () => { rows[1]!.click() })
+      await flushEffects()
+      expect(rows[1]!.dataset.selected).toBe('true')
+      expect(container.textContent).toContain('x'.repeat(103))
+
+      const readChip = [...container.querySelectorAll<HTMLButtonElement>('button[aria-pressed]')]
+        .find(chip => chip.textContent === t('changesRead') + '2')
+      expect(readChip).toBeDefined()
+      await act(async () => { readChip!.click() })
+      const reads = [...container.querySelectorAll<HTMLButtonElement>('button[data-op-kind]')]
+      expect(reads.map(row => row.dataset.opKind)).toEqual(['read', 'read'])
+      expect(reads.map(row => row.querySelector('[title]')?.textContent)).toEqual([path, path])
+      await act(async () => { reads[1]!.click() })
+      await flushEffects()
+      expect(reads[1]!.dataset.selected).toBe('true')
+      expect(container.textContent).toContain('earlier read')
+    } finally {
+      act(() => { root.unmount() })
+      container.remove()
+    }
+  })
+
+  it('keeps operation paths and metadata on one line under width pressure', () => {
+    const sheet = readFileSync('src/client/changes/changes.module.css', 'utf8')
+    const pathRule = sheet.match(/\n\.filePath \{([^}]+)\}/)?.[1]
+    expect(pathRule).toContain('flex: 1')
+    expect(pathRule).toContain('min-width: 0')
+    expect(pathRule).toContain('overflow: hidden')
+    expect(pathRule).toContain('text-overflow: ellipsis')
+    expect(pathRule).toContain('white-space: nowrap')
+    expect(sheet.match(/\n\.opMeta \{([^}]+)\}/)?.[1]).toContain('white-space: nowrap')
   })
 
   it('renders a .md read op in reading mode through the shared MarkdownText', async () => {

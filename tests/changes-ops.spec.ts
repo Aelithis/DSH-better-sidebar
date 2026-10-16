@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { createToolResultMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
-import { extractFileOps, groupByFile, knownContentBefore, parseReadContent, parseReadLines } from '../src/client/changes/ops.ts'
+import { extractFileOps, knownContentBefore, parseReadContent, parseReadLines } from '../src/client/changes/ops.ts'
 import { buildChangeTree, type ChangeNode } from '../src/client/changes/change-tree.ts'
 import { diffLines, buildDiffSegments, coalesceInline, diffInline } from '../src/client/diff/rows.ts'
 import { langOfPath, scanLine } from '../src/client/diff/highlight.ts'
@@ -142,13 +142,13 @@ describe('extractFileOps', () => {
     expect(ops.find(op => op.kind === 'read')?.errorText).toBe('cannot read "b": not found')
   })
 
-  it('groups by file newest-first and recovers prior write content', () => {
+  it('keeps operations newest-first and recovers prior write content', () => {
     const ops = extractFileOps([
       call(1, 'write', 'w1', { file_path: 'a.ts', content: 'first' }),
       call(2, 'write', 'w2', { file_path: 'a.ts', content: 'second' }),
       call(3, 'write', 'w3', { file_path: 'b.ts', content: 'x' }),
     ])
-    expect([...groupByFile(ops).keys()]).toEqual(['b.ts', 'a.ts'])
+    expect(ops.map(op => op.callId)).toEqual(['w3', 'w2', 'w1'])
     expect(knownContentBefore(ops, 'a.ts', ops.find(op => op.callId === 'w2')!)).toBe('first')
   })
 })
