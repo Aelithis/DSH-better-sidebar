@@ -1047,10 +1047,11 @@ function buildApi(
     // The session's file-tool events for the changes tab's session lens
     // (and its badge): the CLIENT runtime's sessions face has no event-log
     // access, so the events cross the wire here — live session log first,
-    // the persisted logical log for not-yet-hydrated sessions. Only the
-    // two event types the lens folds are sent, narrowed to `seq > afterSeq`
-    // so polling is a small delta, with the same recent-window cap the
-    // client accumulator applies.
+    // the persisted logical log for not-yet-hydrated sessions. Only the event
+    // types the lens folds are sent (a plain `tool/call` + `tool/result` pair,
+    // or a PTC `tool/ptc-dispatch-start` / `tool/ptc-dispatch` pair), narrowed
+    // to `seq > afterSeq` so polling is a small delta, with the same
+    // recent-window cap the client accumulator applies.
     'changes.ops': async (payload) => {
       const sessionId = requireString(payload, 'sessionId')
       const rawAfter = (payload as { afterSeq?: unknown } | null)?.afterSeq
@@ -1077,7 +1078,8 @@ function buildApi(
       if (events === undefined) return { events: [], lastSeq: Math.max(afterSeq, 0) }
       const CHANGES_EVENTS_CAP = 4000
       const filtered = events.filter(
-        event => (event.type === 'tool/call' || event.type === 'tool/result') && event.seq > afterSeq,
+        event => (event.type === 'tool/call' || event.type === 'tool/result'
+          || event.type === 'tool/ptc-dispatch-start' || event.type === 'tool/ptc-dispatch') && event.seq > afterSeq,
       )
       const window = filtered.length > CHANGES_EVENTS_CAP ? filtered.slice(filtered.length - CHANGES_EVENTS_CAP) : filtered
       return { events: window, lastSeq: window.at(-1)?.seq ?? afterSeq }

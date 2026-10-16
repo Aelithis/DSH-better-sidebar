@@ -2,11 +2,13 @@
  * The session's live FILE-OPERATION stream — the signal the editor's
  * auto-refresh rides (#855).
  *
- * The model's file tools leave their calls in the session event log, and the
- * plugin's own `changes.ops` route ships that log's `tool/call` +
- * `tool/result` rows as a `seq > afterSeq` delta (see `src/index.ts`). This
- * module folds those deltas into "which file did the model just write or
- * edit", which is the whole question an open preview has to answer.
+ * The model's file tools leave their calls in the session event log — as a
+ * plain `tool/call` + `tool/result` pair, or as a PTC pair
+ * (`tool/ptc-dispatch-start` / `tool/ptc-dispatch`) when the call ran inside
+ * `<code>` — and the plugin's own `changes.ops` route ships those rows as a
+ * `seq > afterSeq` delta (see `src/index.ts`). This module folds those deltas
+ * into "which file did the model just write or edit", which is the whole
+ * question an open preview has to answer.
  *
  * Design constraints it exists to honour:
  *

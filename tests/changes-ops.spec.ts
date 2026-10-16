@@ -168,6 +168,59 @@ describe('extractFileOps', () => {
     expect(ops.find(op => op.kind === 'read')?.errorText).toBe('cannot read "b": not found')
   })
 
+  it('records PTC file calls by subCallId and settles them from dispatch results', () => {
+    const rootCallId = 'root'
+    const write = {
+      rootCallId, parentCallId: rootCallId, subCallId: 'root:ptc:1', name: 'write',
+      arguments: { file_path: 'notes.txt', content: 'PTC content' },
+    }
+    const read = {
+      rootCallId, parentCallId: rootCallId, subCallId: 'root:ptc:2', name: 'read',
+      arguments: { file_path: 'notes.txt' },
+    }
+    const ops = extractFileOps([
+      call(1, 'run_code', rootCallId, { code: 'write(); read()' }),
+      ev('tool/ptc-dispatch-start', 2, 20, write),
+      ev('tool/ptc-dispatch-start', 3, 30, read),
+      ev('tool/ptc-dispatch', 4, 40, { ...read, isError: false, content: [{ type: 'text', text: '<content>\n1: PTC content\n</content>' }] }),
+      ev('tool/ptc-dispatch', 5, 50, { ...write, isError: false, content: [{ type: 'text', text: 'written' }] }),
+      result(6, rootCallId, 'run_code completed'),
+    ])
+    expect(ops.map(op => op.callId)).toEqual(['root:ptc:2', 'root:ptc:1'])
+    expect(ops[0]).toMatchObject({ kind: 'read', path: 'notes.txt', time: 30, running: false, isError: false, read: '<content>\n1: PTC content\n</content>' })
+    expect(ops[1]).toMatchObject({ kind: 'write', path: 'notes.txt', time: 20, running: false, isError: false, content: 'PTC content' })
+  })
+
+  it('keeps an unfinished PTC call running and recovers a complete dispatch without its start', () => {
+    const rootCallId = 'root'
+    const edit = {
+      rootCallId, parentCallId: rootCallId, subCallId: 'root:ptc:1', name: 'edit',
+      arguments: { file_path: 'draft.txt', old_string: 'before', new_string: 'after' },
+    }
+    const failedWrite = {
+      rootCallId, parentCallId: rootCallId, subCallId: 'root:ptc:2', name: 'write',
+      arguments: { file_path: 'readonly.txt', content: 'new' },
+      isError: true, content: [{ type: 'text', text: 'permission denied' }],
+    }
+    const ops = extractFileOps([
+      ev('tool/ptc-dispatch-start', 1, 10, edit),
+      ev('tool/ptc-dispatch', 2, 20, failedWrite),
+    ])
+    expect(ops.find(op => op.callId === edit.subCallId)).toMatchObject({ kind: 'edit', running: true, edit: { oldString: 'before', newString: 'after' } })
+    expect(ops.find(op => op.callId === failedWrite.subCallId)).toMatchObject({ kind: 'write', time: 20, running: false, isError: true, errorText: 'permission denied' })
+  })
+
+  it('settles a PTC edit with its replacement payload', () => {
+    const dispatch = {
+      rootCallId: 'root', parentCallId: 'root', subCallId: 'root:ptc:1', name: 'edit',
+      arguments: { file_path: 'draft.txt', old_string: 'before', new_string: 'after' },
+      isError: false, content: [{ type: 'text', text: 'edited' }],
+    }
+    expect(extractFileOps([ev('tool/ptc-dispatch', 1, 10, dispatch)])).toMatchObject([
+      { callId: 'root:ptc:1', kind: 'edit', path: 'draft.txt', running: false, isError: false, edit: { oldString: 'before', newString: 'after' } },
+    ])
+  })
+
   it('keeps operations newest-first and recovers prior write content', () => {
     const ops = extractFileOps([
       call(1, 'write', 'w1', { file_path: 'a.ts', content: 'first' }),
