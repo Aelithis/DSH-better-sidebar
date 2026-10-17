@@ -44,8 +44,10 @@ describe('DSH host baseline', () => {
     expect(e2e).toContain('expected="${DSH_EXPECT_VERSION:-' + baseline + '}"')
   })
 
-  it('pins CI with its heap budget and peer resolution intact', () => {
-    expect(ci).toContain(`NODE_OPTIONS: --max-old-space-size=4096\n        run: npm install -g @deepseek-ai/dsh@${baseline}\n`)
-    expect(ci).not.toMatch(/^\s*run:.*--legacy-peer-deps/m)
+  it.each(['\n', '\r\n'])('pins CI with its heap budget and peer resolution intact (%j)', (eol) => {
+    // Git may check out YAML as CRLF on Windows; the contract is the same.
+    const source = ci.replace(/\r?\n/g, eol)
+    expect(source).toContain(`NODE_OPTIONS: --max-old-space-size=4096${eol}        run: npm install -g @deepseek-ai/dsh@${baseline}${eol}`)
+    expect(source).not.toMatch(/^\s*run:.*--legacy-peer-deps/m)
   })
 })
