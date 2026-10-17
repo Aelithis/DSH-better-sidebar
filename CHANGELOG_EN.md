@@ -4,6 +4,13 @@
 >
 > 📝 The Chinese [CHANGELOG](./CHANGELOG.md) is the authoritative, item-by-item record; this file carries the English summaries and has historically lagged behind it. Where the two disagree, the Chinese one is current.
 
+### v0.28.0
+
+- **Stable plugin support moves to DSH 0.2.1-rc.1+**: all 13 DSH peer floors are `^0.2.1-rc.1`; development dependencies, CI and installers pin the exact RC baseline. No runtime compatibility layer or feature implementation changes are introduced.
+- **Retain the published alpha's functionality**: the upstream alpha.5 → rc.1 full source-tree diff contains 355 files, all `package.json`, with no source changes. This release updates versions, dependency declarations and documentation only. Companion versions are Cordis peer `^4.0.5` / dev `4.0.5`, group `1.0.5`, schemastery `~3.18.5`, and unchanged include `1.0.10`.
+- **Move to npm `latest`**: v0.28.0 will take over the plugin's `latest` tag through the existing stable-version workflow; no workflow change is needed. **DSH's own `latest` still points to 0.2.0-rc.2 and cannot run this release**: pin plugin **v0.26.1** on that host. DSH 0.2.1-alpha.5 users pin **v0.28.0-alpha.0**; earlier support-line guidance is unchanged. The user explicitly accepted the independent tags' compatibility risk.
+- **Fresh RC validation**: see the [DSH 0.2.1-rc.1 adaptation record](docs/plans/2026-10-17-dsh-0.2.1-rc.1-adaptation.md). Incomplete checks remain pending; test counts from the alpha release below are not reused as RC evidence.
+
 ### v0.28.0-alpha.0 (prerelease)
 
 - **Support moves to DSH 0.2.1-alpha.5+**: 13 DSH peers use `^0.2.1-alpha.5`; development dependencies, CI and installers pin the exact baseline. DSH 0.2.0-rc.2 users should pin npm-published **v0.26.1** (v0.27.0 has not been published). Install this alpha explicitly as `dsh-better-sidebar@0.28.0-alpha.0`, not `latest`.
