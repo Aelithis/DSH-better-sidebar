@@ -2,14 +2,14 @@
 
 > 本文档收录 dsh-better-sidebar 的完整发布历史（最新版摘要见 [README](README_ZH.md)；同步发布于 [GitHub Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases)）。
 
-### v0.28.0-alpha.0（本地验证完成，未发布）
+### v0.28.0-alpha.0（预发布）
 
 - **支持线前移到 DSH 0.2.1-alpha.5+**：13 条 DSH peer 使用 `^0.2.1-alpha.5`，开发依赖与 CI / 安装脚本钉精确基线。0.2.0-rc.2 用户请固定 npm 已发布的 **v0.26.1**（v0.27.0 尚未发布）；本 alpha 使用 `dsh-better-sidebar@0.28.0-alpha.0`，不是 `latest`。
 - **宿主 Connection 准入**：HTTP/WS 路由统一调用 `ctx.connection.requestRejection(req)`，不再依赖已删除的 `webRuntime` 或插件自建信任例外。
 - **移除 runtime invariants 接入**：上游删除 `@deepseek-ai/dsh-invariants` 与 `/invariant` 子路径，本插件同步移除 companion、类型与发布入口；压缩种子测试继续使用公开的 surface fold 和 seed validator。
 - **当前执行目录接入**：文件 / Git / 终端与新建 sidechat 跟随会话 `working_directory`；live 读 workingDirectory，cold 用 sessionQuery all projections 并释放 lease，linked worktree 保持 base-keyed，新 sidechat seed 尾部盖章当前 cwd。
 - **宿主伴随 API / 依赖**：补齐 `TerminalBlockLabels.commandLine(line)` 与 21 份词典；同步 Cordis `4.0.5`、schemastery `~3.18.5-alpha.2`、group `1.0.5-alpha.2` 与 include `1.0.10`，不直接钉 loader 或设置 override。alpha.5 优先用 package 的 `engines.dsh` 判断兼容性，本插件不新增该字段，继续用 13 条 DSH peers。
-- **本地适配验证完成（未发布）**：真实 alpha.5 挂载 **13/13 通过**（2.6 min），aggregate 通过且无重复路由；typecheck、lint、build、consumer types、pack 新鲜通过，浏览器 consumer 不泄漏 Node 类型。默认 CI 入口与单 worker 全量重跑均为 **219 文件 / 2634 用例通过，17 跳过**；排查期间的并发 watch / GC 失败已不再构成阻塞，详见 [适配记录](docs/plans/2026-10-16-dsh-0.2.1-alpha.5-adaptation.md)。rg 引擎检查通过，fd 缺失与 Windows 原生验证未执行；peer 仅剩可选 better-locale 的 4 条旧 DSH 警告。
+- **验证记录**：[发布整合验证](docs/plans/2026-10-17-alpha-release-validation.md) 收录最新 dev 的 221 文件 / 2681 用例单 worker 通过、真实 alpha.5 挂载与 Context 三态联动验证；[初始适配记录](docs/plans/2026-10-16-dsh-0.2.1-alpha.5-adaptation.md) 保留适配阶段证据。
 - **提交图使用完整可用高度**：移除 `min(60vh, 460px)` 高度限制，更改区下方到固定底栏之间的空间全部分配给图谱；打开差异预览或缩放窗口时自动调整。长历史仍在图谱内部滚动，待提交文件很多时保留原有外层滚动，避免把整个页面撑高。
 - **dsh-context 可选联动**：Context 侧栏入口可用时，在 Agent 详情、后台任务输出窗和会话标题栏提供诊断入口；后台任务仅查看明确的真实属主，不改变任务输出观察或停止命令的会话语义。跨会话先定位目标再打开 Context，复用其他分栏已有的标签；用户继续导航时取消，等待最多 10 秒。未安装、禁用或仅显示会话标签页时隐藏入口，不修改上下文、不恢复 Agent 执行，也不修改 dsh-context 偏好。全部入口共用 Cordis 作用域内的可选适配器，空闲时不新增轮询。
 

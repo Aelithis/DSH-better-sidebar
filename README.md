@@ -95,11 +95,14 @@ If something fails, check the FAQ table in https://github.com/omdsh-dev/DSH-bett
 
 ## 🆕 Recent Updates
 
-**v0.28.0-alpha.0 (locally validated; unpublished)**
+**v0.28.0-alpha.0 (prerelease)**
 
 - Adapt to DSH **0.2.1-alpha.5+**: use native Connection admission for HTTP/WS and remove the retired invariant companion and dependency
 - Files, Git, terminals and newly created side chats follow the session’s current working directory
+- The commit graph fills the available Git-panel height and adapts to the diff preview and window size
+- Optional dsh-context diagnostic shortcuts in agent details, background-job output windows and the session header appear only when the Context entry is available
 - **DSH 0.2.0-rc.2 users stay on npm-published v0.26.1**; v0.27.0 has not been published. Use the explicit alpha version above, not `latest`
+- Validation history: [DSH alpha.5 adaptation record](./docs/plans/2026-10-16-dsh-0.2.1-alpha.5-adaptation.md) (before the latest dev integration; not the final release test counts)
 
 **v0.27.0** - full release history at [Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases) · [CHANGELOG](./CHANGELOG_EN.md)
 

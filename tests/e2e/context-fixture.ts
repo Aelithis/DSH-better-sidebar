@@ -29,6 +29,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, type APIRequestContext, type Locator, type Page } from '@playwright/test'
 import { hostRpc } from './host'
+export { dismissOnboarding } from './host'
 
 /** The parent session the SPEC creates through `session/create` (the fixture
  *  plugin attaches to exactly this id — see the module header). */
@@ -102,39 +103,6 @@ export async function seedParentSession(api: APIRequestContext, workspacePath: s
     workspaceId: workspace.value.workspace.workspaceId,
     sessionId: PARENT_SESSION_ID,
   })
-}
-
-/**
- * Dismiss the keyless boot's onboarding takeovers, which mask the whole shell
- * (the versioned welcome notice, then the provider-config dialog). Same shape
- * as the other lanes' helper: wait (bounded) for one to appear, then click
- * whatever is clickable until none remain.
- * @param page - the lane's page.
- */
-export async function dismissOnboarding(page: Page): Promise<void> {
-  try {
-    await expect
-      .poll(() => page.getByRole('button', { name: /^(Continue|Configure later)$/ }).count(), { timeout: 60_000 })
-      .toBeGreaterThan(0)
-  } catch {
-    console.warn('[e2e] no onboarding takeover appeared; proceeding without dismissal')
-  }
-  for (let round = 0; round < 8; round++) {
-    let dismissed = false
-    for (const name of ['Continue', 'Configure later']) {
-      const button = page.getByRole('button', { name, exact: true }).first()
-      if ((await button.count()) === 0) continue
-      try {
-        await button.click({ timeout: 4_000 })
-        dismissed = true
-        await page.waitForTimeout(1_000)
-      } catch {
-        // Masked by the takeover stacked above it; the next round tries the
-        // other button first.
-      }
-    }
-    if (!dismissed) break
-  }
 }
 
 /**

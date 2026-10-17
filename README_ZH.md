@@ -95,11 +95,14 @@ dsh plugin --profile web add dsh-better-sidebar@0.28.0-alpha.0
 
 ## 🆕 最近更新
 
-**v0.28.0-alpha.0（本地适配验证完成，未发布）**
+**v0.28.0-alpha.0（预发布）**
 
 - 适配 DSH **0.2.1-alpha.5+**：HTTP/WS 改用宿主 Connection admission，移除已废弃的 invariant companion 与依赖
 - 会话执行目录变化时，文件 / Git / 终端与新建侧边对话跟随当前目录
+- 提交图使用 Git 面板完整可用高度，随差异预览和窗口大小自动调整
+- Agent 详情、后台任务输出窗和会话标题栏提供可选 dsh-context 诊断入口，仅在 Context 入口可用时显示
 - **0.2.0-rc.2 用户留在 npm 已发布的 v0.26.1**；v0.27.0 尚未发布，alpha 请用上方精确版本命令，不要用 `latest`
+- 验证历史：[DSH alpha.5 适配记录](./docs/plans/2026-10-16-dsh-0.2.1-alpha.5-adaptation.md)（合入最新 dev 之前的证据，不代表最终发布测试统计）
 
 **v0.27.0** - 完整发布历史见 [Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases) · [CHANGELOG](./CHANGELOG.md)
 
