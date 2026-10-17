@@ -117,6 +117,17 @@ function moduleStylesheets(): string[] {
 }
 
 describe('skin contract: the plugin owns no color of its own', () => {
+  it('keeps Context diagnostics feedback themed and bounded on narrow viewports', () => {
+    const source = readFileSync(resolve(ROOT, 'src/client/context-diagnostics.module.css'), 'utf8')
+    expect(source).toContain('var(--dsw-alias-bg-layer-3)')
+    expect(source).toContain('var(--dsw-alias-state-warn-primary)')
+    expect(source).toContain('calc(100vw - 24px)')
+    expect(source).toContain('overflow-wrap: anywhere')
+    const tokens = [...source.matchAll(/var\((--[\w-]+)/g)].map(match => match[1])
+    expect(tokens.length).toBeGreaterThan(0)
+    for (const token of tokens) expect(token).toMatch(/^--(?:dsw-alias-|dsw-font-|ds-)/)
+  })
+
   it('the icon modules carry no color literals', () => {
     for (const file of ['src/client/file-icons.tsx', 'src/client/icons.tsx']) {
       const source = readFileSync(resolve(ROOT, file), 'utf8')
@@ -158,6 +169,25 @@ describe('skin contract: the plugin owns no color of its own', () => {
         expect(tokens.length, `${file}: color: ${value}`).toBeGreaterThan(0)
         for (const name of tokens) expect(isThemeToken(name), `${file}: color: ${value}`).toBe(true)
       }
+    }
+  })
+
+  it('the graph viewport fills its container without a viewport-relative height cap', () => {
+    const sheet = document.createElement('style')
+    sheet.textContent = readFileSync(resolve(ROOT, 'src/client/changes/changes.module.css'), 'utf8')
+    document.head.append(sheet)
+    try {
+      const rules = Array.from(sheet.sheet!.cssRules).filter((rule): rule is CSSStyleRule => 'selectorText' in rule)
+      const graph = rules.find(rule => rule.selectorText === '.graphArea')!.style
+      expect(graph.getPropertyValue('flex-grow')).toBe('1')
+      expect(graph.getPropertyValue('height')).toBe('')
+      expect(graph.getPropertyValue('max-height')).toBe('')
+      expect(Number.parseFloat(graph.getPropertyValue('min-height'))).toBe(0)
+      const section = rules.find(rule => rule.selectorText === '.graphSection')!.style
+      expect(section.getPropertyValue('min-height')).toBe('248px')
+      expect(section.getPropertyValue('max-height')).toBe('')
+    } finally {
+      sheet.remove()
     }
   })
 

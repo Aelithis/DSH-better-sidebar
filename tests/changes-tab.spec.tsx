@@ -552,6 +552,7 @@ describe('ChangesTab', () => {
   it('renders exactly one clean empty state, and the graph has its own', async () => {
     mockGit([])
     mockGraphEmpty()
+    vi.spyOn(api, 'changesOps').mockResolvedValue({ events: [], lastSeq: 0 })
 
     const container = document.createElement('div')
     document.body.append(container)
@@ -565,9 +566,11 @@ describe('ChangesTab', () => {
       // A clean repository says it ONCE: both sections (unstaged/staged) used
       // to print their own "no changes" line under the same message. The Graph
       // area says its own (it is a separate section, with its own route).
-      const empties = [...container.querySelectorAll<HTMLElement>('[data-kind="empty"]')]
+      const gitLens = container.querySelector<HTMLElement>('[data-git-root]')!
+      const empties = [...gitLens.querySelectorAll<HTMLElement>('[data-kind="empty"]')]
         .map(node => node.textContent)
       expect(empties).toEqual([t('changesClean')])
+      expect(container.querySelector('[aria-labelledby$="-session"]')!.textContent).toContain(t('changesSessionEmpty'))
       expect(container.querySelector('[data-scm-section="graph"]')!.textContent).toContain(t('graphEmpty'))
       // No resource group or tree row is rendered when nothing changed.
       expect(container.querySelectorAll('[data-group]')).toHaveLength(0)
@@ -897,6 +900,11 @@ describe('ChangesTab', () => {
     expect(rule('.gitScroll')).toContain('overflow-y: auto')
     expect(rule('.gitScroll')).toContain('overflow-x: hidden')
     expect(rule('.gitScroll')).toContain('flex: 1')
+    expect(rule('.gitScroll')).toContain('flex-direction: column')
+    expect(rule('.changesSection')).toContain('flex: none')
+    expect(rule('.graphSection')).toContain('flex: 1')
+    expect(rule('.graphArea')).toContain('flex: 1')
+    expect(rule('.graphArea')).not.toContain('height: min(')
     // Docked by flex, and sticky so a host-scrolled tab body cannot carry the
     // branch control off the bottom of the pane either.
     expect(rule('.gitFooter')).toContain('flex: none')

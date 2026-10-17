@@ -44,12 +44,15 @@
   min-width: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
-/* The Graph section's own viewport: the graph keeps ONE scroll box (its rows
-   page in as it reaches the end), so the section is given a bounded height
-   inside the lens's scroller rather than being clipped by it. */
-.graphArea { display: flex; flex-direction: column; height: min(60vh, 460px); min-height: 220px; }
+.changesSection { flex: none; }
+/* Bound the section's minimum, not its maximum: 28px header + 220px viewport.
+   An automatic minimum would let the entire history stretch the outer scroller. */
+.graphSection { flex: 1; min-height: 248px; display: flex; flex-direction: column; }
+.graphArea { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 
 .scmHeader { display: flex; align-items: center; min-height: 28px; padding: 0 6px; }
 .scmDisclosure { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 0; border: none; background: transparent; color: var(--dsw-alias-label-primary); font: var(--dsw-font-xxs-strong-12); text-align: left; cursor: pointer; }

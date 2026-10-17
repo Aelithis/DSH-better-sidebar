@@ -75,26 +75,27 @@ function sessionCtx(cwd: string, calls: Array<Record<string, unknown>>): Context
 }
 
 /**
- * The same live-session face with the session LOOKUP counted. The root cache is
- * consulted before the session is ever read, so `lookups()` is the observable
- * difference between "answered from the TTL cache" and "scanned the event log
- * again" — which is what makes the no-rescan assertion below discriminative.
+ * Count actual event-log snapshots, not cheap session scans. Alpha.5 reads the
+ * live cursor to invalidate explicit directory changes, even on a cache hit;
+ * that must not copy or rescan the log during the TTL window.
  */
-function countingSessionCtx(cwd: string, calls: Array<Record<string, unknown>>): { ctx: Context; lookups: () => number } {
-  let lookups = 0
+function countingSessionCtx(cwd: string, calls: Array<Record<string, unknown>>): { ctx: Context; scans: () => number } {
+  let scans = 0
   const ctx = {
     sessions: {
       get: () => {
-        lookups += 1
         return {
           header: { cwd },
-          snapshotEvents: () => calls.map((data, index) => ({ type: 'tool/call', seq: index, time: index, data })),
+          snapshotEvents: () => {
+            scans += 1
+            return calls.map((data, index) => ({ type: 'tool/call', seq: index, time: index, data }))
+          },
         }
       },
     },
     get: () => undefined,
   } as never
-  return { ctx: ctx as Context, lookups: () => lookups }
+  return { ctx: ctx as Context, scans: () => scans }
 }
 
 describe('active worktree root', () => {
@@ -165,7 +166,7 @@ describe('active worktree root', () => {
     const repo = join(root, 'repo')
     try {
       initRepo(repo, 'a.txt')
-      const { ctx, lookups } = countingSessionCtx(repo, [])
+      const { ctx, scans } = countingSessionCtx(repo, [])
       probed.length = 0
       const answers = await Promise.all(
         Array.from({ length: 8 }, () => activeWorktreeRootOf(ctx, 's-burst', repo)),
@@ -173,7 +174,7 @@ describe('active worktree root', () => {
       expect(probed).toEqual([repo])
       // The whole resolution is shared, not just the spawn: the event log is
       // read (and scanned) once for the burst.
-      expect(lookups()).toBe(1)
+      expect(scans()).toBe(1)
       // Every concurrent caller still gets the resolved answer.
       expect(new Set(answers)).toEqual(new Set([realpathSync.native(repo)]))
     } finally {
@@ -192,13 +193,13 @@ describe('active worktree root', () => {
     const repo = join(root, 'repo')
     try {
       initRepo(repo, 'a.txt')
-      const { ctx, lookups } = countingSessionCtx(repo, [])
+      const { ctx, scans } = countingSessionCtx(repo, [])
       probed.length = 0
       await Promise.all(
         Array.from({ length: 6 }, (_unused, index) => activeWorktreeRootOf(ctx, `s-shared-${index}`, repo)),
       )
       expect(probed).toEqual([repo])
-      expect(lookups()).toBe(6)
+      expect(scans()).toBe(6)
     } finally {
       removeTree(root)
     }
@@ -213,18 +214,17 @@ describe('active worktree root', () => {
       mkdirSync(join(repo, 'src'))
       // A tool call INSIDE the repository: scanning it costs a probe, and the
       // answer is the repository top level.
-      const { ctx, lookups } = countingSessionCtx(repo, [{ cwd: join(repo, 'src') }])
+      const { ctx, scans } = countingSessionCtx(repo, [{ cwd: join(repo, 'src') }])
       const first = await activeWorktreeRootOf(ctx, 's-ttl', repo)
       expect(first).toBe(realpathSync.native(repo))
-      expect(lookups()).toBe(1)
+      expect(scans()).toBe(1)
       expect(probed.length).toBeGreaterThan(0)
 
       probed.length = 0
       await expect(activeWorktreeRootOf(ctx, 's-ttl', repo)).resolves.toBe(first)
-      // No spawn AND no event-log scan (the cache is consulted before the
-      // session is read, so the scan never starts).
+      // No spawn AND no event-log snapshot/scan, despite checking the live cursor.
       expect(probed).toEqual([])
-      expect(lookups()).toBe(1)
+      expect(scans()).toBe(1)
     } finally {
       removeTree(root)
     }
@@ -240,7 +240,7 @@ describe('active worktree root', () => {
     const repo = join(root, 'repo')
     try {
       initRepo(repo, 'a.txt')
-      const { ctx, lookups } = countingSessionCtx(repo, [])
+      const { ctx, scans } = countingSessionCtx(repo, [])
       const first = await activeWorktreeRootOf(ctx, 's-ttl-span', repo)
       probed.length = 0
       const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 10_000)
@@ -250,7 +250,7 @@ describe('active worktree root', () => {
         clock.mockRestore()
       }
       expect(probed).toEqual([])
-      expect(lookups()).toBe(1)
+      expect(scans()).toBe(1)
     } finally {
       removeTree(root)
     }

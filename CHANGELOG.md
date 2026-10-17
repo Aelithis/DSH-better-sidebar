@@ -2,6 +2,17 @@
 
 > 本文档收录 dsh-better-sidebar 的完整发布历史（最新版摘要见 [README](README_ZH.md)；同步发布于 [GitHub Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases)）。
 
+### v0.28.0-alpha.0（预发布）
+
+- **支持线前移到 DSH 0.2.1-alpha.5+**：13 条 DSH peer 使用 `^0.2.1-alpha.5`，开发依赖与 CI / 安装脚本钉精确基线。0.2.0-rc.2 用户请固定 npm 已发布的 **v0.26.1**（v0.27.0 尚未发布）；本 alpha 使用 `dsh-better-sidebar@0.28.0-alpha.0`，不是 `latest`。
+- **宿主 Connection 准入**：HTTP/WS 路由统一调用 `ctx.connection.requestRejection(req)`，不再依赖已删除的 `webRuntime` 或插件自建信任例外。
+- **移除 runtime invariants 接入**：上游删除 `@deepseek-ai/dsh-invariants` 与 `/invariant` 子路径，本插件同步移除 companion、类型与发布入口；压缩种子测试继续使用公开的 surface fold 和 seed validator。
+- **当前执行目录接入**：文件 / Git / 终端与新建 sidechat 跟随会话 `working_directory`；live 读 workingDirectory，cold 用 sessionQuery all projections 并释放 lease，linked worktree 保持 base-keyed，新 sidechat seed 尾部盖章当前 cwd。
+- **宿主伴随 API / 依赖**：补齐 `TerminalBlockLabels.commandLine(line)` 与 21 份词典；同步 Cordis `4.0.5`、schemastery `~3.18.5-alpha.2`、group `1.0.5-alpha.2` 与 include `1.0.10`，不直接钉 loader 或设置 override。alpha.5 优先用 package 的 `engines.dsh` 判断兼容性，本插件不新增该字段，继续用 13 条 DSH peers。
+- **验证记录**：[发布整合验证](docs/plans/2026-10-17-alpha-release-validation.md) 收录最新 dev 的 221 文件 / 2681 用例单 worker 通过、真实 alpha.5 挂载与 Context 三态联动验证；[初始适配记录](docs/plans/2026-10-16-dsh-0.2.1-alpha.5-adaptation.md) 保留适配阶段证据。
+- **提交图使用完整可用高度**：移除 `min(60vh, 460px)` 高度限制，更改区下方到固定底栏之间的空间全部分配给图谱；打开差异预览或缩放窗口时自动调整。长历史仍在图谱内部滚动，待提交文件很多时保留原有外层滚动，避免把整个页面撑高。
+- **dsh-context 可选联动**：Context 侧栏入口可用时，在 Agent 详情、后台任务输出窗和会话标题栏提供诊断入口；后台任务仅查看明确的真实属主，不改变任务输出观察或停止命令的会话语义。跨会话先定位目标再打开 Context，复用其他分栏已有的标签；用户继续导航时取消，等待最多 10 秒。未安装、禁用或仅显示会话标签页时隐藏入口，不修改上下文、不恢复 Agent 执行，也不修改 dsh-context 偏好。全部入口共用 Cordis 作用域内的可选适配器，空闲时不新增轮询。
+
 ### v0.27.0
 
 - 🌿 **Git 页面重做：VS Code Source Control 结构 + 只读提交图（同一页签）**（[#941](https://github.com/omdsh-dev/DSH-better-sidebar/issues/941)，贡献者 PR [#944](https://github.com/omdsh-dev/DSH-better-sidebar/pull/944) @hairyf + [#969](https://github.com/omdsh-dev/DSH-better-sidebar/pull/969) @vlln）：「文件变动 > Git」的内容区改为 Source Control 结构——可折叠的 Changes（多行 Message + 仅填草稿的 Generate、Merge / Staged / Changes 三组各自独立折叠与计数、整行 hover）与 Graph 区、常驻底栏（可点击分支 + `*`/`+`/`!` 标记、upstream 的 `↓`/`↑` 与安全 Pull-then-Push）；Push/Pull 与 worktree·子仓库选择移入 More Actions；提交只消费已暂存项，冲突 / 空消息 / 无暂存时禁止，草稿按会话·仓库·worktree 隔离。Graph 区由 **#969 的有界只读引擎**渲染（专用 `git.graph` 路由：子先于父的拓扑序、分支筛选、游标失效显式返回 `graph-stale`、每页 200 / 偏移 10000 / 分支 1000 / 进程 10 s / 输出 8 MiB 上限，超限报错不静默截断；泳道连线与引用徽章用主题状态色，hover 卡片与提交详情卡；**纯读取**——不 checkout / fetch / 改任何 ref）。底部预览面板改为固定三签 `提交详情 / 内容 / 差异`（有内容才有差异，读操作落在内容签）。**设计取舍与实施偏差见 [docs/plans/2026-10-16-git-page-vscode-scm-merge.md](docs/plans/2026-10-16-git-page-vscode-scm-merge.md)**（贡献者 PR [#939](https://github.com/omdsh-dev/DSH-better-sidebar/pull/939) @hairyf 的官方下划线 Tabs 镜片切换保留；第三个「提交图」镜头刻意未上线）。

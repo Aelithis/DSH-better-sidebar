@@ -54,7 +54,7 @@ const canCreateSymlink = (() => {
 })()
 
 interface FakeContext {
-  webRuntime: { trustedHosts: readonly string[] }
+  connection: { requestRejection: () => undefined }
   webServer: {
     register: (route: SidebarWebRoute) => () => void
     registerUpgrade: (route: SidebarWebUpgradeRoute) => () => void
@@ -95,7 +95,7 @@ describe('host plugin smoke', () => {
     const upgrades: SidebarWebUpgradeRoute[] = []
     const effects: Array<() => void | (() => void)> = []
     const ctx: FakeContext = {
-      webRuntime: { trustedHosts: [] },
+      connection: { requestRejection: () => undefined },
       webServer: {
         register: (route) => { routes.push(route); return () => {} },
         registerUpgrade: (route) => { upgrades.push(route); return () => {} },
@@ -147,7 +147,7 @@ describe('host plugin smoke', () => {
     const upgrades: SidebarWebUpgradeRoute[] = []
     const effects: Array<() => void | (() => void)> = []
     const ctx: FakeContext = {
-      webRuntime: { trustedHosts: [] },
+      connection: { requestRejection: () => undefined },
       webServer: {
         register: () => () => {},
         registerUpgrade: (route) => { upgrades.push(route); return () => {} },
@@ -197,7 +197,7 @@ describe('host plugin smoke', () => {
     const routes: SidebarWebRoute[] = []
     const effects: Array<() => void | (() => void)> = []
     const ctx: FakeContext = {
-      webRuntime: { trustedHosts: [] },
+      connection: { requestRejection: () => undefined },
       webServer: {
         register: (route) => { routes.push(route); return () => {} },
         registerUpgrade: () => () => {},
@@ -495,6 +495,8 @@ describe('git destructive operations (scratch repository)', () => {
 
 describe('session cwd resolution over the API route', () => {
   interface CtxOverrides {
+    workingDirectory?: { readonly defaultDirectory?: string; get: (session: { header: { cwd?: string } }) => string }
+    sessionQuery?: { observeSession: (id: string, options: { projectionMode: 'all' }) => Promise<{ header: { cwd?: string }; projections?: { values: { workingDirectory?: string | null } }; [Symbol.dispose](): void }> }
     sessions?: { get: (id: string) => { header: { cwd?: string } } | undefined }
     sessionPersistence?: { open: (id: string, access: 'read' | 'write') => Promise<{ header: { cwd?: string }; read: () => Promise<{ events: never[] }>; close: () => Promise<void> }> }
   }
@@ -503,7 +505,7 @@ describe('session cwd resolution over the API route', () => {
     const routes: SidebarWebRoute[] = []
     lastMountedRoutes = routes
     const ctx = {
-      webRuntime: { trustedHosts: [] },
+      connection: { requestRejection: () => undefined },
       webServer: {
         register: (route: SidebarWebRoute) => { routes.push(route); return () => {} },
         registerUpgrade: (route: SidebarWebUpgradeRoute) => { void route; return () => {} },
@@ -517,7 +519,7 @@ describe('session cwd resolution over the API route', () => {
       // The session/agent event feeds: nothing emits in these tests.
       on: () => () => {},
       // No jobs/agents services in the smoke context: the routes degrade.
-      get: (key: string) => key === 'sessionPersistence' ? overrides.sessionPersistence : undefined,
+      get: (key: string) => overrides[key as keyof CtxOverrides],
     }
     apply(ctx as never)
     return routes
@@ -691,6 +693,161 @@ describe('session cwd resolution over the API route', () => {
       // scratch is the canonical mkdtemp directory allocated by this test.
       rmSync(scratch, { recursive: true, force: true })
     }
+  })
+
+  it('follows committed working-directory changes immediately, without reusing the old active-root cache', async () => {
+    const first = resolvePath('/working-directory-first')
+    const second = resolvePath('/working-directory-second')
+    let current = first
+    const session = { header: { cwd: resolvePath('/original-project') } }
+    const route = mount({
+      sessions: { get: () => session },
+      workingDirectory: { get: (received) => { expect(received).toBe(session); return current } },
+    })
+    expect(await invoke(route, 'session.cwd', { sessionId: 'wd-switch', cwd: '/stale-client' })).toMatchObject({ ok: true, value: { cwd: first } })
+    current = second
+    expect(await invoke(route, 'session.cwd', { sessionId: 'wd-switch', cwd: '/stale-client' })).toMatchObject({ ok: true, value: { cwd: second } })
+  })
+
+  it('routes file and Git reads to the new execution directory immediately after a switch', async () => {
+    const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), 'sidebar-wd-switch-')))
+    const first = join(scratch, 'first')
+    const second = join(scratch, 'second')
+    let current = first
+    try {
+      for (const [directory, branch] of [[first, 'first-project'], [second, 'second-project']]) {
+        mkdirSync(directory!)
+        writeFileSync(join(directory!, 'directory.txt'), branch!)
+        const result = spawnSync('git', ['init', '-q', '-b', branch!, directory!], { encoding: 'utf8' })
+        if (result.status !== 0) throw new Error(result.stderr)
+      }
+      const route = mount({
+        sessions: { get: () => ({ header: { cwd: first } }) },
+        workingDirectory: { get: () => current },
+      })
+      const payload = { sessionId: 'wd-files-git', cwd: first }
+      expect(await invoke(route, 'fs.read', { ...payload, path: 'directory.txt' })).toMatchObject({ ok: true, value: { content: 'first-project' } })
+      expect(await invoke(route, 'git.status', payload)).toMatchObject({ ok: true, value: { branch: 'first-project' } })
+      current = second
+      expect(await invoke(route, 'fs.read', { ...payload, path: 'directory.txt' })).toMatchObject({ ok: true, value: { content: 'second-project' } })
+      expect(await invoke(route, 'git.status', payload)).toMatchObject({ ok: true, value: { branch: 'second-project' } })
+    } finally {
+      removeTree(scratch)
+    }
+  })
+
+  it('does not let historical linked-worktree tool evidence override a committed directory change back to the main checkout', async () => {
+    const scratch = realpathSync.native(mkdtempSync(join(tmpdir(), 'sidebar-wd-linked-')))
+    const main = join(scratch, 'main')
+    const linked = join(scratch, 'linked')
+    const run = (cwd: string, args: string[]): void => {
+      const result = spawnSync('git', ['-C', cwd, '-c', 'user.name=Test', '-c', 'user.email=test@dsh.invalid', ...args], { encoding: 'utf8' })
+      if (result.status !== 0) throw new Error(result.stderr)
+    }
+    try {
+      run(scratch, ['init', '-q', '-b', 'main', main])
+      run(main, ['commit', '-q', '--allow-empty', '-m', 'initial'])
+      run(main, ['worktree', 'add', '-q', '-b', 'linked', linked])
+      let current = linked
+      const events = [{ type: 'tool/call', seq: 0, time: 0, data: { cwd: linked } }] as Array<{ type: string; seq: number; time: number; data: { cwd: string } }>
+      const route = mount({
+        sessions: { get: () => ({ header: { cwd: main }, snapshotEvents: () => events }) },
+        workingDirectory: { get: () => current },
+      })
+      expect(await invoke(route, 'session.cwd', { sessionId: 'wd-linked' })).toMatchObject({ ok: true, value: { cwd: linked } })
+      events.push({ type: 'working-directory/change', seq: 1, time: 1, data: { cwd: main } })
+      current = main
+      expect(await invoke(route, 'session.cwd', { sessionId: 'wd-linked' })).toMatchObject({ ok: true, value: { cwd: main } })
+      expect(await invoke(route, 'git.status', { sessionId: 'wd-linked', cwd: linked })).toMatchObject({ ok: true, value: { branch: 'main' } })
+      // Same base: old tool evidence selected linked while the host cwd was
+      // still main. Explicit cd to main must invalidate that cached override.
+      const sameBaseEvents = events.slice(0, 1)
+      const snapshotEvents = vi.fn(() => sameBaseEvents)
+      const eventAt = vi.fn((seq: number) => sameBaseEvents[seq])
+      const session = { header: { cwd: main }, get seq() { return sameBaseEvents.length }, eventAt, snapshotEvents }
+      const sameBaseRoute = mount({
+        sessions: { get: () => session }, workingDirectory: { get: () => main },
+      })
+      const payload = { sessionId: 'wd-same-base' }
+      expect(await invoke(sameBaseRoute, 'session.cwd', payload)).toMatchObject({ ok: true, value: { cwd: linked } })
+      expect(await invoke(sameBaseRoute, 'session.cwd', payload)).toMatchObject({ ok: true, value: { cwd: linked } })
+      sameBaseEvents.push({ type: 'turn/start', seq: 1, time: 1, data: { cwd: main } })
+      expect(await invoke(sameBaseRoute, 'session.cwd', payload)).toMatchObject({ ok: true, value: { cwd: linked } })
+      expect(snapshotEvents).toHaveBeenCalledTimes(1)
+      sameBaseEvents.push({ type: 'working-directory/change', seq: 2, time: 2, data: { cwd: main } })
+      expect(await invoke(sameBaseRoute, 'session.cwd', payload)).toMatchObject({ ok: true, value: { cwd: main } })
+      expect(await invoke(sameBaseRoute, 'session.cwd', payload)).toMatchObject({ ok: true, value: { cwd: main } })
+      expect(snapshotEvents).toHaveBeenCalledTimes(2)
+      expect(eventAt).toHaveBeenCalledTimes(3)
+
+    } finally {
+      removeTree(scratch)
+    }
+  })
+
+  it('uses cold observation working-directory projections before stale client/header hints and releases every lease', async () => {
+    let current = resolvePath('/cold-execution-first')
+    let releases = 0
+    const route = mount({ sessionQuery: {
+      observeSession: async (id, options) => {
+        expect(id).toBe('wd-cold')
+        expect(options).toEqual({ projectionMode: 'all' })
+        return {
+          header: { cwd: resolvePath('/original-project') },
+          projections: { values: { workingDirectory: current } },
+          [Symbol.dispose]: () => { releases += 1 },
+        }
+      },
+    } })
+    expect(await invoke(route, 'session.cwd', { sessionId: 'wd-cold', cwd: '/stale-client' })).toMatchObject({ ok: true, value: { cwd: current } })
+    current = resolvePath('/cold-execution-second')
+    expect(await invoke(route, 'session.cwd', { sessionId: 'wd-cold', cwd: '/stale-client' })).toMatchObject({ ok: true, value: { cwd: current } })
+    expect(releases).toBe(2)
+  })
+
+  it('uses the host custom default for a null cold working-directory projection before a stale client hint', async () => {
+    const defaultDirectory = resolvePath('/configured-execution-default')
+    let releases = 0
+    const route = mount({
+      workingDirectory: { defaultDirectory, get: () => { throw new Error('cold reads must not call get without a live session') } },
+      sessionQuery: { observeSession: async () => ({
+        header: {}, projections: { values: { workingDirectory: null } },
+        [Symbol.dispose]: () => { releases += 1 },
+      }) },
+    })
+    expect(await invoke(route, 'session.cwd', { sessionId: 'wd-cold-default', cwd: '/stale-client' })).toMatchObject({ ok: true, value: { cwd: defaultDirectory } })
+    expect(releases).toBe(1)
+  })
+
+  it('releases the cold observation lease when the working-directory projection cannot be read', async () => {
+    let releases = 0
+    const route = mount({ sessionQuery: {
+      observeSession: async () => ({
+        header: { cwd: resolvePath('/original-project') },
+        get projections(): never { throw new Error('working-directory projection failed') },
+        [Symbol.dispose]: () => { releases += 1 },
+      }),
+    } })
+    expect(await invoke(route, 'session.cwd', { sessionId: 'wd-projection-failure', cwd: '/stale-client' })).toMatchObject({
+      ok: false, error: { message: 'working-directory projection failed' },
+    })
+    expect(releases).toBe(1)
+  })
+
+  it('does not mask failed authoritative working-directory reads with stale header or client hints', async () => {
+    const live = mount({
+      sessions: { get: () => ({ header: { cwd: resolvePath('/original-project') } }) },
+      workingDirectory: { get: () => { throw new Error('working-directory service failed') } },
+    })
+    expect(await invoke(live, 'session.cwd', { sessionId: 'wd-live-error', cwd: '/stale-client' })).toMatchObject({
+      ok: false, error: { message: 'working-directory service failed' },
+    })
+    const cold = mount({ sessionQuery: {
+      observeSession: async () => { throw new Error('working-directory observation failed') },
+    } })
+    expect(await invoke(cold, 'session.cwd', { sessionId: 'wd-cold-error', cwd: '/stale-client' })).toMatchObject({
+      ok: false, error: { message: 'working-directory observation failed' },
+    })
   })
 
   it('uses the client summary cwd while the session is detached', async () => {
@@ -1515,7 +1672,7 @@ const mountWithSettings = (settings?: unknown, home?: string): SidebarWebRoute =
   const routes: SidebarWebRoute[] = []
   lastMountedRoutes = routes
   const ctx = {
-    webRuntime: { trustedHosts: [] },
+    connection: { requestRejection: () => undefined },
     webServer: {
       register: (route: SidebarWebRoute) => { routes.push(route); return () => {} },
       registerUpgrade: (route: SidebarWebUpgradeRoute) => { void route; return () => {} },
@@ -1755,7 +1912,7 @@ describe('agent sidebar-open tool gating', () => {
       configure: () => () => {},
     }
     const ctx = {
-      webRuntime: { trustedHosts: [] },
+      connection: { requestRejection: () => undefined },
       webServer: {
         register: (route: SidebarWebRoute) => { routes.push(route); return () => {} },
         registerUpgrade: (route: SidebarWebUpgradeRoute) => { void route; return () => {} },
