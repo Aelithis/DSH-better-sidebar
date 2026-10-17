@@ -897,6 +897,11 @@ describe('ChangesTab', () => {
     expect(rule('.gitScroll')).toContain('overflow-y: auto')
     expect(rule('.gitScroll')).toContain('overflow-x: hidden')
     expect(rule('.gitScroll')).toContain('flex: 1')
+    expect(rule('.gitScroll')).toContain('flex-direction: column')
+    expect(rule('.changesSection')).toContain('flex: none')
+    expect(rule('.graphSection')).toContain('flex: 1')
+    expect(rule('.graphArea')).toContain('flex: 1')
+    expect(rule('.graphArea')).not.toContain('height: min(')
     // Docked by flex, and sticky so a host-scrolled tab body cannot carry the
     // branch control off the bottom of the pane either.
     expect(rule('.gitFooter')).toContain('flex: none')
