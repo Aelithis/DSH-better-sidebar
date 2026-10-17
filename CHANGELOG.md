@@ -2,6 +2,13 @@
 
 > 本文档收录 dsh-better-sidebar 的完整发布历史（最新版摘要见 [README](README_ZH.md)；同步发布于 [GitHub Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases)）。
 
+### v0.28.0
+
+- **正式版支持线前移到 DSH 0.2.1-rc.1+**：13 条 DSH peer 下限统一为 `^0.2.1-rc.1`，开发依赖、CI 与安装脚本使用精确 RC 基线。不新增运行时兼容层、不改功能实现。
+- **沿用已发布 alpha 的功能**：上游 alpha.5 → rc.1 完整源码树差异共 355 项，全部为 `package.json`，源码零变化；本次仅同步版本、依赖声明与文档。伴随依赖调整为 Cordis peer `^4.0.5` / dev `4.0.5`、group `1.0.5`、schemastery `~3.18.5`，include 保持 `1.0.10`。
+- **发布渠道切换至 npm `latest`**：插件 v0.28.0 即将接管 `latest`，现有 workflow 按正式版本号自动选择该标签，无需修改。**宿主 npm `latest` 此时仍是 0.2.0-rc.2，不能安装本版**；该宿主必须固定插件 **v0.26.1**。DSH 0.2.1-alpha.5 用户固定 **v0.28.0-alpha.0**；0.2.0-rc.1、0.1.7 及更早支持线保持原指引。用户已明确接受两个包的 `latest` 不对齐风险。
+- **RC 验证独立取证**：结果见 [DSH 0.2.1-rc.1 适配记录](docs/plans/2026-10-17-dsh-0.2.1-rc.1-adaptation.md)；未完成的检查保持待验证，不沿用下方 alpha 发布时的测试数字。
+
 ### v0.28.0-alpha.0（预发布）
 
 - **支持线前移到 DSH 0.2.1-alpha.5+**：13 条 DSH peer 使用 `^0.2.1-alpha.5`，开发依赖与 CI / 安装脚本钉精确基线。0.2.0-rc.2 用户请固定 npm 已发布的 **v0.26.1**（v0.27.0 尚未发布）；本 alpha 使用 `dsh-better-sidebar@0.28.0-alpha.0`，不是 `latest`。
