@@ -15,6 +15,12 @@ import { createElement } from 'react'
 import { act } from 'react-dom/test-utils'
 import { renderRoot } from './test-utils.ts'
 import { SubagentView } from '../src/client/SubagentView.tsx'
+import { ContextDiagnosticsHost } from '../src/client/context-diagnostics-ui.tsx'
+import type {
+  ContextDiagnosticTarget,
+  ContextDiagnostics,
+  ContextDiagnosticsSnapshot,
+} from '../src/client/context-diagnostics.ts'
 import type {
   Context,
   SidebarClientJobsService,
@@ -185,6 +191,36 @@ afterEach(() => {
   vi.useRealTimers()
   for (const el of document.querySelectorAll('body > div')) el.remove()
 })
+
+/**
+ * Rendering the page WITH a diagnostics controller: the output window carries
+ * the owner conversation's Context entry, and adding it must not disturb the
+ * job plumbing this file pins (watch/observe/release/kill go through the host
+ * client service exactly as before).
+ */
+function diagnosticsFixture(snapshot: ContextDiagnosticsSnapshot = { available: true, busy: false }) {
+  const opens: ContextDiagnosticTarget[] = []
+  let current = snapshot
+  const listeners = new Set<() => void>()
+  const controller: ContextDiagnostics = {
+    getSnapshot: () => current,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener)
+      return () => { listeners.delete(listener) }
+    },
+    open: (target: ContextDiagnosticTarget) => { opens.push(target) },
+    dismissError: () => {},
+    dispose: () => {},
+  }
+  return {
+    opens,
+    controller,
+    publish: (next: ContextDiagnosticsSnapshot): void => {
+      current = next
+      for (const listener of [...listeners]) listener()
+    },
+  }
+}
 
 /** Flush the mount-time requests (routes + the service snapshot). */
 async function flushJobs(): Promise<void> {
@@ -464,6 +500,46 @@ describe('SubagentView background jobs', () => {
     expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(0)
     expect(jobsFake.released).toContain('bash-2')
     unmount()
+  })
+
+  it('adds the owner\'s Context entry to the window WITHOUT touching the job plumbing', async () => {
+    const store = makeStore(baseSnapshot())
+    const diagnostics = diagnosticsFixture()
+    const rendered = renderRoot(createElement(
+      ContextDiagnosticsHost,
+      { controller: diagnostics.controller },
+      createElement(SubagentView, { sessionId: 'root', active: true, ctx: makeCtx(store, undefined, jobsFake) }),
+    ))
+    const { container } = rendered
+    await flushJobs()
+    // The tree's jobs keep the host-client-service path: both sessions watched.
+    expect([...jobsFake.watches].sort()).toEqual(['child', 'root'])
+    const row = container.querySelector('button[aria-label*="echo hi"]') as HTMLButtonElement
+    await act(async () => { row.click() })
+    // The observation still rides the roster's WATCHED session for this job.
+    expect(jobsFake.observations).toEqual([{ sessionId: 'child', jobId: 'bash-2' }])
+
+    const entry = document.querySelector('[data-dsh-ctx-entry="job"]') as HTMLButtonElement
+    expect(entry).not.toBeNull()
+    // The kill control is untouched beside it, and the entry opens the OWNING
+    // conversation (the row's own roster key IS the owner in this fixture).
+    expect(document.querySelectorAll('[data-floating-window] button[aria-label="终止"]')).toHaveLength(0)
+    await act(async () => { entry.click() })
+    expect(diagnostics.opens).toEqual([{
+      sessionId: 'child',
+      label: '子代理',
+      address: { parentSessionId: 'root', childSessionId: 'child', mode: 'continuable' },
+    }])
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    })
+    expect(jobsFake.released).toContain('bash-2')
+    await act(async () => { rendered.unmount() })
+    // One row was open, so ONE observation was ever taken: the watchers ride
+    // the page's lifetime, the observation rides the open row's.
+    expect(jobsFake.observations).toEqual([{ sessionId: 'child', jobId: 'bash-2' }])
+    expect([...jobsFake.releases].sort()).toEqual(['child', 'root'])
   })
 
   it('flags a gap and a producer error in the observed stream', async () => {
