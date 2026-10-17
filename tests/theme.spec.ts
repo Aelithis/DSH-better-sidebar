@@ -172,6 +172,25 @@ describe('skin contract: the plugin owns no color of its own', () => {
     }
   })
 
+  it('the graph viewport fills its container without a viewport-relative height cap', () => {
+    const sheet = document.createElement('style')
+    sheet.textContent = readFileSync(resolve(ROOT, 'src/client/changes/changes.module.css'), 'utf8')
+    document.head.append(sheet)
+    try {
+      const rules = Array.from(sheet.sheet!.cssRules).filter((rule): rule is CSSStyleRule => 'selectorText' in rule)
+      const graph = rules.find(rule => rule.selectorText === '.graphArea')!.style
+      expect(graph.getPropertyValue('flex-grow')).toBe('1')
+      expect(graph.getPropertyValue('height')).toBe('')
+      expect(graph.getPropertyValue('max-height')).toBe('')
+      expect(Number.parseFloat(graph.getPropertyValue('min-height'))).toBe(0)
+      const section = rules.find(rule => rule.selectorText === '.graphSection')!.style
+      expect(section.getPropertyValue('min-height')).toBe('248px')
+      expect(section.getPropertyValue('max-height')).toBe('')
+    } finally {
+      sheet.remove()
+    }
+  })
+
   it('selected change rows keep their layout and separate their accent from indent guides', () => {
     const sheet = document.createElement('style')
     sheet.textContent = readFileSync(resolve(ROOT, 'src/client/changes/changes.module.css'), 'utf8')

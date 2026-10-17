@@ -1078,7 +1078,7 @@ export function GitLens(props: GitLensProps) {
         {snapshot?.truncated === true && <Notice kind="warn">{t('statusTruncated')}</Notice>}
 
         {isRepo && (
-          <section data-scm-section="changes">
+          <section className={css.changesSection} data-scm-section="changes">
             <div className={css.scmHeader}>
               <button type="button" className={css.scmDisclosure} aria-expanded={changesOpen}
                 onClick={() => { setChangesOpen(open => !open) }}>
@@ -1150,7 +1150,7 @@ export function GitLens(props: GitLensProps) {
           </section>
         )}
 
-        {isRepo && <section data-scm-section="graph">
+        {isRepo && <section className={graphOpen ? css.graphSection : undefined} data-scm-section="graph">
           <div className={css.scmHeader}>
             <button type="button" className={css.scmDisclosure} aria-expanded={graphOpen}
               onClick={() => { setGraphOpen(open => !open) }}>
