@@ -227,7 +227,11 @@ export function appendToDraft(ctx: Context, sessionId: string, text: string): bo
         end: clipboardToDetect(before.occurrences, plan.end),
       },
     })
-    return input.state.getSnapshot().draftRev !== before.draftRev
+    if (input.state.getSnapshot().draftRev === before.draftRev) {
+      console.warn('[dsh-better-sidebar] draft insert skipped: the composer did not apply the insert event')
+      return false
+    }
+    return true
   } catch (error) {
     console.warn('[dsh-better-sidebar] draft insert failed:', error)
     return false
@@ -352,7 +356,11 @@ export function insertFileReference(ctx: Context, sessionId: string, relativePat
         end: at,
       },
     })
-    return input.state.getSnapshot().draftRev !== before.draftRev
+    if (input.state.getSnapshot().draftRev === before.draftRev) {
+      console.warn('[dsh-better-sidebar] file-reference insert skipped: the composer did not apply the insert event')
+      return false
+    }
+    return true
   } catch (error) {
     console.warn('[dsh-better-sidebar] file-reference insert failed:', error)
     return false

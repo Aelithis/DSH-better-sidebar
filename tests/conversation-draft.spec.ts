@@ -328,7 +328,8 @@ describe('appendToDraft', () => {
     expect(composer.setDrafts).toEqual([])
   })
 
-  it('reports false — and leaves the draft alone — when no listener handled the event', () => {
+  it('reports false — logs, and leaves the draft alone — when no listener handled the event', () => {
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const composer = fakeComposer({ draft: 'hi', draftRev: 2 })
     const ctx = {
       sessions: { scope: (): unknown => ({ emit: (): void => undefined }) },
@@ -337,6 +338,8 @@ describe('appendToDraft', () => {
     expect(appendToDraft(ctx, 's1', 'X')).toBe(false)
     expect(composer.read().draft).toBe('hi')
     expect(composer.setDrafts).toEqual([])
+    expect(consoleWarn).toHaveBeenCalledTimes(1)
+    consoleWarn.mockRestore()
   })
 
   it('returns false and logs when the draft carries no revision to address', () => {
@@ -392,6 +395,20 @@ describe('insertFileReference', () => {
       { offset: 14, length: 15 },
     ])
     expect(composer.setDrafts).toEqual([])
+  })
+
+  it('reports false — logs, and leaves the draft alone — when no listener handled the event', () => {
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const composer = fakeComposer({ draft: 'hi', draftRev: 2 })
+    const ctx = {
+      sessions: { scope: (): unknown => ({ emit: (): void => undefined }) },
+      get: (name: string): unknown => composer.ctx.get(name),
+    } as unknown as Context
+    expect(insertFileReference(ctx, 's1', 'notes/ENV.md')).toBe(false)
+    expect(composer.read().draft).toBe('hi')
+    expect(composer.setDrafts).toEqual([])
+    expect(consoleWarn).toHaveBeenCalledTimes(1)
+    consoleWarn.mockRestore()
   })
 
   it('returns false without a revision to address', () => {
