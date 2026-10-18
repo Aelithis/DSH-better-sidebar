@@ -988,6 +988,64 @@ test('the explorer @-reference button keeps earlier chips (no whole-draft rewrit
   ).toHaveCount(1, { timeout: 15_000 })
   await expect(chips, 'the folder insert must leave both chips intact').toHaveCount(2)
 
+  // Text typed BETWEEN two references must not change how either insert
+  // behaves: the next reference still lands as its own chip, and the earlier
+  // ones stay chips (the flattened-draft bug used to eat them on any insert).
+  const composer = chips.first().locator('xpath=ancestor::*[@contenteditable="true"][1]')
+  const typeInComposer = async (text: string): Promise<void> => {
+    await composer.click()
+    await page.keyboard.press('End')
+    await page.keyboard.type(text)
+  }
+
+  await typeInComposer('prose between mentions ')
+  await expect(chips, 'typing must not touch the chips').toHaveCount(2)
+  await referenceRow(SEEDED_README_FILE)
+  await expect(
+    chips,
+    'a reference inserted after interleaved prose must add its own chip and keep the rest',
+  ).toHaveCount(3, { timeout: 15_000 })
+  await expect(chips.first(), 'the first chip must still carry its own file').toContainText(SEEDED_FILE)
+  await expect(
+    page.locator('[data-composer-text-ref]'),
+    'the folder token stays the only plain-text reference',
+  ).toHaveCount(1)
+
+  // The viewer's selection popup: its payload is a fenced MULTI-LINE string
+  // that rides the same plain-text insert. It must arrive verbatim (newlines
+  // included) and leave every chip alone.
+  const mdRow = pane.locator(`[role="button"][title$="${SEEDED_MD_FILE}"]:visible`)
+  await expect(mdRow).toHaveCount(1, { timeout: 30_000 })
+  await mdRow.click({ position: { x: 8, y: 8 } }) // open the file (not the @ action)
+  await expect(pane.getByText('tail text')).toHaveCount(1, { timeout: 30_000 })
+  // A multi-line selection in the code viewer (CodeMirror): the editor path
+  // raises the same popup with a fenced payload carrying the file and its line
+  // range — the multi-line shape this module has to hand over verbatim.
+  // The preview keeps a hidden CodeMirror host mounted (unsaved edits), so
+  // every locator here has to filter for the VISIBLE copy.
+  const heading = pane.getByText('Diagram', { exact: true }).filter({ visible: true }).first()
+  const tail = pane.getByText('tail text', { exact: true }).filter({ visible: true }).first()
+  const headingBox = await heading.boundingBox()
+  const tailBox = await tail.boundingBox()
+  expect(headingBox, 'the visible preview heading must be laid out').not.toBeNull()
+  expect(tailBox, 'the visible preview line must be laid out').not.toBeNull()
+  await page.mouse.move(headingBox!.x + 2, headingBox!.y + headingBox!.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(tailBox!.x + tailBox!.width - 2, tailBox!.y + tailBox!.height / 2, { steps: 8 })
+  await page.mouse.up()
+
+  const quoteButton = page.getByRole('button', { name: /Add to conversation|添加到对话/ })
+  await expect(quoteButton, 'the selection popup must offer the quote').toHaveCount(1, { timeout: 10_000 })
+  await quoteButton.click()
+  await expect(
+    chips,
+    'the multi-line quote must leave every chip intact',
+  ).toHaveCount(3, { timeout: 15_000 })
+  const composed = await composer.evaluate((element) => element.textContent ?? '')
+  expect(composed, 'the quote must arrive verbatim, fences and newlines included').toContain('```')
+  expect(composed, 'the quote must keep its line breaks').toContain('\n')
+  expect(composed).toContain('tail text')
+
   expect(pageErrors, 'no page error while inserting references').toEqual([])
 })
 

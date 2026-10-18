@@ -328,6 +328,23 @@ describe('appendToDraft', () => {
     expect(composer.setDrafts).toEqual([])
   })
 
+  it('hands a multi-line payload to the host verbatim and keeps the chip (selection quote)', () => {
+    const composer = fakeComposer({
+      draft: '@notes/ENV.md ',
+      draftRev: 1,
+      occurrences: [{ offset: 0, length: 13 }],
+    })
+    const quote = ['```diagram.md:1-9', '# Diagram', 'tail text', '```'].join('\n')
+    expect(appendToDraft(composer.ctx, 's1', quote)).toBe(true)
+    // The draft already ends with whitespace, so the payload arrives untouched:
+    // no leading separator, every newline intact (the host renders them under
+    // the composer's `white-space: pre-wrap`).
+    expect(composer.events[0]?.payload.text).toBe(quote)
+    expect(composer.read().draft).toBe(`@notes/ENV.md ${quote}`)
+    expect(composer.read().occurrences).toEqual([{ offset: 0, length: 13 }])
+    expect(composer.setDrafts).toEqual([])
+  })
+
   it('reports false — logs, and leaves the draft alone — when no listener handled the event', () => {
     const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const composer = fakeComposer({ draft: 'hi', draftRev: 2 })
