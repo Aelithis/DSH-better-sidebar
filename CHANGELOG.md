@@ -1,6 +1,47 @@
 # Changelog
 
-> 本文档收录 dsh-better-sidebar 的完整发布历史（最新版摘要见 [README](README.md)；同步发布于 [GitHub Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases)）。
+> 本文档收录 dsh-better-sidebar 的完整发布历史（最新版摘要见 [README](README_ZH.md)；同步发布于 [GitHub Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases)）。
+
+### v0.28.0
+
+- **正式版支持线前移到 DSH 0.2.1-rc.1+**：13 条 DSH peer 下限统一为 `^0.2.1-rc.1`，开发依赖、CI 与安装脚本使用精确 RC 基线。不新增运行时兼容层、不改功能实现。
+- **沿用已发布 alpha 的功能**：上游 alpha.5 → rc.1 完整源码树差异共 355 项，全部为 `package.json`，源码零变化；本次仅同步版本、依赖声明与文档。伴随依赖调整为 Cordis peer `^4.0.5` / dev `4.0.5`、group `1.0.5`、schemastery `~3.18.5`，include 保持 `1.0.10`。
+- **发布渠道切换至 npm `latest`**：插件 v0.28.0 即将接管 `latest`，现有 workflow 按正式版本号自动选择该标签，无需修改。**宿主 npm `latest` 此时仍是 0.2.0-rc.2，不能安装本版**；该宿主必须固定插件 **v0.26.1**。DSH 0.2.1-alpha.5 用户固定 **v0.28.0-alpha.0**；0.2.0-rc.1、0.1.7 及更早支持线保持原指引。用户已明确接受两个包的 `latest` 不对齐风险。
+- **RC 验证独立取证**：结果见 [DSH 0.2.1-rc.1 适配记录](docs/plans/2026-10-17-dsh-0.2.1-rc.1-adaptation.md)；未完成的检查保持待验证，不沿用下方 alpha 发布时的测试数字。
+
+### v0.28.0-alpha.0（预发布）
+
+- **支持线前移到 DSH 0.2.1-alpha.5+**：13 条 DSH peer 使用 `^0.2.1-alpha.5`，开发依赖与 CI / 安装脚本钉精确基线。0.2.0-rc.2 用户请固定 npm 已发布的 **v0.26.1**（v0.27.0 尚未发布）；本 alpha 使用 `dsh-better-sidebar@0.28.0-alpha.0`，不是 `latest`。
+- **宿主 Connection 准入**：HTTP/WS 路由统一调用 `ctx.connection.requestRejection(req)`，不再依赖已删除的 `webRuntime` 或插件自建信任例外。
+- **移除 runtime invariants 接入**：上游删除 `@deepseek-ai/dsh-invariants` 与 `/invariant` 子路径，本插件同步移除 companion、类型与发布入口；压缩种子测试继续使用公开的 surface fold 和 seed validator。
+- **当前执行目录接入**：文件 / Git / 终端与新建 sidechat 跟随会话 `working_directory`；live 读 workingDirectory，cold 用 sessionQuery all projections 并释放 lease，linked worktree 保持 base-keyed，新 sidechat seed 尾部盖章当前 cwd。
+- **宿主伴随 API / 依赖**：补齐 `TerminalBlockLabels.commandLine(line)` 与 21 份词典；同步 Cordis `4.0.5`、schemastery `~3.18.5-alpha.2`、group `1.0.5-alpha.2` 与 include `1.0.10`，不直接钉 loader 或设置 override。alpha.5 优先用 package 的 `engines.dsh` 判断兼容性，本插件不新增该字段，继续用 13 条 DSH peers。
+- **验证记录**：[发布整合验证](docs/plans/2026-10-17-alpha-release-validation.md) 收录最新 dev 的 221 文件 / 2681 用例单 worker 通过、真实 alpha.5 挂载与 Context 三态联动验证；[初始适配记录](docs/plans/2026-10-16-dsh-0.2.1-alpha.5-adaptation.md) 保留适配阶段证据。
+- **提交图使用完整可用高度**：移除 `min(60vh, 460px)` 高度限制，更改区下方到固定底栏之间的空间全部分配给图谱；打开差异预览或缩放窗口时自动调整。长历史仍在图谱内部滚动，待提交文件很多时保留原有外层滚动，避免把整个页面撑高。
+- **dsh-context 可选联动**：Context 侧栏入口可用时，在 Agent 详情、后台任务输出窗和会话标题栏提供诊断入口；后台任务仅查看明确的真实属主，不改变任务输出观察或停止命令的会话语义。跨会话先定位目标再打开 Context，复用其他分栏已有的标签；用户继续导航时取消，等待最多 10 秒。未安装、禁用或仅显示会话标签页时隐藏入口，不修改上下文、不恢复 Agent 执行，也不修改 dsh-context 偏好。全部入口共用 Cordis 作用域内的可选适配器，空闲时不新增轮询。
+
+### v0.27.0
+
+- 🌿 **Git 页面重做：VS Code Source Control 结构 + 只读提交图（同一页签）**（[#941](https://github.com/omdsh-dev/DSH-better-sidebar/issues/941)，贡献者 PR [#944](https://github.com/omdsh-dev/DSH-better-sidebar/pull/944) @hairyf + [#969](https://github.com/omdsh-dev/DSH-better-sidebar/pull/969) @vlln）：「文件变动 > Git」的内容区改为 Source Control 结构——可折叠的 Changes（多行 Message + 仅填草稿的 Generate、Merge / Staged / Changes 三组各自独立折叠与计数、整行 hover）与 Graph 区、常驻底栏（可点击分支 + `*`/`+`/`!` 标记、upstream 的 `↓`/`↑` 与安全 Pull-then-Push）；Push/Pull 与 worktree·子仓库选择移入 More Actions；提交只消费已暂存项，冲突 / 空消息 / 无暂存时禁止，草稿按会话·仓库·worktree 隔离。Graph 区由 **#969 的有界只读引擎**渲染（专用 `git.graph` 路由：子先于父的拓扑序、分支筛选、游标失效显式返回 `graph-stale`、每页 200 / 偏移 10000 / 分支 1000 / 进程 10 s / 输出 8 MiB 上限，超限报错不静默截断；泳道连线与引用徽章用主题状态色，hover 卡片与提交详情卡；**纯读取**——不 checkout / fetch / 改任何 ref）。底部预览面板改为固定三签 `提交详情 / 内容 / 差异`（有内容才有差异，读操作落在内容签）。**设计取舍与实施偏差见 [docs/plans/2026-10-16-git-page-vscode-scm-merge.md](docs/plans/2026-10-16-git-page-vscode-scm-merge.md)**（贡献者 PR [#939](https://github.com/omdsh-dev/DSH-better-sidebar/pull/939) @hairyf 的官方下划线 Tabs 镜片切换保留；第三个「提交图」镜头刻意未上线）。
+- 🌿 **页签名「文件变动」→「Git」**（贡献者 PR [#968](https://github.com/omdsh-dev/DSH-better-sidebar/pull/968) @vlln）：21 份词典、两份 README 与相关测试同步（页签内部镜头名保持现状）。
+- 🐞 **变更面板两侧行数不再相加**（[#908](https://github.com/omdsh-dev/DSH-better-sidebar/issues/908)，贡献者 PR [#909](https://github.com/omdsh-dev/DSH-better-sidebar/pull/909) @UNscientific-9）：`MM` 文件的两次读数各自成字段（`staged` / `unstaged`），每个分组只读自己那一侧，Merge 组不印行数——同一行被两次 diff 看见时不再印成 `+2 −2`。
+- 🐞 **git 命令遇到 `dubious ownership` 不再整页失效**（[#690](https://github.com/omdsh-dev/DSH-better-sidebar/issues/690)，贡献者 PR [#827](https://github.com/omdsh-dev/DSH-better-sidebar/pull/827) @yanzhaohui1999）：守卫按**单条命令**应答——git 自己指名被拒的仓库目录，插件只对那次调用注入 `-c safe.directory=<dir>`（不写配置文件、从不用 `*`，下一条命令重新面对守卫）。
+- 🐞 **工作区根目录自身是仓库时，子目录里的独立仓库不再被藏起来**（贡献者 PR [#607](https://github.com/omdsh-dev/DSH-better-sidebar/pull/607) @iasiv5）：仓库发现改为**有界深度 BFS**（≤3 层、零子 git 进程、跳过隐藏目录 / 符号链接目录 / `node_modules`），root 与各层子仓库同属一个候选集合；发现根按 realpath + Windows 正斜杠归一（同一个检出不会以两种拼法出现两次）。
+- 🐞 **「本轮文件」三处修正**：按**会话 cwd 解析完整路径**、同一文件的相对与绝对写法归入同一行（[#875](https://github.com/omdsh-dev/DSH-better-sidebar/issues/875)，PR [#886](https://github.com/omdsh-dev/DSH-better-sidebar/pull/886)）；**PTC（`<code>` 内）文件调用可见**（[#913](https://github.com/omdsh-dev/DSH-better-sidebar/issues/913)，PR [#921](https://github.com/omdsh-dev/DSH-better-sidebar/pull/921)）；操作改为一行一条**按时间倒序平铺**、不再按文件分组（PR [#940](https://github.com/omdsh-dev/DSH-better-sidebar/pull/940) @hairyf）。路径解析与 PTC 支持来自 @wang-kaopu，平铺操作列表来自 @hairyf。
+- ⚡ **`changes.ops` 空窗不再重复整窗**（[#870](https://github.com/omdsh-dev/DSH-better-sidebar/issues/870)，贡献者 PR [#885](https://github.com/omdsh-dev/DSH-better-sidebar/pull/885) @wang-kaopu）：游标改由客户端显式传递（不传 = 从最早一条起，含 seq 0），primed 之后请求带 `wait` 挂在宿主侧等下一个工具事件（25 s 上限）而不是每 2.5 s 重放同一窗；路由体移入 `src/changes-ops.ts`，并保留 PTC 四种事件类型。
+- **修复选中行错位与异常边框**：整合提交图时误删了 Git 文件行与本轮操作行共用的选中声明，留下的选择器串到了缩进参考线规则，导致选中文件脱离分组。恢复原有主题背景与行内标记，不改变图谱高度或滚动结构；`tests/theme.spec.ts` 与真实挂载 `tests/e2e/git-layout.e2e.ts` 覆盖选中前后布局、暂存与未暂存同名文件、冲突行和窄侧栏。滚动状态保持测试默认使用独立临时仓库，避免复用旧目录。
+- **侧边对话从最近一次 summarizing compaction 起种**（贡献者 PR [#964](https://github.com/omdsh-dev/DSH-better-sidebar/pull/964) @NolanHo）：新子会话不再全量复制父日志，保留必要的事件结构与成组记录；新增真实宿主校验器回归。
+- 🧪 测试：新增 `tests/git-scm.spec.tsx` / `git-graph-ui.spec.tsx` / `graph-layout.spec.ts` / `changes-ops-route.spec.ts` / `e2e/git-graph.e2e.ts` / `e2e-aggregate-auth.spec.ts`，改写 `changes-tab.spec.tsx`（底部面板三签、图谱区在 Git 镜头内）、`git.spec.ts`（porcelain v2 状态与发现根归一）、`git-view-worktree.spec.tsx`（图页竞态）、`unbounded-caches.spec.ts`（长轮询契约）等 20 余份既有 spec；删除随内联图退场的 `git-graph.spec.tsx`。
+
+### v0.26.1
+
+- ⚡ **稳态开销治理：0.25 引入的常驻轮询、每 tab 成本与 `keepMounted` 的无界复利**（社区反馈「0.24 没问题，之后就会卡」——侧栏在前台开久了卡、多轮对话后 DSH 卡、重装重启又暂时好；分界线经产物级 A/B 落在 v0.25.0，v0.26.0 的 git 轮询修复没触及这些；方法与全部实测数字见 [docs/plans/2026-10-15-perf-steady-state.md](docs/plans/2026-10-15-perf-steady-state.md)）：
+  - **两个 500ms 表先治**（v0.25 引入，实测单 tick 0.5→9.7ms、最坏约 3 500 次强制布局读取/秒，且**无论是否可见都在跑**）：宿主右侧面板展开态改**全模块一条共享表**（引用计数，隐藏即 `clearInterval`，恢复即补读）；空白会话的兜底入口只在它**真的渲染**时建表（此前 interval 注册在 early return 之前，渲染 `null` 也照跑），让位走查 400→100 步（400px），隐藏期间不测量不写 state。同批：`settings-nav-icon` 的 `document.body` 观察者改 **rAF 合帧**并去掉 `characterData`（流式 token 改动文本节点不再逐次触发全文档查询）、`use-center-column` 的 1.5s 兜底表只在「一列都没有」时 armed（此前周期与复核窗口等长，注释声称的 query-free 快路径永不生效）、`session-phase` 隐藏时不请求且值未变不 `setState`（blank 会话不再每秒重渲染）。
+  - **「每 tab」收敛成「每会话」**：`use-session-root` 重写为按会话引用计数的共享 store——一条 5s 表，只在 ≥1 个**可见**订阅者时存在，页面隐藏停表、恢复/聚焦/取消 park 立刻补刷；native tab body 传自己的 `visible`（宿主对 parked body 报 false）。文件树目录 watch 与侧边聊推送同样按可见性门控（parked 不建 socket、不做重列、恢复即重连补刷）。**此前每访问一个页签就永久多一条「每 5s 一次 `git rev-parse` 子进程 + 4 000 条事件回扫」**——`cwdOf()` 被 12 条 `/sidebar/*` 路由共用，实测每次未命中 9.6–44.7ms。
+  - **`keepMounted` 保留语义、加上界**（切走不卸载仍然成立，草稿/滚动/展开态照旧）：`git-status.slots` 释放归零即删并按 256 上限淘汰、`ops-stream.streams` LRU 32（保留 `seq` 游标，parked 页签回来仍折到错过的写操作）、`state.bySession` LRU 32 且 `getSessionStates()` 不再每次整份复制（`syncExpanded` 原先每次 store notify 都 O(会话数) 复制）、`previewScrollMemory` 64、`commitDrafts` 32、`pendingAnchors` 写入时按 TTL 清扫。
+  - **宿主侧**：`active-worktree` 加在飞去重（并发 8 次只 spawn 一次）、`ACTIVE_ROOT_TTL_MS` 3s→15s（与客户端 5s 轮询错配导致**每次都未命中**）、三个模块级缓存加 LRU 上界（512/512/256）；`git.ts` 的两条 `--numstat` 加 pathspec（未忽略的大目录下从「两条全仓库 diff」变成零条，未跟踪路径不参与）并给 `runGit` 加 **8 MiB 输出上限**与产出侧行数上限；单层 `fs.tree` 补 `ProbeGate`、折叠探测每层封顶 32 且截断层不探测；`sidechat.events` 冷线程加 `(revision, size)` memo；`agent-opens` 每会话队列封顶 64；teardown 主动关闭三个 `noServer` WSS 的**已接受连接**（ws@8 的 `close()` 不会终止在连 socket，句柄会活到浏览器断开）。
+  - 🧪 测试：新增 `tests/steady-state.spec.tsx`（跨模块门禁：非 blank 会话只允许**一条** 500ms 表且**不得**有 5s 表、页面隐藏时零表、兜底入口在场但渲染 `null` 时命中测试必须为 0、`session.cwd` 请求必须为 0；末节是**客户端 `setInterval(` 站点清单**——新增未登记的周期任务即红，登记了门控词却删掉门控也红）、`tests/right-panel-open.spec.tsx`、`tests/session-phase.spec.tsx`、`tests/session-root-poll.spec.tsx`、`tests/unbounded-caches.spec.ts`；扩展 `dock-fallback` / `settings-nav-icon` / `center-column-locator` / `file-tree-dir-watch` / `use-sidechat-push` / `state` / `active-worktree` / `git-worktree` / `fs-tree-probe-gate` / `sidechat-routes` / `smoke` / `agent-opens` / `git-status-poll` / `subagent-live-polling` / `subagent-jobs-view` 共 15 份既有 spec；判别性由逐条「临时回退 → 对应用例变红 → 还原」实测。`tests/e2e/perf.e2e.ts` 新增 `steady-state` 指标与两条硬断言（兜底入口不渲染即不得命中测试；`session.cwd` 必须按会话而非按访问过的页签计数）。
+  - **明确未做**：关闭 `keepMounted`（用户选定保留语义 + 加上界）、文件树/侧聊列表虚拟化、CSS `:has` 回潮、任何宿主侧改动、给 perf lane 加耗时阈值门禁。**无公开接入 API 变化**（`ctx.betterSidebar` / TabDescriptor / FileViewerDescriptor / localStorage 格式均未动）。
 
 ### v0.26.0
 
