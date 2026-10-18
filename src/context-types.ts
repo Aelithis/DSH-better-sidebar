@@ -670,7 +670,9 @@ export interface SidebarSessionInput {
    * Replace the whole draft text. **Not an insert API**: it removes inline
    * reference chips (the draft comes back as plain text), so both insertion
    * paths emit scoped composer events instead — see
-   * `client/conversation-draft.ts`.
+   * `client/conversation-draft.ts`. If a future host changes that semantic
+   * (chip-preserving replacement, or a public insert/`captureInsertion` face),
+   * revisit this note together with both paths in that module.
    */
   setDraft(text: string): void
 }
