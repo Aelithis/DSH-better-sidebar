@@ -5,8 +5,9 @@
  * display rows.
  *
  * A thread child's log starts with the ENTIRE inherited parent log as its
- * fork seed. The route already cuts everything up to the LAST
- * `session/end-seed` marker; the mapping re-applies the same cut so any
+ * fork seed. The route already cuts everything up to the last tagged
+ * `session/end-seed { inherited: true }` marker; the mapping re-applies the
+ * same cut (never a restore/replay lifecycle marker) so any
  * seed event that somehow crosses the wire still never renders, and maps
  * context injections (the "Side conversation boundary" prompt,
  * plugin-sourced context) onto a collapsible injection row, so the view
@@ -24,7 +25,7 @@
  */
 import type { DiffHunk, ReadBlockLine } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SidebarHistoryEntry } from '../context-types.ts'
-import { isContextInjectionMessage, SIDE_BOUNDARY_PROMPT } from '../sidechat-core.ts'
+import { isContextInjectionMessage, SIDE_BOUNDARY_PROMPT, threadOwnLogEvents } from '../sidechat-core.ts'
 
 /**
  * Structured render payload for a tool row that maps onto one of the host's
@@ -188,14 +189,6 @@ function resultTextOf(data: Record<string, unknown>): string {
     }
   }
   return parts.join('\n')
-}
-
-/** Index of the last `session/end-seed` event (fork seed marker), or -1. */
-function lastSeedEnd(events: readonly { type: string }[]): number {
-  for (let index = events.length - 1; index >= 0; index--) {
-    if (events[index]?.type === 'session/end-seed') return index
-  }
-  return -1
 }
 
 /** Parse the tool's raw arguments JSON to an object, or undefined. */
@@ -379,8 +372,7 @@ function attemptFailure(stream: unknown): string | undefined {
  * @returns display rows in log order.
  */
 export function transcriptRows(entries: readonly SidebarHistoryEntry[], prev?: readonly SidechatTranscriptRow[]): SidechatTranscriptRow[] {
-  const events = entries.map(entry => entry.event)
-  const seedEnd = lastSeedEnd(events)
+  const events = threadOwnLogEvents(entries.map(entry => entry.event))
   const rows: SidechatTranscriptRow[] = []
   /** (turn, step, index, kind) key → index of its accumulating stream row. */
   const streamRows = new Map<string, number>()
@@ -396,7 +388,6 @@ export function transcriptRows(entries: readonly SidebarHistoryEntry[], prev?: r
    *  context re-sent, so summing would double-count). */
   const turnUsage = new Map<number, { inputTokens: number; outputTokens: number }>()
   for (let index = 0; index < events.length; index++) {
-    if (index <= seedEnd) continue
     const event = events[index]
     if (event === undefined) continue
     const data = event.data as Record<string, unknown>

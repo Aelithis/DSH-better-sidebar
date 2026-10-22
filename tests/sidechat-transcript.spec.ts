@@ -58,10 +58,10 @@ function toolRoleResultMessage(callId: string, text: string, isError = false): R
 }
 
 describe('transcriptRows', () => {
-  it('cuts the inherited seed at the last end-seed and renders the boundary as an injection row', () => {
+  it('cuts the inherited seed at the last tagged end-seed and renders the boundary as an injection row', () => {
     const entries = [
       entry(ev('user/message', 0, { content: textBlocks('inherited'), source: { kind: 'user' } })),
-      entry(ev('session/end-seed', 1)),
+      entry(ev('session/end-seed', 1, { inherited: true })),
       entry(ev('user/message', 2, { content: textBlocks(`${SIDE_BOUNDARY_PREFIX}\n\nmode`), source: { kind: SIDE_INJECTION_SOURCE_KIND } })),
       entry(ev('user/message', 3, { content: textBlocks('the side question'), source: { kind: 'user' } })),
     ]
