@@ -507,3 +507,50 @@ describe('graph end-sentinel auto-load', () => {
     } finally { hidden.unmount(); io.restore() }
   })
 })
+
+/** One spacer's pixel height (absent spacer = 0). */
+function spacerHeight(scroll: HTMLElement, which: 'top' | 'bottom'): number {
+  const node = scroll.querySelector<HTMLElement>(`[data-graph-spacer="${which}"]`)
+  return node === null ? 0 : Number.parseFloat(node.style.height)
+}
+
+describe('graph history windowing', () => {
+  it('mounts only the viewport window and keeps the spacers in step with the scroll position', async () => {
+    // The host caps the walk at 10000 rows; 200 is already enough that the DOM
+    // used to grow with the history instead of the viewport.
+    const many = Array.from({ length: 200 }, (_, index) => entry(`${index.toString(16).padStart(8, '0')}${'f'.repeat(32)}`))
+    vi.spyOn(api, 'gitGraph').mockResolvedValue(graphPage(many))
+    const mounted = renderRoot(createElement(GitGraphSection, defaults))
+    try {
+      await flush()
+      const graph = mounted.container.querySelector<HTMLElement>('[data-git-graph]')!
+      const scroll = mounted.container.querySelector<HTMLElement>('[data-graph-scroll]')!
+      expect(scroll).not.toBeNull()
+      expect(graph.getAttribute('data-graph-count')).toBe('200')
+      // The row height is the component's own constant: read it off the rail
+      // so the test cannot drift from it.
+      const rowHeight = Number(scroll.querySelector('svg')!.getAttribute('height'))
+      expect(rowHeight).toBeGreaterThan(0)
+
+      // jsdom has no layout: clientHeight is 0, so one row plus the 8-row
+      // overscan band on each side mounts, and the spacers keep the height.
+      expect(mounted.container.querySelectorAll('[data-graph-commit]')).toHaveLength(17)
+      expect(spacerHeight(scroll, 'top')).toBe(0)
+      expect(spacerHeight(scroll, 'bottom')).toBe((200 - 17) * rowHeight)
+
+      // Scroll five pages down: only the viewport (20 rows) plus overscan mounts.
+      Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 20 * rowHeight })
+      scroll.scrollTop = 50 * rowHeight
+      await act(async () => {
+        scroll.dispatchEvent(new Event('scroll'))
+        await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+      })
+      const rendered = [...mounted.container.querySelectorAll('[data-graph-commit]')]
+      expect(rendered).toHaveLength(36)
+      expect(rendered[0]!.getAttribute('data-graph-commit')).toBe(many[42]!.hashFull)
+      expect(rendered.at(-1)!.getAttribute('data-graph-commit')).toBe(many[77]!.hashFull)
+      expect(spacerHeight(scroll, 'top')).toBe(42 * rowHeight)
+      expect(spacerHeight(scroll, 'bottom')).toBe((200 - 78) * rowHeight)
+    } finally { mounted.unmount() }
+  })
+})
