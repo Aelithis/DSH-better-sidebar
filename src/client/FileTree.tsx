@@ -587,6 +587,9 @@ export function FileTree(props: {
   /** The live props for the stable callbacks below (identity churns per render). */
   const propsRef = useRef(props)
   propsRef.current = props
+  /** Live visibility for the load effects: a parked tree fetches nothing. */
+  const visibleRef = useRef(visible !== false)
+  visibleRef.current = visible !== false
   const [data, setData] = useState<Record<string, LevelData>>({})
   /**
    * Registry revision for the file-icon feature: bumps on ANY registry
@@ -927,6 +930,11 @@ export function FileTree(props: {
     loadLevels([dir], { force: true })
   }, [loadLevels])
 
+  /** Re-list a SET of directories in ONE batch (the parked→visible re-arm). */
+  const retryDirs = useCallback((dirs: readonly string[]) => {
+    if (dirs.length > 0) loadLevels([...dirs], { force: true })
+  }, [loadLevels])
+
   /**
    * Settle the tree after one rename/delete landed at `prefix`: drop every
    * cached level at or under the old path, collapse the now-stale expanded
@@ -980,6 +988,10 @@ export function FileTree(props: {
   useEffect(() => {
     if (lastTick.current === refreshTick) return
     lastTick.current = refreshTick
+    // A parked tree drops the tick outright: the watcher's re-arm re-lists the
+    // whole watched set when the tab comes back, so forcing a load here would
+    // only duplicate that batch (and do it off screen).
+    if (visibleRef.current === false) return
     generationRef.current += 1
     forceNextLoad.current = true
   }, [refreshTick])
@@ -1002,8 +1014,13 @@ export function FileTree(props: {
     // Load the visible set in ONE batch request; already-loaded levels (kept
     // in the cache) are not refetched, so this asks only for what is new — a
     // refresh tick re-lists root + every expanded directory in one POST.
+    //
+    // A PARKED tree issues nothing: nobody can see the rows, and the watcher's
+    // re-arm re-lists the whole watched set once on the way back. Visibility is
+    // read through a ref, NOT a dependency — making it one would fire a second
+    // batch alongside that re-arm.
     const root = cwd
-    if (root === undefined) return
+    if (root === undefined || visibleRef.current === false) return
     const force = forceNextLoad.current
     forceNextLoad.current = false
     loadLevels([root, ...expanded], { force })
@@ -1035,13 +1052,13 @@ export function FileTree(props: {
   // it was opened stayed stale for the rest of the session. A PARKED tree
   // (the host keeps every visited tab body mounted) closes the socket — and
   // with it the host's `fs.watch` handles — and re-lists the watched levels
-  // once when it comes back.
+  // once (ONE batch) when it comes back.
   useDirectoryWatch({
     sessionId,
     root: cwd,
     dirs: expanded,
     visible: visible !== false,
-    onStale: retryDir,
+    onStale: retryDirs,
   })
 
   // Bring a "Show in folder" reveal into view: the ancestors expand above

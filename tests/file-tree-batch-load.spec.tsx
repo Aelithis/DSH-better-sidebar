@@ -84,16 +84,16 @@ class FakeSocket {
 
 interface Harness {
   container: HTMLDivElement
-  /** Re-render with a new expansion set; `refreshTick` only when bumping it. */
-  rerender: (expanded: string[], refreshTick?: number) => void
+  /** Re-render with a new expansion set; `refreshTick`/`visible` only when changed. */
+  rerender: (expanded: string[], refreshTick?: number, visible?: boolean) => void
   unmount: () => void
 }
 
-function mountTree(expanded: string[] = DIRS, refreshTick = 0): Harness {
+function mountTree(expanded: string[] = DIRS, refreshTick = 0, visible = true): Harness {
   const container = document.createElement('div')
   document.body.append(container)
   const root: Root = createRoot(container)
-  const render = (dirs: string[], tick: number): void => {
+  const render = (dirs: string[], tick: number, shown: boolean): void => {
     root.render(createElement(FileTree, {
       sessionId: 's1',
       cwd: '/tmp',
@@ -105,15 +105,18 @@ function mountTree(expanded: string[] = DIRS, refreshTick = 0): Harness {
       refreshTick: tick,
       onUploadRequest: () => {},
       busy: false,
+      visible: shown,
     }))
   }
   let tick = refreshTick
-  act(() => { render(expanded, tick) })
+  let shown = visible
+  act(() => { render(expanded, tick, shown) })
   return {
     container,
-    rerender: (dirs: string[], nextTick?: number) => {
+    rerender: (dirs: string[], nextTick?: number, nextVisible?: boolean) => {
       if (nextTick !== undefined) tick = nextTick
-      act(() => { render(dirs, tick) })
+      if (nextVisible !== undefined) shown = nextVisible
+      act(() => { render(dirs, tick, shown) })
     },
     unmount: () => { act(() => { root.unmount() }); container.remove() },
   }
@@ -230,6 +233,29 @@ describe('FileTree level loading is batched', () => {
     await flush()
     expect(fsTrees).toHaveBeenCalledTimes(1)
     expect(batchPaths(0)).toEqual(['/tmp', ...DIRS].sort())
+  })
+
+  it('does no work while parked, then re-lists the watched set in ONE request when shown', async () => {
+    // The host keeps every visited tab body mounted. A parked tree must not
+    // answer refresh ticks or expansion changes (they are other tabs' work),
+    // and coming back must not fire one request per watched directory.
+    harness = mountTree(DIRS, 0, false)
+    await flush()
+    expect(fsTrees).not.toHaveBeenCalled()
+
+    // Another tab of the same session expands a directory while this one is
+    // parked: the change is dropped, and the same expansion array is handed
+    // back when the tab returns (the shell keeps the session state's identity).
+    const parkedExpanded = [...DIRS, '/tmp/d9']
+    harness.rerender(parkedExpanded, 1, false)
+    await flush()
+    expect(fsTrees).not.toHaveBeenCalled()
+
+    harness.rerender(parkedExpanded, 1, true)
+    await flush()
+    expect(fsTrees).toHaveBeenCalledTimes(1)
+    expect(batchPaths(0)).toEqual(['/tmp', ...DIRS, '/tmp/d9'].sort())
+    expect(fsTree).not.toHaveBeenCalled()
   })
 
   it('re-lists ONLY the stale level when the directory watcher reports one', async () => {
