@@ -41,6 +41,7 @@ import {
   GRAPH_FIT_MIN_SCALE, GRAPH_NODE_H, GRAPH_NODE_W, GRAPH_PAD, layoutTasksGraphForWidth,
   textTailLines, type GraphBox,
 } from './tasks-graph-layout.ts'
+import { createFrameBatcher } from './frame-batcher.ts'
 import { useTweenedLayout } from './tasks-layout-tween.ts'
 import { easeOut as glideEase } from './tasks-layout-tween.ts'
 import { fitTransform, GLIDE_MS, lerpTransform, type ViewTransform } from './tasks-view-glide.ts'
@@ -416,6 +417,19 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
     refit()
   }, [refit])
 
+  /**
+   * The pan is applied at most once per animation frame. A pointer stream fires
+   * several times faster than the display (a 1000 Hz mouse, a trackpad, some
+   * Electron builds), and committing every move re-renders the whole canvas —
+   * cards and edges — at event cadence. The latest position is composed in a
+   * ref and the frame task reads it, so coalescing loses nothing; release
+   * flushes synchronously so the final position is never dropped.
+   */
+  const panBatcher = useRef(createFrameBatcher()).current
+  const pendingPanRef = useRef<{ x: number; y: number; k: number } | null>(null)
+  const draggingRef = useRef(false)
+  useEffect(() => () => { panBatcher.dispose() }, [panBatcher])
+
   const onPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>): void => {
     if (event.button !== 0) return
     stopGlide()
@@ -434,19 +448,30 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
       travelRef.current = Math.max(travelRef.current, Math.abs(dx) + Math.abs(dy))
       if (travelRef.current <= CLICK_TOLERANCE_PX) return
       touchedRef.current = true
-      setDragging(true)
-      setTf(clampTf({ x: x + dx, y: y + dy, k: tfRef.current.k }))
+      if (!draggingRef.current) {
+        draggingRef.current = true
+        setDragging(true)
+      }
+      pendingPanRef.current = { x: x + dx, y: y + dy, k: tfRef.current.k }
+      panBatcher.schedule(() => {
+        const pending = pendingPanRef.current
+        if (pending === null) return
+        pendingPanRef.current = null
+        setTf(clampTf(pending))
+      })
     }
     const onUp = (): void => {
       window.removeEventListener('pointermove', onMove)
       window.removeEventListener('pointerup', onUp)
       window.removeEventListener('pointercancel', onUp)
+      panBatcher.flushNow()
+      draggingRef.current = false
       setDragging(false)
     }
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
     window.addEventListener('pointercancel', onUp)
-  }, [clampTf, stopGlide])
+  }, [clampTf, panBatcher, stopGlide])
 
   /** Suppress node clicks that ended a drag gesture. */
   const clickAllowed = useCallback((): boolean => travelRef.current <= CLICK_TOLERANCE_PX, [])

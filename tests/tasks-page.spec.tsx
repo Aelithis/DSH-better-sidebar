@@ -574,6 +574,46 @@ describe('Tasks page graph interactions and team board', () => {
     unmount()
   })
 
+  it('coalesces background pans into one update per animation frame and flushes on release', async () => {
+    const store = makeStore(snapshotWithChildren(2))
+    const { container, unmount } = renderRoot(
+      createElement(SubagentView, { sessionId: 'root', active: true, ctx: makeCtx(store) }),
+    )
+    const canvas = container.querySelector('[role="group"]') as HTMLElement
+    const inner = canvas.querySelector('div[style*="transform"]') as HTMLElement
+    expect(inner).not.toBeNull()
+    // Let the mount-time fit (and any glide frame) settle before measuring.
+    await act(async () => { await new Promise<void>(resolve => requestAnimationFrame(() => resolve())) })
+    const settled = inner.getAttribute('style')
+
+    // A high-report-rate mouse delivers many moves between two frames. None of
+    // them may commit on its own: one batched update owns the whole frame.
+    await act(async () => {
+      canvas.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 5, clientY: 5 }))
+      for (let step = 1; step <= 20; step += 1) {
+        window.dispatchEvent(new MouseEvent('pointermove', {
+          bubbles: true, clientX: 5 + step * 10, clientY: 5 + step * 10,
+        }))
+      }
+    })
+    expect(inner.getAttribute('style'), 'no commit before the frame').toBe(settled)
+
+    await act(async () => { await new Promise<void>(resolve => requestAnimationFrame(() => resolve())) })
+    const afterFrame = inner.getAttribute('style')
+    expect(afterFrame, 'the frame applies the batch').not.toBe(settled)
+
+    // Release before the next frame must still apply the LAST position (back to
+    // the gesture origin, unclamped — distinct from the framed position).
+    await act(async () => {
+      window.dispatchEvent(new MouseEvent('pointermove', {
+        bubbles: true, clientX: 5, clientY: 5,
+      }))
+      window.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+    })
+    expect(inner.getAttribute('style'), 'release flushes the pending move').not.toBe(afterFrame)
+    unmount()
+  })
+
   it('activates a graph node after a background pointerdown (no click theft)', async () => {
     const navigation: NavigationSpy = { opened: [] }
     const store = makeStore(snapshotWithChildren(1))

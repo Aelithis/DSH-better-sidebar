@@ -76,6 +76,12 @@ bash scripts/e2e-context.sh --variant no-context --grep 'tasks graph'
 
 单命令 `bash /tmp/tasks-layout-bench/run.sh`，exit 0。原始 11 样本、输入/source/bundle SHA-256 与运行环境在 `/tmp/tasks-final-layout-benchmark.json`。同机当时有浏览器验证，loadavg 约 12.5/10 核，绝对毫秒仅参考，结论基于同进程交错的相对中位。2000 个非根 Agent 的布局耗时至少减少 50% 的目标达成；布局坐标/顺序及深链安全由对应 spec 验证，不以计时 harness 代替行为测试。
 
+## 拖拽渲染帧率（后续修复）
+
+用户反馈任务页拖拽按鼠标回报率渲染。真机探针（Playwright + 真实 rc.1 预览，确定性 MutationObserver 统计画布 style 提交）在修复前测到：真实鼠标拖拽 **121 次 pointermove → 123 次画布提交**；用 MessageChannel 模拟高回报率鼠标（100 次移动全部落在两帧内）时 **约 98 次提交 / 4 帧**。图模式平移的 `pointermove` 每次都 `setTf`，没有合并，而同仓库的侧栏分隔条、浮窗 resize、编辑器 gutter 早已用 `createFrameBatcher` 合并到每帧。
+
+修复沿用该既有模式：平移、浮窗标题拖动、锚定弹层拖动把最新位置写进 ref，每帧最多提交一次；`pointerup` / `pointercancel` 调用 `flushNow()`，最终位置不丢；点击抑制的 `travelRef` 仍在事件内同步更新。同探针复测：同一帧内 100 次移动的提交 **98 → 1 次**（2 帧窗口内 2 次提交）。新增 jsdom 回归 `tests/tasks-page.spec.tsx > coalesces background pans into one update per animation frame and flushes on release`，先红（帧前同步提交 72px）后绿；`tests/tasks-page.spec.tsx` 64/64、`tests/floating-window.spec.tsx` 与 `frame-batcher` 合计 76/76 通过。真实鼠标在无头 Chromium 中本就按帧派发，因此该场景前后提交数接近；判别性证据来自同帧突发。
+
 ## 既有 fs-watch 偶发失败
 
 没有修改 watcher 或它的测试。首次全量失败后，独立复跑得到：工作树 18 轮，14 通过 / 4 失败；未改动的基点 worktree 12 轮，11 通过 / 1 失败。失败同为单次写入后 15 秒未收到 notice（spec 的断言行 50 或 111），基线也会复现，不能算本批引入的回归，也不能把这些失败记作通过。
