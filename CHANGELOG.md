@@ -4,6 +4,14 @@
 
 ### 未发布
 
+- ⚡ **卡顿扫描与一轮低风险收敛**（前端页面 + 宿主 `/sidebar/*` 请求；逐条取证与误报核实见[扫描记录](docs/plans/2026-10-24-perf-scan.md)）：
+  - **文件树在隐藏页签里不再干活**：宿主把访问过的页签 body 常驻挂载，此前每个隐藏的文件树仍会在窗口获得焦点、刷新 tick 或另一个树展开目录时发 `fs.trees` 并重渲染整棵树；现在停靠树在隐藏时不加载、不监听焦点刷新，重新可见时由目录 watcher 对整套被 watch 的目录**只发一次**批量 `fs.trees`（此前是每目录一次 POST）。
+  - **任务图滚轮缩放改为每帧一次提交**：高回报率滚轮/触控板此前每个 wheel 事件都重绘整张图，且每帧只保住一步缩放；现在与平移共用 `frame batcher`，同一帧的缩放量完整复合、只提交一次。
+  - **侧聊打字与流式输出不再重扫整段转录**：用户/助手行的本地图片与链接改写按**行对象**缓存（未变化的行在既有 `sidechat-transcript` 里本就是同一对象），输入框每键与每次流式 push 只重算变化的行。
+  - **Git diff 只解析一次 + 默认展开有预算**：变动页此前对同一份 patch 在 header 统计与文件行里各解析一遍（≤8MB 在 UI 线程跑两次），现在共用一份解析；默认展开按「变更行预算 2000」封顶，大 commit 不再一次挂载数千行（首屏仍有内容，其余文件一键展开）。
+  - **提交图历史行只挂载视口窗口**：`data-graph-count` 仍报整页条数，DOM 只保留视口 ± 8 行，上下留白维持真实滚动条与「加载更多」哨兵位置；深历史滚动/追加不再线性增长。
+  - **宿主侧两处常驻成本**：`/sidebar/bundle/*.js` 的 `HEAD` 只回头部与 `content-length`（客户端每次重激活都要 HEAD 已加载的多个 chunk，此前会整份读进内存）；`active-worktree` 在 15s TTL 到期但会话事件游标（`session.seq`）未动时直接续期，不再重复快照/扫描最多 4000 条事件（实测 miss 9.6–44.7ms，空闲的 5s 轮询每到第三个就踩中）。
+  - 🧪 测试：`tests/tasks-page.spec.tsx`（同帧 5 次滚轮只提交一次且缩放量等于合计）、`tests/file-tree-dir-watch.spec.tsx`（re-arm 单次批量回调）、`tests/file-tree-batch-load.spec.tsx`（隐藏零请求、回屏恰一次批量）、`tests/editor-host.spec.tsx`（隐藏树对窗口焦点零提交、回屏一次批量）、`tests/sidechat-markdown-labels.spec.tsx`（输入框连敲两键：未变化行改写 0 次）、`tests/diff-files-collapse.spec.tsx`（默认展开按行预算 + 复用调用方解析）、`tests/git-graph-windowing.spec.ts` + `tests/git-graph-ui.spec.tsx`（窗口/留白/滚动跟随/页替换夹紧）、`tests/bundle-route.spec.ts`（HEAD 无 body）、`tests/active-worktree.spec.ts`（游标未动不重扫、游标推进重扫、无游标宿主回退旧 TTL 语义）。每条都在旧代码上先复现失败（见扫描记录 §3）。
 - **任务图展开修复**：平移画布后，聚合卡和 Agent 卡的下一次点击不再被误判为拖动；展开聚合与查看详情恢复正常。
 - **任务图性能**：卡片内容使用独立 memo 边界，平移与布局补间不再重复渲染内容；布局用索引和显式栈替代逐边查找与深递归，同次宽度适配复用相同列数的布局。2000 个非根 Agent 的纯布局对照及 200/500 Agent 真浏览器证据见[验证记录](docs/plans/2026-10-23-tasks-folding-performance-validation.md)，布局加速不外推为整页加速。
 - **任务页拖拽改为每帧一次更新**：图模式背景平移、后台任务浮窗标题拖动、锚定弹层拖动不再按鼠标事件频率重绘（高回报率鼠标下此前每个 pointermove 都提交整块画布）；松手同步落位，点击判定与最终位置不变。实测同一帧内 100 次移动的画布提交由 98 次降到 1 次。
