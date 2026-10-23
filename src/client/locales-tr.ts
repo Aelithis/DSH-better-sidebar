@@ -439,6 +439,8 @@ export const tr: Record<string, string> = {
   sideChatCancelTitle: 'Geçerli turu durdur (sıradaki iş korunur)',
   sideChatError: 'Yan sohbet hatası: {message}',
   sideChatTurnUsage: 'Giriş {input} tok · Çıkış {output} tok',
+  sideChatDeliverables: 'Teslim edilen dosyalar',
+  sideChatDeliverableOpen: '{name} dosyasını aç',
   sideChatBlockCollapse: 'Daralt',
   sideChatBlockCollapseAria: 'Daralt',
   sideChatBlockExpand: '{hidden} satırı genişlet',

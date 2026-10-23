@@ -21,6 +21,11 @@
  * Failures: a provider/agent error used to end a turn with nothing on screen.
  * The terminal `turn/end` reason and a failed attempt's embedded finish chunk
  * both map onto one visible `error` row per turn.
+ *
+ * Deliveries: a `present` call maps onto its compact deliverables card (the
+ * host's own present toolview), and the `deliverables/presented` event that
+ * the tool appends attaches to that card by `callId` — or stands alone when
+ * its call is not in the window.
  */
 import type { DiffHunk, ReadBlockLine } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SidebarHistoryEntry } from '../context-types.ts'
@@ -44,6 +49,14 @@ export type SidechatToolCard =
   }
   | { type: 'diff'; diffs: DiffHunk[] }
   | { type: 'read'; label: string; lines: ReadBlockLine[]; totalLines: number; lang?: string }
+
+/** One file a `present` call delivered: its path (absolute from the
+ *  `deliverables/presented` event, session-relative from the call arguments)
+ *  plus the model's own description when it wrote one. */
+export interface SidechatDeliverable {
+  path: string
+  description?: string
+}
 
 /** One compact transcript row rendered in the thread view. `seq` is the
  *  source event's log sequence — stable row identity for React keys across
@@ -82,6 +95,11 @@ export type SidechatTranscriptRow =
     /** Structured render payload (host Block atoms); absent = generic row. */
     card?: SidechatToolCard
   }
+  /** One `present` delivery (a compact deliverables card instead of a tool
+   *  row). A `deliverables/presented` event with the same `callId` REPLACES
+   *  the call's arguments copy — one card per call, never two. An event with
+   *  no call row in the window (an event-only delivery) still gets its own. */
+  | { kind: 'deliverables'; seq: number; callId?: string; files: readonly SidechatDeliverable[] }
   /** One turn's tail metrics, emitted at `turn/end`: the turn's token usage
    *  (aggregated from `assistant/message.usage`) and wall duration (envelope
    *  time delta from `turn/start`), whichever are computable. */
@@ -207,6 +225,42 @@ function parseArgsObject(args: string | undefined): Record<string, unknown> | un
   } catch {
     return undefined
   }
+}
+
+/**
+ * Narrow one delivered-file entry (`{ path, description? }`). The path is
+ * kept verbatim: the card resolves it against the session cwd on click and
+ * through the media route on render, so both the call-arguments spelling
+ * (cwd-relative) and the event spelling (absolute) work unchanged. A
+ * malformed entry declines the whole list — half a delivery card is worse
+ * than the generic tool row it falls back to.
+ */
+function deliverableOf(value: unknown): SidechatDeliverable | undefined {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const { path, description } = value as { path?: unknown; description?: unknown }
+  if (typeof path !== 'string' || path.trim() === '') return undefined
+  if (description !== undefined && typeof description !== 'string') return undefined
+  return { path, ...(description !== undefined && description !== '' ? { description } : {}) }
+}
+
+/** The `files` array of a `present` argument object or a
+ *  `deliverables/presented` event, or undefined when the value is not one. */
+function deliverableFiles(value: unknown): SidechatDeliverable[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const files: SidechatDeliverable[] = []
+  for (const entry of value) {
+    const file = deliverableOf(entry)
+    if (file === undefined) return undefined
+    files.push(file)
+  }
+  return files
+}
+
+/** The delivered files of a `present` tool call, or undefined when its
+ *  arguments name none (the call then renders as the generic tool row). */
+function presentCallFiles(args: string | undefined): SidechatDeliverable[] | undefined {
+  const files = deliverableFiles(parseArgsObject(args)?.files)
+  return files !== undefined && files.length > 0 ? files : undefined
 }
 
 /**
@@ -385,6 +439,10 @@ export function transcriptRows(entries: readonly SidebarHistoryEntry[], prev?: r
   const streamRows = new Map<string, number>()
   /** tool callId → index of its tool row in `rows` (result pairing). */
   const callRows = new Map<string, number>()
+  /** present callId → index of its deliverables card in `rows`: the
+   *  `deliverables/presented` event attaches/updates that card instead of
+   *  appending a second one. */
+  const presentRows = new Map<string, number>()
   /** turn → envelope time of its `turn/start` (turn-tail duration basis). */
   const turnStarts = new Map<number, number>()
   /** Turns that already rendered a failure row (an attempt error and the
@@ -531,6 +589,17 @@ export function transcriptRows(entries: readonly SidebarHistoryEntry[], prev?: r
         const callId = data.callId
         const name = typeof data.name === 'string' ? data.name : 'tool'
         const args = typeof data.arguments === 'string' ? data.arguments : undefined
+        // A present call renders as its deliverables card, not a tool row
+        // (the host's own present toolview does the same): the arguments are
+        // the pre-event copy the deliverables/presented event refines below.
+        if (name === 'present') {
+          const files = presentCallFiles(args)
+          if (files !== undefined) {
+            if (typeof callId === 'string') presentRows.set(callId, rows.length)
+            rows.push({ kind: 'deliverables', seq: event.seq, ...(typeof callId === 'string' ? { callId } : {}), files })
+            break
+          }
+        }
         const card = callCard(name, args)
         const rowIndex = rows.length
         if (typeof callId === 'string') callRows.set(callId, rowIndex)
@@ -540,6 +609,9 @@ export function transcriptRows(entries: readonly SidebarHistoryEntry[], prev?: r
       case 'tool/result': {
         const source = data.message as { source?: { callId?: unknown } } | undefined
         const callId = typeof source?.source?.callId === 'string' ? source.source.callId : undefined
+        // A present call's result is not a row: its deliverables card already
+        // shows what was delivered (and the event supersedes that copy).
+        if (callId !== undefined && presentRows.has(callId)) break
         const rowIndex = callId === undefined ? undefined : callRows.get(callId)
         const failed = data.error !== undefined
         const resultText = resultTextOf(data)
@@ -570,6 +642,25 @@ export function transcriptRows(entries: readonly SidebarHistoryEntry[], prev?: r
             resultText: resultText === '' ? undefined : resultText,
           })
         }
+        break
+      }
+      case 'deliverables/presented': {
+        // The authoritative delivery record (`files[].path` absolute, plus the
+        // model's descriptions). It attaches to its call's card by callId —
+        // one card per call — and stands on its own when the call row is not
+        // in the window (the event is logged after the turn's tool calls, so
+        // a delta poll may see it alone).
+        const files = deliverableFiles(data.files)
+        if (files === undefined || files.length === 0) break
+        const callId = typeof data.callId === 'string' ? data.callId : undefined
+        const rowIndex = callId === undefined ? undefined : presentRows.get(callId)
+        const card = rowIndex === undefined ? undefined : rows[rowIndex]
+        if (rowIndex !== undefined && card !== undefined && card.kind === 'deliverables') {
+          rows[rowIndex] = { ...card, files }
+          break
+        }
+        if (callId !== undefined) presentRows.set(callId, rows.length)
+        rows.push({ kind: 'deliverables', seq: event.seq, ...(callId !== undefined ? { callId } : {}), files })
         break
       }
       default: {
@@ -609,6 +700,14 @@ function rowsEqual(a: SidechatTranscriptRow, b: SidechatTranscriptRow): boolean 
       const other = b as typeof a
       return a.name === other.name && a.failed === other.failed && a.args === other.args
         && a.resultText === other.resultText && a.executing === other.executing
+    }
+    case 'deliverables': {
+      const other = b as typeof a
+      if (a.callId !== other.callId || a.files.length !== other.files.length) return false
+      return a.files.every((file, index) => {
+        const peer = other.files[index]
+        return peer !== undefined && file.path === peer.path && file.description === peer.description
+      })
     }
     case 'turnSummary': {
       const other = b as typeof a

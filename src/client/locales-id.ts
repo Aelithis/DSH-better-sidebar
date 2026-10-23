@@ -437,6 +437,8 @@ export const id: Record<string, string> = {
   sideChatCancelTitle: 'Batalkan giliran yang berjalan (pekerjaan antrean dipertahankan)',
   sideChatError: 'Kesalahan Side Chat: {message}',
   sideChatTurnUsage: 'Input {input} tok · Output {output} tok',
+  sideChatDeliverables: 'Berkas yang diserahkan',
+  sideChatDeliverableOpen: 'Buka {name}',
   sideChatBlockCollapse: 'Lipat',
   sideChatBlockCollapseAria: 'Lipat',
   sideChatBlockExpand: 'Perlihatkan {hidden} baris',

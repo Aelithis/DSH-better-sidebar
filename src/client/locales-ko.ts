@@ -431,6 +431,8 @@ export const ko: Record<string, string> = {
   sideChatCancelTitle: '현재 턴 중단(대기열 유지)',
   sideChatError: '사이드 대화 오류: {message}',
   sideChatTurnUsage: '입력 {input} tok · 출력 {output} tok',
+  sideChatDeliverables: '전달된 파일',
+  sideChatDeliverableOpen: '{name} 열기',
   sideChatBlockCollapse: '접기',
   sideChatBlockCollapseAria: '접기',
   sideChatBlockExpand: '{hidden}줄 펼치기',

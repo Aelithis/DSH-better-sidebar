@@ -439,6 +439,8 @@ export const th: Record<string, string> = {
   sideChatCancelTitle: 'ยกเลิกการทำงานรอบปัจจุบัน (งานในคิวยังคงอยู่)',
   sideChatError: 'ข้อผิดพลาดแชทด้านข้าง: {message}',
   sideChatTurnUsage: 'อินพุต {input} tok · เอาต์พุต {output} tok',
+  sideChatDeliverables: 'ไฟล์ที่ส่งมอบ',
+  sideChatDeliverableOpen: 'เปิด {name}',
   sideChatBlockCollapse: 'ย่อ',
   sideChatBlockCollapseAria: 'ย่อ',
   sideChatBlockExpand: 'ขยาย {hidden} บรรทัด',

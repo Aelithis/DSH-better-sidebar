@@ -432,6 +432,8 @@ export const fr: Record<string, string> = {
   sideChatCancelTitle: 'Interrompre le tour en cours (la file d’attente est conservée)',
   sideChatError: 'Erreur de la discussion latérale : {message}',
   sideChatTurnUsage: 'Entrée {input} tok · Sortie {output} tok',
+  sideChatDeliverables: 'Fichiers livrés',
+  sideChatDeliverableOpen: 'Ouvrir {name}',
   sideChatBlockCollapse: 'Réduire',
   sideChatBlockCollapseAria: 'Réduire',
   sideChatBlockExpand: 'Déplier {hidden} lignes',
