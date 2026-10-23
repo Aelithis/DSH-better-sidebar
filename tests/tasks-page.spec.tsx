@@ -614,6 +614,41 @@ describe('Tasks page graph interactions and team board', () => {
     unmount()
   })
 
+  it('coalesces wheel zooms into one update per animation frame without losing steps', async () => {
+    const store = makeStore(snapshotWithChildren(2))
+    const { container, unmount } = renderRoot(
+      createElement(SubagentView, { sessionId: 'root', active: true, ctx: makeCtx(store) }),
+    )
+    const canvas = container.querySelector('[role="group"]') as HTMLElement
+    const inner = canvas.querySelector('div[style*="transform"]') as HTMLElement
+    const scaleOf = (style: string | null): number => Number(/scale\(([\d.]+)\)/.exec(style ?? '')?.[1] ?? NaN)
+    await act(async () => { await new Promise<void>(resolve => requestAnimationFrame(() => resolve())) })
+    const settled = inner.getAttribute('style')
+    const baseScale = scaleOf(settled)
+
+    // A trackpad reports several wheel events between two frames. None may
+    // commit on its own, and the frame must apply the SUM of the deltas (the
+    // old code re-read the drawn transform for every event, so only one step
+    // survived).
+    const steps = 5
+    await act(async () => {
+      for (let step = 0; step < steps; step += 1) {
+        canvas.dispatchEvent(new WheelEvent('wheel', {
+          deltaY: -10, clientX: 100, clientY: 100, bubbles: true, cancelable: true,
+        }))
+      }
+    })
+    expect(inner.getAttribute('style'), 'no commit before the frame').toBe(settled)
+
+    await act(async () => { await new Promise<void>(resolve => requestAnimationFrame(() => resolve())) })
+    const afterFrame = scaleOf(inner.getAttribute('style'))
+    expect(afterFrame, 'the frame applies the batch').not.toBe(baseScale)
+    // One event per frame would give base * e^0.014; the coalesced frame gives
+    // base * e^(0.014 * steps).
+    expect(afterFrame).toBeCloseTo(baseScale * Math.exp(0.014 * steps), 3)
+    unmount()
+  })
+
   it('activates a graph node after a background pointerdown (no click theft)', async () => {
     const navigation: NavigationSpy = { opened: [] }
     const store = makeStore(snapshotWithChildren(1))
