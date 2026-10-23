@@ -66,7 +66,7 @@ import {
 import { markdownTextProps } from './markdown-labels.tsx'
 import { rewriteProseLocalImageUrls } from './markdown-images.ts'
 import { hostTransportBase } from './desktop-env.ts'
-import { baseName } from './paths.ts'
+import { baseName, resolveSidebarPath } from './paths.ts'
 import { openSidebarFile } from './sidebar-file.ts'
 import { useMarkdownSurface } from './use-markdown-surface.ts'
 import { IconHistoryOutline16, IconSaveOutline16 } from './icons.tsx'
@@ -485,6 +485,9 @@ interface RowSurface {
   openFile: (path: string) => void
   /** The session-scoped media URL of one image deliverable. */
   media: (path: string) => string
+  /** The absolute spelling of one delivered path (the row's title tooltip;
+   *  call-argument paths arrive relative to the session cwd). */
+  resolvePath: (path: string) => string
 }
 
 /** One row renderer (React keys ride the source event seq). `surface` is the
@@ -549,13 +552,18 @@ function renderRow(row: SidechatTranscriptRow, labels: RowLabels, surface: RowSu
       )
     }
     case 'deliverables': {
-      if (row.files.length === 0) return null
       return (
         <div key={`${row.kind}:${row.seq}`} className={css.sidechatDeliverables}>
           <div className={css.sidechatDeliverablesHead}>{t('sideChatDeliverables')}</div>
           <ul className={css.sidechatDeliverablesList}>
             {row.files.map((file, index) => {
               const name = baseName(file.path)
+              // The visible description is part of the button's accessible
+              // name too: an `Open {name}` label alone would hide it from
+              // assistive tech while sighted readers see it.
+              const openLabel = file.description === undefined
+                ? t('sideChatDeliverableOpen', { name })
+                : `${t('sideChatDeliverableOpen', { name })}: ${file.description}`
               return (
                 <li key={`${String(index)}:${file.path}`} className={css.sidechatDeliverableItem}>
                   {/* One row per delivered file: the type glyph (and an image's
@@ -565,8 +573,8 @@ function renderRow(row: SidechatTranscriptRow, labels: RowLabels, surface: RowSu
                   <button
                     type="button"
                     className={css.sidechatDeliverable}
-                    title={file.path}
-                    aria-label={t('sideChatDeliverableOpen', { name })}
+                    title={surface.resolvePath(file.path)}
+                    aria-label={openLabel}
                     onClick={() => { surface.openFile(file.path) }}
                   >
                     {classifyFileType(file.path) === 'image'
@@ -751,9 +759,18 @@ export function SideChatView(props: {
   /** The session-scoped media URL of one image deliverable (the card's
    *  thumbnail; the same route the markdown image pass produces). */
   const deliverableMediaUrl = useCallback((path: string): string => mediaUrl(scope, path), [scope])
+  /** The absolute spelling of one delivered path for the card's title tooltip
+   *  (the call-argument copy is cwd-relative; the event copy is already
+   *  absolute and passes through unchanged). */
+  const deliverableTitlePath = useCallback((path: string): string => resolveSidebarPath(scope.cwd, path), [scope.cwd])
   const rowSurface = useMemo<RowSurface>(
-    () => ({ rewrite: rewriteChatText, openFile: openDeliveredFile, media: deliverableMediaUrl }),
-    [rewriteChatText, openDeliveredFile, deliverableMediaUrl],
+    () => ({
+      rewrite: rewriteChatText,
+      openFile: openDeliveredFile,
+      media: deliverableMediaUrl,
+      resolvePath: deliverableTitlePath,
+    }),
+    [rewriteChatText, openDeliveredFile, deliverableMediaUrl, deliverableTitlePath],
   )
   const transcriptRef = useCallback((element: HTMLDivElement | null) => {
     scrollRef.current = element

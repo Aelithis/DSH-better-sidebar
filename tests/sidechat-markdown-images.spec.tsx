@@ -27,6 +27,8 @@ const USER_MD = [
   '',
   '![dog](/p/dog.png)',
   '',
+  '![spaced](<./cat image.png>)',
+  '',
   '```md',
   '![fenced](./fenced.png)',
   '```',
@@ -102,6 +104,11 @@ describe('SideChatView local markdown images (C1)', () => {
     // The assistant's bare relative destination resolves against the same cwd.
     const bare = localImage(view.container, `${SESSION_CWD}/chart.png`)
     expect(bare, '![chart](chart.png) must render as an img').toBeDefined()
+
+    // A CommonMark angle destination carries a space in its path through the
+    // whole pipeline (rewrite → host parse → media route query).
+    const spaced = localImage(view.container, `${SESSION_CWD}/cat image.png`)
+    expect(spaced, '![spaced](<./cat image.png>) must render as an img').toBeDefined()
 
     view.unmount()
   })

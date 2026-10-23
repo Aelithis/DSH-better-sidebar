@@ -103,12 +103,26 @@ function workspaceDirectory(cwd: string | undefined): string | undefined {
 }
 
 /**
+ * One inline image: alt text, destination, and the optional CommonMark title.
+ * A destination may be angle-delimited (`<…>` — how the spec carries a path
+ * containing spaces); the title may be double-quoted, single-quoted or
+ * parenthesized. Both are preserved by {@link rewriteImageDestinations}.
+ */
+const INLINE_IMAGE_RE = /!\[([^\]]*)\]\(\s*(<[^>\n]*>|[^)\s]+)(\s+(?:"[^"]*"|'[^']*'|\([^()]*\)))?\s*\)/g
+
+/** A reference definition's destination: angle-delimited or bare. */
+const REFERENCE_DEST_RE = /^(\s*\[([^\]]+)\]:\s*)(<[^>]+>|[^\s]+)/gm
+
+/**
  * Rewrite markdown image destinations that point at local files into
  * absolute `/sidebar/file` media URLs. Relative destinations resolve against
  * the opened file's directory (normalizing `.`/`..` segments); absolute
  * local paths pass through. Remote (http/https/data/mailto) and `#`-anchor
  * destinations are left untouched for `MarkdownText`. Reference-style images
  * (`![x][id]` + `[id]: url`) are covered by rewriting their definition lines.
+ * A destination may be angle-delimited (`![a](<./cat image.png>)`) and an
+ * inline image may carry a title (`![a](./x.png "title")`); the delimiter and
+ * title are preserved while only the destination is rewritten.
  *
  * Code regions — inline spans AND fenced blocks, the latter opened by ``` ``` ```
  * OR `~~~` (see `markdown-code.ts`, the mask both source rewriters share) — are
@@ -176,8 +190,12 @@ function rewriteImageDestinations(text: string, resolve: (dest: string) => strin
   // original text goes back in after the rewrite.
   const { masked, restore } = maskCodeRegions(text)
 
-  const inline = masked.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_match, alt, dest) => {
-    return `![${alt}](${resolve(dest)})`
+  const inline = masked.replace(INLINE_IMAGE_RE, (_match, alt: string, rawDest: string, title: string | undefined) => {
+    // The resolver decides from the bare destination; `<…>` and the title are
+    // spelling, not content, so they go back around/after whatever it returns.
+    const delimited = rawDest.startsWith('<') && rawDest.endsWith('>')
+    const destination = resolve(delimited ? rawDest.slice(1, -1) : rawDest)
+    return `![${alt}](${delimited ? `<${destination}>` : destination}${title ?? ''})`
   })
 
   // Collect labels referenced by image syntax (full `![alt][id]` and
@@ -194,9 +212,13 @@ function rewriteImageDestinations(text: string, resolve: (dest: string) => strin
     imageLabels.add(ref !== undefined && ref !== '' ? ref.toLowerCase() : alt.toLowerCase())
   }
 
-  const refsRewritten = inline.replace(/^(\s*\[([^\]]+)\]:\s*)(<[^>]+>|[^\s]+)/gm, (match, head: string, label: string, dest: string) => {
+  const refsRewritten = inline.replace(REFERENCE_DEST_RE, (match, head: string, label: string, rawDest: string) => {
     if (!imageLabels.has(label.toLowerCase())) return match
-    return `${head}${resolve(dest.replace(/^<|>$/g, ''))}`
+    // `<…>` is what lets a destination carry a space; keep the delimiters the
+    // source used so a remote destination the resolver left alone still parses.
+    const delimited = rawDest.startsWith('<') && rawDest.endsWith('>')
+    const destination = resolve(delimited ? rawDest.slice(1, -1) : rawDest)
+    return `${head}${delimited ? `<${destination}>` : destination}`
   })
 
   return restore(refsRewritten)

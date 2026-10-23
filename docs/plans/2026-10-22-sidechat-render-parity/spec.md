@@ -2,7 +2,7 @@
 type: ChangeSpec
 title: Side Chat 渲染对齐与 Markdown 性能
 description: 修 Side Chat 的本地 Markdown 图片、present/deliverables 卡片，并让 markdown labels 稳定、live 行走 streaming，消除每行全量重解析。
-status: active
+status: implemented
 ---
 
 # Side Chat 渲染对齐与 Markdown 性能
@@ -29,7 +29,8 @@ Side Chat 是插件自建的 compact transcript，不是宿主 chat 的复用视
 - Side Chat 的 thread **自身**日志中出现 `present` 工具调用或 `deliverables/presented` 事件时，必须渲染一张 compact deliverables 卡片。
 - 卡片每个文件显示：文件类型图标、文件名（basename）、可选 description；图片文件额外显示缩略图（通过已有本地媒体路由）；点击文件使用插件已有的 `openSidebarFile` 路径打开。
 - 文件数据来源优先级：`deliverables/presented` 事件（含绝对的 `files[].path` / `description`，以 `turn`/`callId` 关联）优先；事件尚未到达时使用 `present` 调用的参数（`files`，按 cwd 解析）。
-- 同一个 `present` 调用只出现一张卡片；事件到达时按 `callId` 附着/更新，不重复渲染。
+- 同一个 `present` 调用只出现一张卡片；事件到达时按 `callId` 附着/更新，事件先于调用到达时同样只有一张，不重复渲染。
+- `present` 调用失败（`tool/result` 带 `data.error`）时不显示交付卡片：回退为通用 failed tool 行并保留错误文本，与该功能上线前的行为一致。
 - 继承 seed 中的 `present`/deliverables 事件不得渲染（Side Chat 只显示 thread 自己的对话）。
 - 卡片文案必须走 locale 字典，不允许硬编码；新增 key 覆盖全部现有 locale，并通过 locale key 一致性测试。
 - 不新增服务端依赖/路由；不引入 `ui-deliverables` 等新的 host peer。
@@ -51,21 +52,21 @@ Side Chat 是插件自建的 compact transcript，不是宿主 chat 的复用视
 **D1 — Markdown labels 稳定 + streaming**
 - 可观察结果：相同 label 值返回同一 labels 引用；未 settled assistant 行走 `streaming`；父组件重渲染时未变化行的 `MarkdownText` 解析次数为 0。
 - 验收：
-  - `pnpm vitest run tests/markdown-copy-labels.spec.tsx tests/sidechat-view.spec.tsx` 通过；新增的 labels identity / render-count 用例在旧实现上失败（TDD Red 证据）。
+  - `pnpm vitest run tests/markdown-copy-labels.spec.tsx tests/sidechat-markdown-labels.spec.tsx tests/sidechat-view.spec.tsx` 通过；新增的 labels identity / render-count 用例在旧实现上失败（TDD Red 证据）。
   - 真实 `SideChatView` 性能测量（jsdom，50/100/200 markdown 组件）记录 push/keystroke；200 组件目标 < 10ms（基线 101.7–117.8ms），数字写入交付报告。
 - 状态：`- [x]`
 
 **D2 — Side Chat 本地 Markdown 图片**
 - 可观察结果：Side Chat 行中的 `![alt](./cat.png)`/绝对本地路径/reference image 渲染为 `<img>`，src 为 `/sidebar/file?...` 绝对 URL；代码块中的示例不改写；http(s) 图片不变。
 - 验收：
-  - `pnpm vitest run tests/markdown-images.spec.ts tests/markdown-crlf.spec.ts tests/sidechat-view.spec.tsx` 通过；新增的局部图片 DOM 用例在旧实现上失败（Red）。
+  - `pnpm vitest run tests/markdown-images.spec.ts tests/markdown-crlf.spec.ts tests/sidechat-markdown-images.spec.tsx tests/sidechat-view.spec.tsx` 通过；新增的局部图片 DOM 与 prose 图片改写用例（cwd 变体、angle destination、title 保留）在旧实现上失败（Red）。
   - 浏览器验证：第二实例或 plugin-mount 场景中，Side Chat 行显示本地图片（截图证据）。
 - 状态：`- [x]`
 
 **D3 — Side Chat `present` 卡片**
 - 可观察结果：thread 自身 `present` 调用/`deliverables/presented` 事件渲染 compact 卡片（文件名/描述/图标/图片缩略图/打开动作）；seed 中事件不渲染；同一次调用不重复。
 - 验收：
-  - `pnpm vitest run tests/sidechat-transcript.spec.ts tests/sidechat-view.spec.tsx tests/locales.spec.ts`（或等价 locale 一致性测试）通过；新增 mapping/DOM 用例在旧实现上失败（Red）。
+  - `pnpm vitest run tests/sidechat-transcript.spec.ts tests/sidechat-present-card.spec.tsx tests/sidechat-view.spec.tsx tests/locales.spec.ts`（或等价 locale 一致性测试）通过；新增 mapping/DOM 用例（含 failed present、event-first 去重、event-only、同 callId 二次事件、seed cut、row reuse、malformed files）在旧实现上失败（Red）。
   - 浏览器验证：Side Chat 显示 present 卡片且点击可打开文件（截图证据）。
 - 状态：`- [x]`
 
@@ -109,8 +110,8 @@ Side Chat 是插件自建的 compact transcript，不是宿主 chat 的复用视
 
 ### 基线与工作区
 
-- 插件仓库：`/data/user/nolanho/code/DSH-better-sidebar`；本 worktree `/.worktrees/sidechat-render`，分支 `fix/sidechat-render-parity`，基于 `f418302`（PR #1035 已合入）。
-- 宿主：`/root/dsh-web/app` 的 DSH 0.2.1-rc.2 线；插件 peer 基线 `^0.2.1-rc.1`。
+- 插件仓库：本仓库检出；worktree 位于仓库根的 `.worktrees/sidechat-render`，分支 `fix/sidechat-render-parity`，基于 `f418302`（PR #1035 已合入）。
+- 宿主：独立检出的 DSH 0.2.1-rc.2 线（不在本仓库内）；插件 peer 基线 `^0.2.1-rc.1`。
 - 依赖：worktree 已 `pnpm install --frozen-lockfile`（0.2.1-rc.1 devDeps；注意主 checkout 的 node_modules 是旧的 0.1.7-rc.1）。
 - 审计证据：2026-10-22 的只读能力矩阵与性能基线由维护者留档；本 spec 的验证证据见文末。
 
@@ -144,21 +145,29 @@ Side Chat 是插件自建的 compact transcript，不是宿主 chat 的复用视
 
 ## 验证证据（2026-10-22，worktree 分支 `fix/sidechat-render-parity`）
 
-- **聚焦**：新增 3 个 spec（10 tests）全绿；既有 6 个相关 spec（94 tests）全绿；`tsc --noEmit`、`eslint .` 干净。
-- **全量**：`vitest run` 221 文件通过 / 1 失败（`tests/git.spec.ts` 的 2.34.1 环境用例，基线同失败，spec 允许）/ 2 跳过；2683 tests 通过。
-- **构建**：`pnpm run build` + `pnpm pack` 成功（tarball 4.6 MB）。
-- **浏览器 e2e（第二实例，宿主 0.2.1-rc.2，独立 DSH_HOME + JSONL session store + 确定性 Messages mock）**：
+- **聚焦（review 修复后重跑）**：`tests/sidechat-transcript.spec.ts`、`tests/markdown-images.spec.ts`、`tests/sidechat-present-card.spec.tsx`、`tests/sidechat-markdown-labels.spec.tsx`、`tests/sidechat-markdown-images.spec.tsx`、`tests/markdown-crlf.spec.ts`、`tests/sidechat-view.spec.tsx`、`tests/locales.spec.ts` 共 8 files / 124 tests 全绿；`tsc --noEmit`、`eslint .` 干净。
+- **RED 证据（review 修复）**：M1a/M1b 的 2 个 mapping 用例在旧 `sidechat-transcript.ts` 上失败；N7 的 5 个 angle/title 用例在旧 `markdown-images.ts` 上失败；修复后全部转绿。
+- **审阅驱动回归（2026-10-22 review）**：
+  - M1a：失败的 `present`（`data.error`）不再显示成功卡片，替换为通用 failed tool 行并保留错误文本；成功结果仍只保留卡片、结果行不渲染。
+  - M1b：`deliverables/presented` 先于 `tool/call` 时只保留一张事件权威卡片；call-first 亦为一张且事件数据覆盖调用参数；event-only、同 callId 二次事件、seed cut、row reuse、malformed/empty files 均有 mapping 覆盖。
+  - N7：inline angle destination（含空格路径）与 `"…"`/`'…'` title 保留；reference definition 的 `<…>` 与 title 保留；remote angle destination 不动；prose rewrite 覆盖 cwd 缺省、尾分隔符、Windows cwd、reference image 与 image-then-link 组合。
+  - N1：卡片按钮 accessible name 含可见 description，`title` 为 cwd 解析后的绝对路径（DOM 断言）；S1：卡片边框改用宿主 `--dsw-alias-border-l1`。
+- **全量（review 修复轮）**：`vitest run` 223 文件通过 / 1 失败（唯一失败为 `tests/git.spec.ts` 的 2.34.1 环境用例，基线同失败）/ 17 跳过；2717 tests 通过。
+- **构建（`909f536` 提交轮 + review 修复轮）**：`pnpm run build` + `pnpm pack` 均成功（tarball 4.6 MB）。
+- **浏览器 e2e（`909f536` 提交轮；第二实例，宿主 0.2.1-rc.2，独立 DSH_HOME + JSONL session store + 确定性 Messages mock）**：
   - `present` 卡片渲染 `Present files` + `README.md`/`Render-check document` + `running-whale@2x.png`/`Render-check image`，图片缩略图 28×28；
   - assistant 文本的本地 Markdown 图片渲染为 `/sidebar/file` 的 `<img>`（alt `whale`，`naturalWidth=28`）；
   - 点击卡片文件在插件编辑器打开 `README.md`；
   - 浏览器截图由维护者留档（仓库外）；确定性 mock 脚本见验收记录。
-- **性能（jsdom，真实 `SideChatView`，修复后 worktree）**：200 markdown 组件 push 3.60 ms / keystroke 5.37 ms（审计基线 101.7–117.8 / 105.1–117.2 ms，约 20–30×）；100 组件 2.24 / 3.40 ms；50 组件 1.93 / 1.38 ms；隔离 100 行 0.71 ms、200 行 1.39 ms；labels 引用相等；未变化行的 `MarkdownText` 执行数为 0；8 KB 增长行 22.0 ms（settled）→ 1.01 ms（streaming）。
+- **浏览器复验（review 修复，宿主 app 重建后）**：生产 GUI 的 Side Chat 渲染出 `Present files` 卡片，按钮 aria 带描述（`Open README.md: …`、`Open running-whale@2x.png: …`），review 修复后的边框/aria 已确认生效；此前旧标签页/旧 app client 构建的缓存阻塞已定位并解除。
+- **性能（jsdom，真实 `SideChatView`）**：`909f536` 200 组件 push 3.60 / keystroke 5.37 ms；review 修复后（`1904ed8`）200 组件 push 5.38 / keystroke 3.18 ms（单次测量噪声；审计基线 101.7–117.8 / 105.1–117.2 ms，约 19–37×）；100 组件 2.19 / 1.96 ms、50 组件 2.72 / 1.63 ms；隔离 100 行 0.71 ms、200 行 1.39 ms；labels 引用相等；未变化行的 `MarkdownText` 执行数为 0；8 KB 增长行 22.0 ms（settled）→ 1.01 ms（streaming）。review 修复仅改图片正则/卡片行，未动 labels/streaming 热路径；200 组件数字含单次噪声。
 - **plugin-mount lane（本地，非基线宿主 0.2.1-rc.2）**：12 passed / 3 skipped / 1 failed；失败点是 `tests/e2e/mount.e2e.ts` 的 `hostRpc session.list` 参数描述符（0.2.1-rc.2 要求 `request`，仓库 CI 基线 0.2.1-rc.1），不是插件渲染；sidechat tab/view 在 sweep 与 perf e2e 中已加载。CI 基线宿主上该 lane 不受影响。
 
 ### 交付状态
 
-- D1 `- [x]`；D2 `- [x]`；D3 `- [x]`；D4 `- [x]`（PR / 生产为 owner 门）。
+- D1 `- [x]`；D2 `- [x]`；D3 `- [x]`；D4 `- [x]`（PR #1044 已开；合并/部署为 owner 门）。
+- Review 修复（M1a/M1b/S1/S2/S3/N1–N5/N7）`- [x]`；N6 为 spec 一致的设计说明（绝对本地图片目的地走 session-scoped `/sidebar/file`），无代码改动。
 
 ### 待解决
 
-- 无（范围、present 实现方式、图片 rewrite、测量口径均已定；上游 PR/生产为 owner 门，不阻塞实现）。
+- 无阻塞；review 修复的浏览器边框/aria 已在宿主 app 重建后的生产 GUI 复验通过；上游 PR #1044 已开，合并/部署为 owner 门。

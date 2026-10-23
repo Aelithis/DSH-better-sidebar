@@ -390,7 +390,7 @@
   flex-direction: column;
   gap: 4px;
   padding: 6px 8px;
-  border: 1px solid var(--dsw-alias-hairline);
+  border: 1px solid var(--dsw-alias-border-l1);
   border-radius: 8px;
 }
 

@@ -22,10 +22,13 @@
  * The terminal `turn/end` reason and a failed attempt's embedded finish chunk
  * both map onto one visible `error` row per turn.
  *
- * Deliveries: a `present` call maps onto its compact deliverables card (the
- * host's own present toolview), and the `deliverables/presented` event that
- * the tool appends attaches to that card by `callId` — or stands alone when
- * its call is not in the window.
+ * Deliveries: a `present` call maps onto a compact deliverables card, and the
+ * authoritative `deliverables/presented` event the tool appends attaches to
+ * that card by `callId` — or stands alone when the call row is outside the
+ * events route's head cap. One card per call; a FAILED call replaces its card
+ * with the generic failed tool row. (The host's own `PresentRow` is a status
+ * disclosure row over the call — its delivery cards come from the turn-tail
+ * deliverables, not from the call itself.)
  */
 import type { DiffHunk, ReadBlockLine } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SidebarHistoryEntry } from '../context-types.ts'
@@ -97,8 +100,10 @@ export type SidechatTranscriptRow =
   }
   /** One `present` delivery (a compact deliverables card instead of a tool
    *  row). A `deliverables/presented` event with the same `callId` REPLACES
-   *  the call's arguments copy — one card per call, never two. An event with
-   *  no call row in the window (an event-only delivery) still gets its own. */
+   *  the call's arguments copy — one card per call, never two, whichever
+   *  event lands first. An event with no call row in the window (an
+   *  event-only delivery) still gets its own. A FAILED present call delivered
+   *  nothing and renders as the generic failed tool row instead. */
   | { kind: 'deliverables'; seq: number; callId?: string; files: readonly SidechatDeliverable[] }
   /** One turn's tail metrics, emitted at `turn/end`: the turn's token usage
    *  (aggregated from `assistant/message.usage`) and wall duration (envelope
@@ -232,8 +237,9 @@ function parseArgsObject(args: string | undefined): Record<string, unknown> | un
  * kept verbatim: the card resolves it against the session cwd on click and
  * through the media route on render, so both the call-arguments spelling
  * (cwd-relative) and the event spelling (absolute) work unchanged. A
- * malformed entry declines the whole list — half a delivery card is worse
- * than the generic tool row it falls back to.
+ * malformed entry declines the whole list: the call-arguments path then falls
+ * back to the generic tool row, while the event path renders no card (an
+ * event carries no call row of its own to fall back to).
  */
 function deliverableOf(value: unknown): SidechatDeliverable | undefined {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
@@ -439,10 +445,11 @@ export function transcriptRows(entries: readonly SidebarHistoryEntry[], prev?: r
   const streamRows = new Map<string, number>()
   /** tool callId → index of its tool row in `rows` (result pairing). */
   const callRows = new Map<string, number>()
-  /** present callId → index of its deliverables card in `rows`: the
-   *  `deliverables/presented` event attaches/updates that card instead of
-   *  appending a second one. */
-  const presentRows = new Map<string, number>()
+  /** present callId → its deliverables card: the card row's index plus the
+   *  call's raw arguments (a FAILED result needs them to rebuild the generic
+   *  tool row). A `deliverables/presented` event attaches to this card
+   *  instead of appending a second one, in either arrival order. */
+  const presentCalls = new Map<string, { rowIndex: number; args: string | undefined }>()
   /** turn → envelope time of its `turn/start` (turn-tail duration basis). */
   const turnStarts = new Map<number, number>()
   /** Turns that already rendered a failure row (an attempt error and the
@@ -589,13 +596,25 @@ export function transcriptRows(entries: readonly SidebarHistoryEntry[], prev?: r
         const callId = data.callId
         const name = typeof data.name === 'string' ? data.name : 'tool'
         const args = typeof data.arguments === 'string' ? data.arguments : undefined
-        // A present call renders as its deliverables card, not a tool row
-        // (the host's own present toolview does the same): the arguments are
-        // the pre-event copy the deliverables/presented event refines below.
+        // A present call renders as its deliverables card, not a tool row.
+        // Its arguments are the pre-event copy a later deliverables/presented
+        // event refines; when the event already drew the card, keep that card
+        // and record the arguments only for a possible failed result.
         if (name === 'present') {
+          // Event-first: the deliverables event already drew this call's card
+          // (the event reached the window before the call). The event is
+          // authoritative, so keep its files and only record the arguments a
+          // failed result needs.
+          if (typeof callId === 'string') {
+            const existing = presentCalls.get(callId)
+            if (existing !== undefined) {
+              presentCalls.set(callId, { ...existing, args })
+              break
+            }
+          }
           const files = presentCallFiles(args)
           if (files !== undefined) {
-            if (typeof callId === 'string') presentRows.set(callId, rows.length)
+            if (typeof callId === 'string') presentCalls.set(callId, { rowIndex: rows.length, args })
             rows.push({ kind: 'deliverables', seq: event.seq, ...(typeof callId === 'string' ? { callId } : {}), files })
             break
           }
@@ -609,12 +628,33 @@ export function transcriptRows(entries: readonly SidebarHistoryEntry[], prev?: r
       case 'tool/result': {
         const source = data.message as { source?: { callId?: unknown } } | undefined
         const callId = typeof source?.source?.callId === 'string' ? source.source.callId : undefined
+        const resultText = resultTextOf(data)
         // A present call's result is not a row: its deliverables card already
-        // shows what was delivered (and the event supersedes that copy).
-        if (callId !== undefined && presentRows.has(callId)) break
+        // shows what was delivered (and the event supersedes that copy). A
+        // FAILED present delivered nothing, so its card is replaced by the
+        // generic failed tool row the call rendered before the card existed,
+        // and the call stops being associated with a card.
+        const present = callId === undefined ? undefined : presentCalls.get(callId)
+        if (callId !== undefined && present !== undefined) {
+          if (data.error !== undefined) {
+            presentCalls.delete(callId)
+            const card = rows[present.rowIndex]
+            if (card !== undefined && card.kind === 'deliverables') {
+              rows[present.rowIndex] = {
+                kind: 'tool',
+                seq: card.seq,
+                name: 'present',
+                failed: true,
+                ...(present.args !== undefined ? { args: present.args } : {}),
+                ...(resultText !== '' ? { resultText } : {}),
+                executing: false,
+              }
+            }
+          }
+          break
+        }
         const rowIndex = callId === undefined ? undefined : callRows.get(callId)
         const failed = data.error !== undefined
-        const resultText = resultTextOf(data)
         if (rowIndex !== undefined) {
           const row = rows[rowIndex]
           if (row !== undefined && row.kind === 'tool') {
@@ -648,18 +688,18 @@ export function transcriptRows(entries: readonly SidebarHistoryEntry[], prev?: r
         // The authoritative delivery record (`files[].path` absolute, plus the
         // model's descriptions). It attaches to its call's card by callId —
         // one card per call — and stands on its own when the call row is not
-        // in the window (the event is logged after the turn's tool calls, so
-        // a delta poll may see it alone).
+        // in the window (the events route caps the window's head, so this
+        // event can be served without its earlier call).
         const files = deliverableFiles(data.files)
         if (files === undefined || files.length === 0) break
         const callId = typeof data.callId === 'string' ? data.callId : undefined
-        const rowIndex = callId === undefined ? undefined : presentRows.get(callId)
-        const card = rowIndex === undefined ? undefined : rows[rowIndex]
-        if (rowIndex !== undefined && card !== undefined && card.kind === 'deliverables') {
-          rows[rowIndex] = { ...card, files }
+        const existing = callId === undefined ? undefined : presentCalls.get(callId)
+        const card = existing === undefined ? undefined : rows[existing.rowIndex]
+        if (existing !== undefined && card !== undefined && card.kind === 'deliverables') {
+          rows[existing.rowIndex] = { ...card, files }
           break
         }
-        if (callId !== undefined) presentRows.set(callId, rows.length)
+        if (callId !== undefined) presentCalls.set(callId, { rowIndex: rows.length, args: undefined })
         rows.push({ kind: 'deliverables', seq: event.seq, ...(callId !== undefined ? { callId } : {}), files })
         break
       }

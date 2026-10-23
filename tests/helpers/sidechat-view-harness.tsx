@@ -3,7 +3,7 @@
  * (tests/sidechat-markdown-labels.spec.tsx, tests/sidechat-markdown-images.spec.tsx,
  * tests/sidechat-present-card.spec.tsx).
  *
- * Extracted from the inline harness in tests/sidechat-view.spec.tsx: the same
+ * Mirrors the inline harness in tests/sidechat-view.spec.tsx: the same
  * FakeLocale / sessions-list store / FakeSocket / fetch stub, plus two things
  * those specs need — a `live` channel on the wire (the host's
  * `assistant/live-chunk` rows, which the transcript route serves separately

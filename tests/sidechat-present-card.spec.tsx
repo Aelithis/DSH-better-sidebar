@@ -118,7 +118,13 @@ describe('SideChatView present deliverables card (C2)', () => {
     // absolute path (the call's argument was relative).
     const pdfRow = fileRows(view.container, 'report.pdf')
     expect(pdfRow, 'the file entry is clickable').toHaveLength(1)
-    await act(async () => { (pdfRow[0] as HTMLElement).click() })
+    const pdfButton = pdfRow[0] as HTMLElement
+    // N1: the accessible name carries the visible description, and the title
+    // tooltip is the cwd-resolved spelling of the (relative) call argument.
+    expect(pdfButton.getAttribute('aria-label')).toContain('report.pdf')
+    expect(pdfButton.getAttribute('aria-label')).toContain('季度报告')
+    expect(pdfButton.getAttribute('title')).toBe(`${SESSION_CWD}/report.pdf`)
+    await act(async () => { pdfButton.click() })
     expect(harness.host.openTab).toHaveBeenCalledTimes(1)
     expect(harness.host.openTab).toHaveBeenCalledWith(expect.objectContaining({
       type: 'editor',
