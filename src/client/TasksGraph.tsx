@@ -20,6 +20,7 @@
  * empty canvas shows the same hint as the tree (`loading`).
  */
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -55,7 +56,7 @@ import {
   foldTally, TaskLine, WorkflowGlyph, workflowMeta,
 } from './tasks-shared.tsx'
 import { CardBar, CardTop, phaseClass, type CardKind } from './tasks-card.tsx'
-import { t } from './locales.ts'
+import { localeSignature, t } from './locales.ts'
 import css from './tasks-graph.module.css'
 import canvasCss from './tasks-canvas.module.css'
 
@@ -418,10 +419,12 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
   const onPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>): void => {
     if (event.button !== 0) return
     stopGlide()
+    // Click suppression belongs to ONE gesture. A node's next pointerdown
+    // must release the previous background pan before the node guard returns.
+    travelRef.current = 0
     const target = event.target as HTMLElement
     if (target.closest('[data-graph-node]') !== null) return
     if (target.closest('[data-graph-controls]') !== null) return
-    travelRef.current = 0
     const startX = event.clientX
     const startY = event.clientY
     const { x, y } = tfRef.current
@@ -646,6 +649,46 @@ function renderAgentNode(
   onFold?: (node: TasksAgentNode) => void,
 ): ReactNode {
   const settled = node.state === 'done' || node.state === 'error'
+  return (
+    <div
+      key={node.id}
+      data-graph-node={node.id}
+      data-depth={node.depth}
+      role="button"
+      tabIndex={-1}
+      aria-label={`${node.label} ${agentMeta(node)}`}
+      aria-current={node.current ? 'true' : undefined}
+      className={clsx(
+        css.node,
+        node.team?.role === 'teammate' && css.nodeTeam,
+        node.current && css.nodeCurrent,
+        settled && !node.current && css.nodeSettled,
+        node.state === 'error' && css.nodeError,
+      )}
+      style={style}
+      onClick={(event) => {
+        if (!clickAllowed()) return
+        onNodeInfo(node, event.currentTarget)
+      }}
+    >
+      <AgentCardContents
+        key={localeSignature()}
+        node={node}
+        onOpenTask={onOpenTask}
+        onFold={onFold}
+      />
+    </div>
+  )
+}
+
+/** Position changes do not rebuild the card's text, badges or task controls. */
+const AgentCardContents = memo(function AgentCardContents(props: {
+  node: TasksAgentNode
+  onOpenTask: (taskId: string, anchor: HTMLElement) => void
+  onFold: ((node: TasksAgentNode) => void) | undefined
+}): ReactNode {
+  const { node, onOpenTask, onFold } = props
+  const settled = node.state === 'done' || node.state === 'error'
   /**
    * Whether this card offers its own fold chevron. A WAITING member counts:
    * it is not executing either, and the chevron is the reader's own trigger
@@ -672,27 +715,7 @@ function renderAgentNode(
    */
   const tail = node.live?.text === undefined ? undefined : flatten(node.live.text)
   return (
-    <div
-      key={node.id}
-      data-graph-node={node.id}
-      data-depth={node.depth}
-      role="button"
-      tabIndex={-1}
-      aria-label={`${node.label} ${agentMeta(node)}`}
-      aria-current={node.current ? 'true' : undefined}
-      className={clsx(
-        css.node,
-        node.team?.role === 'teammate' && css.nodeTeam,
-        node.current && css.nodeCurrent,
-        settled && !node.current && css.nodeSettled,
-        node.state === 'error' && css.nodeError,
-      )}
-      style={style}
-      onClick={(event) => {
-        if (!clickAllowed()) return
-        onNodeInfo(node, event.currentTarget)
-      }}
-    >
+    <>
       <CardTop
         kind={agentCardKind(node)}
         depth={node.depth}
@@ -711,9 +734,9 @@ function renderAgentNode(
           ? { onFold: () => { onFold(node) } }
           : {})}
       />
-    </div>
+    </>
   )
-}
+})
 
 /** One workflow run node card: same frame, its own badges and state. */
 function renderWorkflowNode(

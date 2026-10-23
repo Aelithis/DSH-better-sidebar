@@ -153,8 +153,8 @@ export function builtinTabs(ctx: Context): readonly TabDescriptor[] {
       icon: tasksTabIcon,
       order: 30,
       single: true,
-      // Declarative settings: the auto-open switches render under this row in
-      // the Side card settings page (the Tasks page's related settings).
+      // Declarative settings: auto-open, default view, task folding, and the
+      // jobs drawer switches share the existing Tasks card's settings gear.
       settings: {
         toggles: [{
           key: 'autoOpenSubagent',
@@ -181,6 +181,22 @@ export function builtinTabs(ctx: Context): readonly TabDescriptor[] {
               desc: () => t('settingsViewModeTreeDesc'),
             },
           ],
+        }, {
+          key: 'tasksAutoFoldSettled',
+          title: () => t('settingsTasksAutoFoldSettledTitle'),
+          desc: () => t('settingsTasksAutoFoldSettledDesc'),
+        }, {
+          key: 'tasksAutoFoldBranches',
+          title: () => t('settingsTasksAutoFoldBranchesTitle'),
+          desc: () => t('settingsTasksAutoFoldBranchesDesc'),
+        }, {
+          key: 'tasksAutoFoldIdle',
+          title: () => t('settingsTasksAutoFoldIdleTitle'),
+          desc: () => t('settingsTasksAutoFoldIdleDesc'),
+        }, {
+          key: 'jobsAutoCollapse',
+          title: () => t('settingsJobsAutoCollapseTitle'),
+          desc: () => t('settingsJobsAutoCollapseDesc'),
         }],
       },
       component: ({ ctx, store, scope, visible, onSubagentJump }) => (

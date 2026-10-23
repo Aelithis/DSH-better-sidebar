@@ -162,14 +162,20 @@ describe('built-in tab registrations', () => {
     expect(sidechat?.dedupeKey?.(first!.tab)).toBeUndefined()
   })
 
-  it('the subagent tab declares its auto-open related settings', () => {
+  it('the subagent tab declares its auto-open, view, folding, and jobs settings', () => {
     const { service } = setup()
     const toggles = service.getTab('subagent')?.settings?.toggles ?? []
-    expect(toggles.map(t => t.key)).toEqual(['autoOpenSubagent', 'autoOpenJobs', 'tasksViewMode'])
+    expect(toggles.map(t => t.key)).toEqual(['autoOpenSubagent', 'autoOpenJobs', 'tasksViewMode',
+      'tasksAutoFoldSettled', 'tasksAutoFoldBranches', 'tasksAutoFoldIdle', 'jobsAutoCollapse'])
     // The default-view row is a graph/tree select (values are strings).
     const viewMode = toggles[2]
     expect(viewMode?.type).toBe('select')
     expect((viewMode?.options ?? []).map(o => o.value)).toEqual(['graph', 'tree'])
+    for (const toggle of toggles.slice(3)) {
+      expect(toggle.type ?? 'switch', toggle.key).toBe('switch')
+      expect(typeof toggle.title === 'function' ? toggle.title() : toggle.title, toggle.key).toBeTruthy()
+      expect(typeof toggle.desc === 'function' ? toggle.desc() : toggle.desc, toggle.key).toBeTruthy()
+    }
   })
 
   it('the editor tab declares its merged-mode (embedded file tree) and exclude-pattern settings', () => {
