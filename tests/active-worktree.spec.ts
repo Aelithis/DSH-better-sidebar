@@ -98,6 +98,36 @@ function countingSessionCtx(cwd: string, calls: Array<Record<string, unknown>>):
   return { ctx: ctx as Context, scans: () => scans }
 }
 
+/**
+ * A live session face with a MUTABLE event cursor: `seq` moves when an event
+ * is appended, exactly like the host's. `scans` counts real snapshot reads, so
+ * a cache hit that only compared the cursor costs zero.
+ */
+function cursorSessionCtx(
+  cwd: string,
+  calls: Array<Record<string, unknown>>,
+  initialSeq = 5,
+): { ctx: Context; scans: () => number; append: () => void } {
+  let scans = 0
+  let seq = initialSeq
+  const ctx = {
+    sessions: {
+      get: () => {
+        return {
+          header: { cwd },
+          seq,
+          snapshotEvents: () => {
+            scans += 1
+            return calls.map((data, index) => ({ type: 'tool/call', seq: index, time: index, data }))
+          },
+        }
+      },
+    },
+    get: () => undefined,
+  } as never
+  return { ctx: ctx as Context, scans: () => scans, append: () => { seq += 1 } }
+}
+
 describe('active worktree root', () => {
   it('follows a linked worktree of a DIFFERENT repository named by the tool calls', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dsh-active-root-'))
@@ -257,12 +287,79 @@ describe('active worktree root', () => {
   })
 
   /**
+   * A TTL miss is not automatically a rescan: the entry is only invalid because
+   * wall time passed, and the resolver reads the event log (up to 4000 events
+   * + git probes, measured 9.6–44.7 ms). When the session's cursor has not
+   * moved, nothing it reads can have changed — re-arm the TTL instead of
+   * snapshotting the log again. This is the idle 5 s poll's hot path.
+   */
+  it('does not re-scan the event log after the TTL when the session cursor is unchanged', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-active-root-'))
+    const repo = join(root, 'repo')
+    try {
+      initRepo(repo, 'a.txt')
+      mkdirSync(join(repo, 'src'))
+      const { ctx, scans, append } = cursorSessionCtx(repo, [{ cwd: join(repo, 'src') }])
+      const first = await activeWorktreeRootOf(ctx, 's-cursor', repo)
+      expect(first).toBe(realpathSync.native(repo))
+      expect(scans()).toBe(1)
+
+      probed.length = 0
+      const started = Date.now()
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(started + 60_000)
+      try {
+        await expect(activeWorktreeRootOf(ctx, 's-cursor', repo)).resolves.toBe(first)
+        expect(scans(), 'an idle TTL expiry must not snapshot the log').toBe(1)
+        expect(probed).toEqual([])
+
+        // A new event moves the cursor: the next expiry re-scans (inside the
+        // re-armed TTL the cached root still wins — the 15 s follow bound).
+        append()
+        clock.mockReturnValue(started + 120_000)
+        await expect(activeWorktreeRootOf(ctx, 's-cursor', repo)).resolves.toBe(first)
+        expect(scans(), 'a moved cursor re-scans').toBe(2)
+      } finally {
+        clock.mockRestore()
+      }
+    } finally {
+      removeTree(root)
+    }
+  })
+
+  /**
+   * The fallback: hosts (and detached sessions) without a live cursor expose no
+   * `seq`, so the TTL keeps its old meaning — expire means re-scan.
+   */
+  it('re-scans after the TTL when the host exposes no event cursor', async () => {
+    probed.length = 0
+    const root = mkdtempSync(join(tmpdir(), 'dsh-active-root-'))
+    const repo = join(root, 'repo')
+    try {
+      initRepo(repo, 'a.txt')
+      const { ctx, scans } = countingSessionCtx(repo, [{ cwd: join(repo, 'src') }])
+      await activeWorktreeRootOf(ctx, 's-no-cursor', repo)
+      expect(scans()).toBe(1)
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000)
+      try {
+        await activeWorktreeRootOf(ctx, 's-no-cursor', repo)
+        expect(scans()).toBe(2)
+      } finally {
+        clock.mockRestore()
+      }
+    } finally {
+      removeTree(root)
+    }
+  })
+
+  /**
    * The three process-wide maps are bounded LRUs. The module exposes no test
    * seam, so the bound is observed the only way it is observable from outside:
    * after `cap` distinct sessions, the OLDEST session's next ask is a miss
    * again (it was evicted) while the youngest ones still hit.
    */
   it('bounds the root cache: the oldest session is evicted past the cap', async () => {
+    // Probe calls are module-wide; this case counts them from a clean slate.
+    probed.length = 0
     const root = mkdtempSync(join(tmpdir(), 'dsh-active-root-'))
     try {
       // The canned answer keeps the 257 probes from being 257 real processes;
