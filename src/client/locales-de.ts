@@ -425,6 +425,8 @@ export const de: Record<string, string> = {
   sideChatCancelTitle: 'Laufende Runde abbrechen (wartende Nachrichten bleiben erhalten)',
   sideChatError: 'Seitenchat-Fehler: {message}',
   sideChatTurnUsage: 'Eingabe {input} tok · Ausgabe {output} tok',
+  sideChatDeliverables: 'Gelieferte Dateien',
+  sideChatDeliverableOpen: '{name} öffnen',
   sideChatBlockCollapse: 'Einklappen',
   sideChatBlockCollapseAria: 'Einklappen',
   sideChatBlockExpand: '{hidden} Zeilen ausklappen',

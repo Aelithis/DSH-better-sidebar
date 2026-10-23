@@ -439,6 +439,8 @@ export const ja: Record<string, string> = {
   sideChatCancelTitle: '現在のターンを中止（キューは保持）',
   sideChatError: 'サイド会話エラー：{message}',
   sideChatTurnUsage: '入力 {input} tok · 出力 {output} tok',
+  sideChatDeliverables: '納品ファイル',
+  sideChatDeliverableOpen: '{name} を開く',
   sideChatBlockCollapse: '折りたたむ',
   sideChatBlockCollapseAria: '折りたたむ',
   sideChatBlockExpand: '{hidden} 行を展開',

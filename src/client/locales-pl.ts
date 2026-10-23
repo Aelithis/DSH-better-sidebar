@@ -441,6 +441,8 @@ export const pl: Record<string, string> = {
   sideChatCancelTitle: 'Przerwij bieżącą turę (kolejka jest zachowana)',
   sideChatError: 'Błąd czatu bocznego: {message}',
   sideChatTurnUsage: 'Wejście {input} tok · Wyjście {output} tok',
+  sideChatDeliverables: 'Przekazane pliki',
+  sideChatDeliverableOpen: 'Otwórz {name}',
   sideChatBlockCollapse: 'Zwiń',
   sideChatBlockCollapseAria: 'Zwiń',
   sideChatBlockExpand: 'Rozwiń {hidden} wierszy',

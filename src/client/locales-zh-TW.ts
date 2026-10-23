@@ -454,6 +454,8 @@ export const zhTW: Record<string, string> = {
   sideChatCancelTitle: '中止目前回合（保留佇列）',
   sideChatError: '側邊對話出錯：{message}',
   sideChatTurnUsage: '輸入 {input} tok · 輸出 {output} tok',
+  sideChatDeliverables: '交付檔案',
+  sideChatDeliverableOpen: '開啟 {name}',
   sideChatBlockCollapse: '收起',
   sideChatBlockCollapseAria: '收起',
   sideChatBlockExpand: '展開 {hidden} 行',

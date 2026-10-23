@@ -477,6 +477,149 @@ describe('tool cards', () => {
   })
 })
 
+describe('present deliverables rows', () => {
+  /** The `present` tool's arguments: paths relative to the session cwd. */
+  const PRESENT_ARGS = JSON.stringify({
+    files: [
+      { path: 'report.pdf', description: 'the report' },
+      { path: 'chart.png' },
+    ],
+  })
+  /** The authoritative event copy: absolute paths + model descriptions. */
+  const EVENT_FILES = [
+    { path: '/p/report.pdf', description: 'event copy' },
+    { path: '/p/chart.png', description: 'the chart' },
+  ]
+
+  const seed = entry(ev('session/end-seed', 0))
+
+  const presentCall = (seq: number, callId = 'cp', args = PRESENT_ARGS): SidebarHistoryEntry =>
+    entry(ev('tool/call', seq, { turn: 1, step: 1, callId, name: 'present', arguments: args }))
+
+  const presentResult = (
+    seq: number,
+    callId = 'cp',
+    text = 'Presented /p/report.pdf',
+    extra: Record<string, unknown> = {},
+  ): SidebarHistoryEntry =>
+    entry(ev('tool/result', seq, { turn: 1, step: 1, message: toolRoleResultMessage(callId, text), ...extra }))
+
+  const presentedEvent = (seq: number, callId = 'cp', files: readonly unknown[] = EVENT_FILES): SidebarHistoryEntry =>
+    entry(ev('deliverables/presented', seq, { turn: 1, callId, files }))
+
+  it('keeps the card when the present result succeeds (the result row stays hidden)', () => {
+    expect(transcriptRows([seed, presentCall(1), presentResult(2)])).toEqual([
+      { kind: 'deliverables', seq: 1, callId: 'cp', files: [{ path: 'report.pdf', description: 'the report' }, { path: 'chart.png' }] },
+    ])
+  })
+
+  it('replaces the card with the generic failed tool row when the present call fails (M1a)', () => {
+    // The tool ran and reported an error (FS_NOT_FOUND and friends): nothing
+    // was delivered, so the successful-looking card must give way to the
+    // generic failed row — and the error text must not be dropped.
+    const rows = transcriptRows([
+      seed,
+      presentCall(1),
+      presentResult(2, 'cp', 'ENOENT: report.pdf', { error: { name: 'FS_NOT_FOUND', code: 'FS_NOT_FOUND' } }),
+    ])
+    expect(rows).toEqual([{
+      kind: 'tool',
+      seq: 1,
+      name: 'present',
+      failed: true,
+      args: PRESENT_ARGS,
+      resultText: 'ENOENT: report.pdf',
+      executing: false,
+    }])
+  })
+
+  it('omits an empty result text on the failed present row', () => {
+    const rows = transcriptRows([
+      seed,
+      presentCall(1),
+      presentResult(2, 'cp', '', { error: { name: 'FS_NOT_FOUND', code: 'FS_NOT_FOUND' } }),
+    ])
+    expect(rows).toEqual([{
+      kind: 'tool',
+      seq: 1,
+      name: 'present',
+      failed: true,
+      args: PRESENT_ARGS,
+      executing: false,
+    }])
+  })
+
+  it('keeps ONE event card when the event precedes a malformed present call', () => {
+    const malformed = presentCall(2, 'cp', JSON.stringify({ files: [{ path: 7 }] }))
+    expect(transcriptRows([seed, presentedEvent(1), malformed])).toEqual([
+      { kind: 'deliverables', seq: 1, callId: 'cp', files: EVENT_FILES },
+    ])
+  })
+
+  it('keeps ONE card when the presented event precedes its call (event-first, M1b)', () => {
+    // The events route caps the window's head, so the authoritative event can
+    // be served before (or without) the call it belongs to.
+    expect(transcriptRows([seed, presentedEvent(1), presentCall(2)])).toEqual([
+      { kind: 'deliverables', seq: 1, callId: 'cp', files: EVENT_FILES },
+    ])
+  })
+
+  it('keeps ONE card when the presented event follows its call (event data authoritative)', () => {
+    const call = presentCall(1, 'cp', JSON.stringify({ files: [{ path: 'from-args.pdf', description: 'args copy' }] }))
+    expect(transcriptRows([seed, call, presentedEvent(2)])).toEqual([
+      { kind: 'deliverables', seq: 1, callId: 'cp', files: EVENT_FILES },
+    ])
+  })
+
+  it('renders an event-only delivery whose call row is outside the window', () => {
+    expect(transcriptRows([seed, presentedEvent(1)])).toEqual([
+      { kind: 'deliverables', seq: 1, callId: 'cp', files: EVENT_FILES },
+    ])
+  })
+
+  it('updates the SAME card when a second presented event names one callId', () => {
+    const rows = transcriptRows([
+      seed,
+      presentCall(1),
+      presentedEvent(2),
+      presentedEvent(3, 'cp', [{ path: '/p/final.pdf' }]),
+    ])
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ kind: 'deliverables', seq: 1, callId: 'cp' })
+    expect((rows[0] as Extract<SidechatTranscriptRow, { kind: 'deliverables' }>).files).toEqual([{ path: '/p/final.pdf' }])
+  })
+
+  it('cuts inherited present calls and deliveries with the fork seed', () => {
+    const rows = transcriptRows([
+      presentCall(0, 'c-seed'),
+      presentedEvent(1, 'c-seed', [{ path: '/p/inherited.pdf' }]),
+      entry(ev('session/end-seed', 2)),
+      presentedEvent(3, 'c-own', [{ path: '/p/own.pdf' }]),
+    ])
+    expect(rows).toEqual([{ kind: 'deliverables', seq: 3, callId: 'c-own', files: [{ path: '/p/own.pdf' }] }])
+  })
+
+  it('leaves malformed or empty call files on the generic tool row', () => {
+    for (const args of [JSON.stringify({ files: [] }), JSON.stringify({ files: [{ path: 7 }] })]) {
+      expect(transcriptRows([seed, presentCall(1, 'cp', args)])).toEqual([
+        { kind: 'tool', seq: 1, name: 'present', failed: false, args, executing: true },
+      ])
+    }
+  })
+
+  it('re-adopts a deliverables card across pulls and rebuilds it when its files change', () => {
+    const entries = [seed, presentCall(1), presentedEvent(2)]
+    const first = transcriptRows(entries)
+    const second = transcriptRows(entries, first)
+    expect(second).toEqual(first)
+    expect(second[0]).toBe(first[0])
+
+    const changed = transcriptRows([...entries, presentedEvent(3, 'cp', [{ path: '/p/final.pdf' }])], first)
+    expect(changed).toHaveLength(1)
+    expect(changed[0]).not.toBe(first[0])
+  })
+})
+
 describe('usage formatting', () => {
   it('formatTokens mirrors the main conversation K/M compaction', () => {
     expect(formatTokens(517)).toBe('517')

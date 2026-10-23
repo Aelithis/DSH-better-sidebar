@@ -422,6 +422,8 @@ export const sv: Record<string, string> = {
   sideChatCancelTitle: 'Avbryt den pågående vändan (köat arbete behålls)',
   sideChatError: 'Sidochattsfel: {message}',
   sideChatTurnUsage: 'In {input} tok · Ut {output} tok',
+  sideChatDeliverables: 'Levererade filer',
+  sideChatDeliverableOpen: 'Öppna {name}',
   sideChatBlockCollapse: 'Fäll ihop',
   sideChatBlockCollapseAria: 'Fäll ihop',
   sideChatBlockExpand: 'Visa {hidden} rader',

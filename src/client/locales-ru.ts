@@ -437,6 +437,8 @@ export const ru: Record<string, string> = {
   sideChatCancelTitle: 'Прервать текущий ход (очередь сохраняется)',
   sideChatError: 'Ошибка бокового чата: {message}',
   sideChatTurnUsage: 'Вход {input} tok · Выход {output} tok',
+  sideChatDeliverables: 'Переданные файлы',
+  sideChatDeliverableOpen: 'Открыть {name}',
   sideChatBlockCollapse: 'Свернуть',
   sideChatBlockCollapseAria: 'Свернуть',
   sideChatBlockExpand: 'Развернуть {hidden} строк',

@@ -437,6 +437,8 @@ export const nl: Record<string, string> = {
   sideChatCancelTitle: 'De lopende beurt afbreken (wachtrij blijft behouden)',
   sideChatError: 'Side Chat-fout: {message}',
   sideChatTurnUsage: 'Invoer {input} tok · Uitvoer {output} tok',
+  sideChatDeliverables: 'Opgeleverde bestanden',
+  sideChatDeliverableOpen: '{name} openen',
   sideChatBlockCollapse: 'Invouwen',
   sideChatBlockCollapseAria: 'Invouwen',
   sideChatBlockExpand: '{hidden} regels uitvouwen',

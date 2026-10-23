@@ -439,6 +439,8 @@ export const vi: Record<string, string> = {
   sideChatCancelTitle: 'Hủy vòng hiện tại (giữ hàng đợi)',
   sideChatError: 'Lỗi chat bên: {message}',
   sideChatTurnUsage: 'Vào {input} tok · Ra {output} tok',
+  sideChatDeliverables: 'Tệp đã bàn giao',
+  sideChatDeliverableOpen: 'Mở {name}',
   sideChatBlockCollapse: 'Thu gọn',
   sideChatBlockCollapseAria: 'Thu gọn',
   sideChatBlockExpand: 'Mở rộng {hidden} dòng',

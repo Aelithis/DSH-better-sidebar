@@ -422,6 +422,8 @@ export const pt: Record<string, string> = {
   sideChatCancelTitle: 'Abortar o turno em execução (o trabalho na fila é mantido)',
   sideChatError: 'Erro no chat lateral: {message}',
   sideChatTurnUsage: 'Entrada {input} tok · Saída {output} tok',
+  sideChatDeliverables: 'Arquivos entregues',
+  sideChatDeliverableOpen: 'Abrir {name}',
   sideChatBlockCollapse: 'Recolher',
   sideChatBlockCollapseAria: 'Recolher',
   sideChatBlockExpand: 'Expandir {hidden} linhas',

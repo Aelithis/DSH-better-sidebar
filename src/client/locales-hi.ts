@@ -439,6 +439,8 @@ export const hi: Record<string, string> = {
   sideChatCancelTitle: 'चल रहे टर्न को रोकें (कतारबद्ध कार्य रखा जाता है)',
   sideChatError: 'साइड चैट त्रुटि: {message}',
   sideChatTurnUsage: 'इनपुट {input} टोकन · आउटपुट {output} टोकन',
+  sideChatDeliverables: 'सौंपी गई फ़ाइलें',
+  sideChatDeliverableOpen: '{name} खोलें',
   sideChatBlockCollapse: 'सिकोड़ें',
   sideChatBlockCollapseAria: 'सिकोड़ें',
   sideChatBlockExpand: '{hidden} पंक्तियाँ विस्तृत करें',

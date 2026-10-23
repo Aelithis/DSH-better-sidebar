@@ -430,6 +430,8 @@ export const it: Record<string, string> = {
   sideChatCancelTitle: 'Interrompe il turno in corso (il lavoro in coda è conservato)',
   sideChatError: 'Errore della chat laterale: {message}',
   sideChatTurnUsage: 'Input {input} tok · Output {output} tok',
+  sideChatDeliverables: 'File consegnati',
+  sideChatDeliverableOpen: 'Apri {name}',
   sideChatBlockCollapse: 'Comprimi',
   sideChatBlockCollapseAria: 'Comprimi',
   sideChatBlockExpand: 'Espandi {hidden} righe',

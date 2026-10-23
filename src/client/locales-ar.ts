@@ -440,6 +440,8 @@ export const ar: Record<string, string> = {
   sideChatCancelTitle: 'إلغاء الدور الجاري (يُحتفظ بالعمل في قائمة الانتظار)',
   sideChatError: 'خطأ في المحادثة الجانبية: {message}',
   sideChatTurnUsage: 'إدخال {input} توكن · إخراج {output} توكن',
+  sideChatDeliverables: 'الملفات المسلَّمة',
+  sideChatDeliverableOpen: 'فتح {name}',
   sideChatBlockCollapse: 'طي',
   sideChatBlockCollapseAria: 'طي',
   sideChatBlockExpand: 'توسيع {hidden} أسطر',
