@@ -355,6 +355,52 @@ describe('Tasks page interactions', () => {
     unmount()
   })
 
+  it.each(['graph', 'tree'] as const)('follows automatic fold preferences in %s and keeps manual actions above them', async (mode) => {
+    const sidebar = createSidebarStore()
+    sidebar.setPrefs({ ...sidebar.getPrefs(), tasksViewMode: mode, mobileDefaultTree: false,
+      tasksAutoFoldSettled: false, tasksAutoFoldBranches: false, tasksAutoFoldIdle: false,
+    })
+    const { container, unmount } = renderRoot(createElement(SubagentView, {
+      sessionId: 'root', active: true, ctx: makeCtx(makeStore(snapshotWithChildren(2))), store: sidebar,
+    }))
+    const node = (id: string): Element | null => container.querySelector(`[data-graph-node="${id}"], [data-tree-node="${id}"]`)
+    expect(node('child-0')).not.toBeNull()
+    expect(node('fold:root')).toBeNull()
+    await act(async () => { sidebar.setPrefs({ ...sidebar.getPrefs(), tasksAutoFoldSettled: true }) })
+    expect(node('fold:root')).not.toBeNull()
+    await act(async () => { (node('fold:root') as HTMLElement).click() })
+    expect(node('child-0')).not.toBeNull()
+    // A subsequent preference update cannot close the group the reader opened.
+    await act(async () => { sidebar.setPrefs({ ...sidebar.getPrefs(), tasksAutoFoldSettled: false }) })
+    await act(async () => { sidebar.setPrefs({ ...sidebar.getPrefs(), tasksAutoFoldSettled: true }) })
+    expect(node('child-0')).not.toBeNull()
+    await act(async () => {
+      (container.querySelector('[data-graph-controls] button:nth-child(2)') as HTMLButtonElement).click()
+    })
+    // The global manual expand remains above all later automatic settings.
+    await act(async () => { sidebar.setPrefs({ ...sidebar.getPrefs(), tasksAutoFoldBranches: true, tasksAutoFoldIdle: true }) })
+    expect(node('child-0')).not.toBeNull()
+    unmount()
+  })
+
+  it('disables drawer auto-collapse live without overwriting a manual drawer choice', async () => {
+    const sidebar = createSidebarStore()
+    const { container, unmount } = renderRoot(createElement(SubagentView, {
+      sessionId: 'root', active: true, ctx: makeCtx(makeStore(snapshotWithChildren(8))), store: sidebar,
+    }))
+    await flushJobs()
+    const bar = container.querySelector('button[aria-expanded]') as HTMLButtonElement
+    expect(bar.getAttribute('aria-expanded')).toBe('false')
+    await act(async () => { sidebar.setPrefs({ ...sidebar.getPrefs(), jobsAutoCollapse: false }) })
+    expect(bar.getAttribute('aria-expanded')).toBe('true')
+    expect(container.textContent).toContain('sleep 300')
+    await act(async () => { bar.click() })
+    await act(async () => { sidebar.setPrefs({ ...sidebar.getPrefs(), jobsAutoCollapse: true }) })
+    await act(async () => { sidebar.setPrefs({ ...sidebar.getPrefs(), jobsAutoCollapse: false }) })
+    expect(bar.getAttribute('aria-expanded')).toBe('false')
+    unmount()
+  })
+
   it('opens in the TREE by default on a narrow viewport when the mobile switch is on', async () => {
     // jsdom's window is the plugin's mobile bracket here (767 < 768).
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 420 })
@@ -502,6 +548,72 @@ function teamTask(over: Partial<SidebarTeamTaskView> = {}): SidebarTeamTaskView 
 }
 
 describe('Tasks page graph interactions and team board', () => {
+  it('expands an aggregate and opens its agent after separate background pans', async () => {
+    const store = makeStore(snapshotWithChildren(2))
+    const { container, unmount } = renderRoot(
+      createElement(SubagentView, { sessionId: 'root', active: true, ctx: makeCtx(store) }),
+    )
+    const canvas = container.querySelector('[role="group"]') as HTMLElement
+    const pan = (): void => {
+      canvas.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 5, clientY: 5 }))
+      window.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 80, clientY: 70 }))
+      window.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+    }
+    const tap = (element: HTMLElement): void => {
+      element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10 }))
+      window.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+      element.click()
+    }
+    await act(async () => { pan() })
+    await act(async () => { tap(container.querySelector('[data-graph-node="fold:root"]') as HTMLElement) })
+    const child = container.querySelector('[data-graph-node="child-0"]') as HTMLElement
+    expect(child).not.toBeNull()
+    await act(async () => { pan() })
+    await act(async () => { tap(child) })
+    expect(document.querySelector('[role="dialog"]')).not.toBeNull()
+    unmount()
+  })
+
+  it('coalesces background pans into one update per animation frame and flushes on release', async () => {
+    const store = makeStore(snapshotWithChildren(2))
+    const { container, unmount } = renderRoot(
+      createElement(SubagentView, { sessionId: 'root', active: true, ctx: makeCtx(store) }),
+    )
+    const canvas = container.querySelector('[role="group"]') as HTMLElement
+    const inner = canvas.querySelector('div[style*="transform"]') as HTMLElement
+    expect(inner).not.toBeNull()
+    // Let the mount-time fit (and any glide frame) settle before measuring.
+    await act(async () => { await new Promise<void>(resolve => requestAnimationFrame(() => resolve())) })
+    const settled = inner.getAttribute('style')
+
+    // A high-report-rate mouse delivers many moves between two frames. None of
+    // them may commit on its own: one batched update owns the whole frame.
+    await act(async () => {
+      canvas.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 5, clientY: 5 }))
+      for (let step = 1; step <= 20; step += 1) {
+        window.dispatchEvent(new MouseEvent('pointermove', {
+          bubbles: true, clientX: 5 + step * 10, clientY: 5 + step * 10,
+        }))
+      }
+    })
+    expect(inner.getAttribute('style'), 'no commit before the frame').toBe(settled)
+
+    await act(async () => { await new Promise<void>(resolve => requestAnimationFrame(() => resolve())) })
+    const afterFrame = inner.getAttribute('style')
+    expect(afterFrame, 'the frame applies the batch').not.toBe(settled)
+
+    // Release before the next frame must still apply the LAST position (back to
+    // the gesture origin, unclamped — distinct from the framed position).
+    await act(async () => {
+      window.dispatchEvent(new MouseEvent('pointermove', {
+        bubbles: true, clientX: 5, clientY: 5,
+      }))
+      window.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+    })
+    expect(inner.getAttribute('style'), 'release flushes the pending move').not.toBe(afterFrame)
+    unmount()
+  })
+
   it('activates a graph node after a background pointerdown (no click theft)', async () => {
     const navigation: NavigationSpy = { opened: [] }
     const store = makeStore(snapshotWithChildren(1))
@@ -1122,7 +1234,7 @@ describe('Tasks page: the shared task window', () => {
     unmount()
   })
 
-  it('never auto-folds a RE-PARENTED run member that is a real branch (issue #784)', async () => {
+  it('never auto-folds a RE-PARENTED run member with a running descendant (issue #784)', async () => {
     // A run member is usually a real catalog node re-parented under the run —
     // not the synthetic leaf the old rule assumed — so the page-level fold used
     // to take its whole subtree with it.
@@ -1153,7 +1265,7 @@ describe('Tasks page: the shared task window', () => {
       },
       m1c: { values: { subagentCatalog: [] }, state: 'ready', error: null },
     }
-    snapshot.byId['m1c'] = { id: 'm1c', displayTitle: 'm1c', origin: 'subagent', parentId: 'm1', running: false }
+    snapshot.byId['m1c'] = { id: 'm1c', displayTitle: 'm1c', origin: 'subagent', parentId: 'm1', running: true }
     const store = makeStore(snapshot)
     const { container, unmount } = renderRoot(
       createElement(SubagentView, { sessionId: 'root', active: true, ctx: makeCtx(store) }),
@@ -1627,17 +1739,10 @@ describe('Tasks page: the tree disclosure', () => {
   function snapshotWithGrandchild(): SidebarSessionList {
     const list = snapshotWithChildren(2)
     const projections = list.projectionsBySession as Record<string, SidebarProjectionSnapshot>
-    const rootEntries = projections.root!.values.subagentCatalog as SidebarSubagentCatalogEntry[]
     const grandchild: SidebarSubagentCatalogEntry = {
       id: 'grand-0', createdAt: 9, mode: 'one-shot', label: '孙代理 0',
     }
-    // `subagentCatalog` is a frozen tuple in the host's shape, so the grandchild
-    // rides a FRESH array rather than a push into the fixture's.
-    projections.root = {
-      values: { subagentCatalog: [...rootEntries, grandchild] },
-      state: 'ready',
-      error: null,
-    }
+    // Each child belongs to one parent's catalog; grand-0 is only under child-0.
     list.byId['grand-0'] = {
       id: 'grand-0', displayTitle: 'grand-0', origin: 'subagent', parentId: 'child-0', running: false,
     }
