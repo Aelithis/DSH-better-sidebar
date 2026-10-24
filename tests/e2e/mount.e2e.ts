@@ -31,7 +31,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test, expect, type APIRequestContext } from '@playwright/test'
-import { PAGE_URL, composerLocator, createHostApi, dismissOnboarding, gotoPage, hostRpc, sendFirstMessage, sidebarApi } from './host'
+import { PAGE_URL, composerEditable, createHostApi, dismissOnboarding, gotoPage, hostRpc, sendFirstMessage, sidebarApi } from './host'
 
 /** Workspace the sidebar renders against (created by the lane's seeding). */
 const WORKSPACE_PATH = process.env.DSH_E2E_WORKSPACE ?? join(tmpdir(), 'dsh-e2e-workspace')
@@ -605,7 +605,7 @@ test('plugin mounts into the DSH shell and survives a built-in tab sweep', async
     .first()
   await expect(chip, 'the selection must land in the composer as a reference chip')
     .toBeVisible({ timeout: 10_000 })
-  const composerText = await composerLocator(page).innerText()
+  const composerText = await composerEditable(page).innerText()
   expect(composerText, 'the draft must not carry the quoted body the chip replaced')
     .not.toContain('```')
   await assertNoCrash()

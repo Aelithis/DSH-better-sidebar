@@ -201,14 +201,25 @@ export async function hostRpc<T = unknown>(
 }
 
 /**
- * The host composer's editable. Role+name, not `[contenteditable="true"]`:
- * the plugin's own CodeMirror surface is also contenteditable (and stays in
- * the DOM, merely hidden, in preview mode), so a bare attribute match is
- * DOM-order dependent.
+ * The host composer's editable. Role+name: the placeholder label only exists
+ * on the empty composer, so this is for the first-message path — once the
+ * session has content the accessible name changes.
  * @param page - the lane's page.
  */
 export function composerLocator(page: Page) {
   return page.getByRole('textbox', { name: /^(Describe what you want to build|描述你想要构建)/ })
+}
+
+/**
+ * The composer's editable once the session already has content — the
+ * placeholder name is gone by then. Anchored on the host's composer slot
+ * rather than a bare `[contenteditable]` match: the plugin's own CodeMirror
+ * surface is also contenteditable and stays in the DOM (merely hidden) in
+ * preview mode.
+ * @param page - the lane's page.
+ */
+export function composerEditable(page: Page) {
+  return page.locator('[data-slot="conversation.composer.bar"] [contenteditable="true"]').first()
 }
 
 /**
