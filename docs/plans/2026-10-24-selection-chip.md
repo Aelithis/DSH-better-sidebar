@@ -24,7 +24,7 @@
 
 所以「显示短、发送长」本来就是宿主支持的能力，插件只需按这个形状发插入请求。
 
-插入通道复用文件树 `@` 按钮已经在用的 `slash/input-insert-reference`（`source: 'reference'`），不新增 source、不碰 `inputTriggers` 注册表。
+插入走宿主 facade 上的 `SessionInput.insertReference(ref, span)`——native `@` 选择器的监听器就是转调它，相位与 revision 守卫都在宿主里。宿主 `SessionInput` 上没有纯文本方法（`insertText` 在 InputBar 私有的 `InputActions` 上），所以「往已有气泡的草稿追加纯文本」只能发 `slash/input-insert-text` 事件。
 
 ## 3. 关键坑：两套坐标系
 
@@ -39,29 +39,35 @@
 
 修复：`foldClipboardOffset` 按 `occurrences` 把草稿偏移折到 detect 偏移。唯一有意的偏离——偏移正好落在气泡**起点**时，返回气泡**之前**的位置（宿主自己的同名函数会把它读成「在气泡内部」而返回尾边）。
 
+**命令气泡是第二个坑**：`/goal ` 这类命令 chip 在 detect 投影里同样只占 1 个字符，但它**不在** `occurrences` 里（宿主只收 `ReferenceChipNode`）。所以折叠前要先按 `claim.token` 把命令前缀摘掉，折完再加回 1。`appendOffset` 做这件事。
+
 ## 4. 改动
 
 | 文件 | 变更 |
 |---|---|
-| `src/client/conversation-draft.ts` | 新增 `foldClipboardOffset`、`insertDraftReference`、`DraftReference` 类型；`insertFileReference` 改走同一函数（行为不变）；`appendToDraft` 在草稿已有气泡时改走 `slash/input-insert-text`，不再用 `setDraft` |
+| `src/client/conversation-draft.ts` | 新增 `foldClipboardOffset`、`appendOffset`、`insertDraftReference`、`DraftReference`；`appendToDraft` 在草稿有气泡或处于 `claimed` 时改走 `slash/input-insert-text` |
 | `src/client/selection-payload.ts` | `buildSelectionInsert` 返回 `{ label, text }`（原返回单个字符串） |
 | `src/client/selection-popup.ts` | 三个导出接口与 hook 泛型化，默认 `T = string`，字符串调用方零改动 |
-| `src/client/TextEditor.tsx` | `useSelectionPopup<DraftReference>`；commit 先试气泡，失败回退纯文本 |
-| `src/context-types.ts` | `SidebarSessionInput.state.getSnapshot()` 补 `occurrences` / `phase` |
+| `src/client/TextEditor.tsx` | `useSelectionPopup<DraftReference>`；commit 走 `insertReferenceOrText` |
+| `src/context-types.ts` | `SidebarSessionInput` 补 `insertReference`、快照补 `occurrences` / `phase` / `claim` |
 
-**为什么 `appendToDraft` 也要改**：`setDraft` 会 `root.clear()` 重建纯文本文档，把草稿里**每一个**气泡碾平。原来的降级路径在有气泡的草稿上会毁掉用户已有的引用。
+**为什么 `appendToDraft` 也要改**：`setDraft` 会 `root.clear()` 重建纯文本文档，把草稿里**每一个**气泡碾平。命令气泡更糟——碾平后 claim 丢失，宿主把 `/goal` 读成普通文字并取消命令。
 
-**为什么 `clipboardText` 取短形态**：会话重挂载时宿主用持久化的草稿串回灌（`setDraft` 无法从字符串恢复气泡节点）。`clipboardText` 若存整段围栏正文，退化后就是最刺眼的那种铺满输入框；存 `path:lines` 则只退化成一行。
+**为什么气泡插入前要先占一个分隔位**：宿主的 `insertReference` 只在气泡**之后**补空格（`client.js:14758`），之前不补。草稿是 `hello` 时直接插会读成 `hello[chip]`。
+
+**为什么 `clipboardText` 取短形态**：它是草稿串里对外可见的投影（复制、纯文本视图都读它），整段围栏正文放在那里就是这次要消灭的铺满输入框。注意这**不是**为了兼容重挂载——宿主持久化的是 `{text, references}`，气泡能正常恢复。
+
+**为什么选区气泡不传 `appearance`**：宿主把 `appearance: 'file'` 的气泡标记成可点开，点击会把 `ref` 当路径交给文件打开器。选区气泡的 `ref` 是围栏正文，不是路径。
 
 ## 5. 验证
 
 - `pnpm typecheck` / `pnpm lint` / `pnpm build` 通过。
-- `pnpm test`：**2794 passed / 4 failed**，4 例全是本机 `tests/fs-operations.spec.ts`、`fs-mkdir.spec.ts`、`file-stream-route.spec.ts` 创建符号链接报 `EPERM`（Windows 权限差异）。已在干净 `dev` 上复现同样的 4 例，与本改动无关。
-- 本改动相关：`tests/conversation-draft.spec.ts` 50 passed（含 `foldClipboardOffset` 8 例、`insertDraftReference` 6 例、有气泡草稿上的 `appendToDraft` 3 例）、`tests/selection-payload.spec.ts` 16 passed、`tests/selection-popup.spec.tsx` 8 passed。
-- 真机 mount lane：新增探针在 markdown 预览里选中一行、点提交按钮，断言 composer 里出现 `diagram.md:` 气泡，且草稿文本不含三反引号围栏。
+- `pnpm test`：本机 4 例符号链接 `EPERM` 失败（Windows 权限差异，已在干净 `dev` 上复现同样 4 例），其余全绿。
+- 本改动相关：`tests/conversation-draft.spec.ts` 32 passed、`tests/selection-payload.spec.ts` 16 passed、`tests/selection-popup.spec.tsx` 8 passed。
+- 真机 mount lane：在 markdown 预览里选中一行、点提交按钮，断言 composer 里出现 `diagram.md:` 气泡、草稿不含三反引号围栏、气泡不与前一个词粘连、且气泡不带 `openable` 标记。
 
 ## 6. 已知边界
 
 - 气泡的 `clipboardText` 取 `label`（文件引用另取 `@path`），`ref` 存发送用的完整正文，宿主提交前 `trim`。
-- 全空白草稿上插入会留一个前导空格（宿主只允许整气泡替换）。
-- 气泡路径不调用 `placeComposerCaretAfterInsert`：宿主事件本身接管光标，DOM 光标恢复只服务 `setDraft` 那条路径。
+- 插入一律追加在文档末尾：宿主 composer 是 contenteditable，这个面上没有光标 API。
+- 冻结期（`adjudicating` / `submitting`）直接拒绝，不回退——回退会绕过宿主的相位守卫。

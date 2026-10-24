@@ -14,22 +14,10 @@
  * emits `slash/input-insert-text` directly. Plain `setDraft` is the fallback
  * for chipless drafts only.
  *
- * Insert position (fixes upstream issue #425): on a chipless draft the text
- * store exposes no caret API, so the composer's `<textarea>` selection is
- * probed from the DOM (guarded by a value-sync check) and the text spliced
- * there, replacing any live selection — with whitespace-aware joins, an
- * insert into the middle of a sentence keeps single-space separation like
- * the append path. An unknown/stale caret falls back to appending at the
- * end (the pre-fix behavior).
- *
- * The caret is also *restored* after the insert: committing a programmatic
- * draft change resets the controlled textarea's caret (observed landing at
- * the start of the value), which would make every later insert probe the
- * reset position and drift the stack (A|B + C + D ended up as |DACB). The
- * placement (`placeComposerCaretAfterInsert`) puts the caret right after the
- * inserted text once the value commit lands — the index accounts for the
- * separating space on the left, so stacked inserts stay at their running
- * position (A|B + C + D → ACD|B).
+ * Everything appends at the document end. The host composer is a Lexical
+ * contenteditable and this face publishes no caret, so a mid-draft insert
+ * would have to guess a position — see {@link appendOffset} for the one
+ * coordinate it does derive.
  */
 import type {
   Context,
@@ -52,8 +40,9 @@ export interface DraftReference {
   /**
    * What the draft string carries for this chip (the clipboard projection).
    * Defaults to `label`; a file reference spells its `@path` here instead.
-   * Keep it short — this is the form a remounted session re-seeds the draft
-   * from, and it cannot be turned back into a chip.
+   * This is the text other draft consumers (copy, plain projections) see, so
+   * it stays short — the full payload rides in `text` and is only expanded
+   * on send.
    */
   clipboardText?: string
   /**
@@ -64,143 +53,20 @@ export interface DraftReference {
   appearance?: 'file' | 'folder' | 'session'
 }
 
-/** A resolved composer caret/selection in draft coordinates. */
-export interface DraftCaret {
-  start: number
-  end: number
-}
-
 /**
- * The spliced draft plus the caret index right after the inserted text — the
- * left-side separating space shifts it by one, which naive
- * `start + text.length` misses (it would land before the tail).
+ * The separating space an append needs on its left — one space, but never
+ * doubled against existing whitespace. Both the string append and the span
+ * channel (which does no splice math of its own) obey this single rule. A
+ * blank draft takes no separator: it is replaced outright.
  */
-interface SpliceResult {
-  draft: string
-  caretAfter: number
-}
-
-/**
- * The separating space an insert at `caret` needs on its left — one space,
- * but never doubled against existing whitespace or the string start. Both
- * the string splice and the span channel (which does no splice math of its
- * own) obey this single rule. A blank draft takes no separator: it is
- * replaced outright.
- */
-function leadFor(draft: string, caret: DraftCaret | null): string {
+function leadFor(draft: string): string {
   if (draft.trim() === '') return ''
-  if (caret === null || draft === '') return /\s$/.test(draft) ? '' : ' '
-  const prefix = draft.slice(0, caret.start)
-  return prefix === '' || /\s$/.test(prefix) ? '' : ' '
+  return /\s$/.test(draft) ? '' : ' '
 }
 
-/**
- * Splice `text` into `draft` at `caret` (replacing any live selection) with
- * whitespace-aware joins and report the caret position right after the
- * inserted text. `caret === null` (position unknown) appends at the end,
- * exactly like the original behavior.
- */
-function spliceInsert(draft: string, text: string, caret: DraftCaret | null): SpliceResult {
-  if (draft.trim() === '') return { draft: text, caretAfter: text.length }
-  const lead = leadFor(draft, caret)
-  if (caret === null || draft === '') {
-    const next = `${draft}${lead}${text}`
-    return { draft: next, caretAfter: next.length }
-  }
-  const prefix = draft.slice(0, caret.start)
-  const suffix = draft.slice(caret.end)
-  // One separating space on the right too, under the same rule — mirrors how
-  // typing in the middle of a sentence behaves.
-  const right = suffix === '' || /^\s/.test(suffix) || /\s$/.test(text) ? '' : ' '
-  return {
-    draft: `${prefix}${lead}${text}${right}${suffix}`,
-    caretAfter: prefix.length + lead.length + text.length,
-  }
-}
-
-/**
- * The spliced draft string (see {@link spliceInsert}); pure string math —
- * unit-tested directly.
- */
-export function insertAtCaret(draft: string, text: string, caret: DraftCaret | null): string {
-  return spliceInsert(draft, text, caret).draft
-}
-
-/**
- * Locate the composer `<textarea>` in the conversation column: prefer the
- * `data-phase`-tagged textarea (the composer's marker), falling back to any
- * textarea in the column, then to a bare data-phase textarea (older host
- * layouts without the column attribute). Null in jsdom-less hosts.
- */
-function findComposerTextarea(): HTMLTextAreaElement | null {
-  if (typeof document === 'undefined') return null
-  const column = document.querySelector('#root [data-slot="conversation"]')
-  const find = (scope: ParentNode): HTMLTextAreaElement | null =>
-    scope.querySelector('textarea[data-phase]') ?? scope.querySelector('textarea')
-  return column !== null
-    ? find(column)
-    : document.querySelector<HTMLTextAreaElement>('textarea[data-phase]')
-}
-
-/**
- * Resolve the composer's live caret from its DOM `<textarea>`. The draft
- * store has no caret API, so the sidebar reads the composed input's selection
- * directly; the value-sync check (`el.value === draft`) discards stale or
- * wrong-composer reads — a caret must never be applied against a draft it
- * was not measured on.
- *
- * Returns null when the composer is missing, disabled/read-only, out of
- * sync with the store draft, or has no measurable selection (jsdom/odd
- * hosts report null selectionStart/End).
- */
-export function probeComposerCaret(draft: string): DraftCaret | null {
-  const el = findComposerTextarea()
-  if (el === null || el.disabled || el.readOnly) return null
-  if (el.value !== draft) return null
-  let start = el.selectionStart
-  let end = el.selectionEnd
-  if (typeof start !== 'number' || typeof end !== 'number') return null
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return null
-  start = Math.max(0, Math.min(start, draft.length))
-  end = Math.max(start, Math.min(end, draft.length))
-  return { start, end }
-}
-
-/**
- * Restore the composer caret to `caretIndex` after a programmatic
- * `setDraft` commit. A controlled textarea update resets the caret (React
- * commits the value asynchronously and the browser moves the caret to the
- * start/end), so the placement is scheduled and retried across at most two
- * animation frames (setTimeout fallback for jsdom), and only applied when
- * the textarea still matches `expectedDraft` — a newer edit or a different
- * composer wins the race untouched. The caret is clamped into the value
- * bounds, mirroring how browsers clamp type-in positions.
- */
-export function placeComposerCaretAfterInsert(expectedDraft: string, caretIndex: number): void {
-  let remaining = 2
-  let scheduled = false
-  const schedule = (fn: () => void): void => {
-    if (scheduled) return
-    scheduled = true
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fn)
-    else setTimeout(fn, 0)
-  }
-  const place = (): void => {
-    scheduled = false
-    if (remaining <= 0) return
-    remaining -= 1
-    const el = findComposerTextarea()
-    if (el === null || el.disabled || el.readOnly) return
-    if (el.value !== expectedDraft) {
-      // The commit has not landed yet (or a competing edit won) — one more
-      // frame before giving up.
-      schedule(place)
-      return
-    }
-    const clamped = Math.max(0, Math.min(caretIndex, el.value.length))
-    el.setSelectionRange(clamped, clamped)
-  }
-  schedule(place)
+/** `draft` with `text` appended behind one separating space when needed. */
+export function appendText(draft: string, text: string): string {
+  return `${draft}${leadFor(draft)}${text}`
 }
 
 /**
@@ -279,11 +145,8 @@ function appendOffset(snapshot: ReturnType<SidebarSessionInput['state']['getSnap
  * The host runs its own admission-phase and revision guards and reports
  * whether the edit applied.
  *
- * The chip's `clipboardText` is the compact `label`, not the full payload:
- * the clipboard projection is what survives a session remount (the host
- * re-seeds a draft from that string), and a full fenced block there would
- * re-expand into the very wall of text this chip exists to avoid. The model
- * text rides in `ref`, which is serialized back to its full form on send.
+ * The chip's `clipboardText` is the compact `label`, not the full payload —
+ * see {@link DraftReference.clipboardText}.
  *
  * Returns false when the host refused the insert (stale revision, a frozen
  * submission phase, or no chip channel at all) so the caller can fall back.
@@ -315,7 +178,7 @@ export function insertDraftReference(
     // channel — a stray trailing space is harmless if the chip then fails.
     let rev = snapshot.draftRev
     let start = at
-    if (leadFor(snapshot.draft, null) !== '') {
+    if (leadFor(snapshot.draft) !== '') {
       const actxEmit = actx as unknown as { emit(name: string, payload: unknown): void }
       actxEmit.emit('slash/input-insert-text', {
         text: ' ',
@@ -367,10 +230,12 @@ function revisionChanged(ctx: Context, sessionId: string, revision?: number): bo
 }
 
 /**
- * Insert `text` into the session's composer draft at the composer's live
- * caret (see {@link probeComposerCaret}), falling back to appending at the
- * end when the caret cannot be resolved. Returns false — and logs — when the
- * conversation service or the session scope is unavailable.
+ * Append `text` to the session's composer draft. Returns false — and logs —
+ * when the conversation service or the session scope is unavailable.
+ *
+ * The host composer is a Lexical contenteditable with no caret API on this
+ * face, so this appends at the end; a mid-draft insert would need the caret
+ * the host does not publish here.
  */
 export function appendToDraft(ctx: Context, sessionId: string, text: string): boolean {
   try {
@@ -393,7 +258,6 @@ export function appendToDraft(ctx: Context, sessionId: string, text: string): bo
     // the host re-reads the draft as plain text and cancels the command. Both
     // chip kinds take the span path.
     const hasChips = occurrences.length > 0 || snapshot.phase === 'claimed'
-    const caret = hasChips ? null : probeComposerCaret(draft)
     if (hasChips) {
       // `setDraft` rebuilds the document from a plain string, which flattens
       // every existing chip into its text — so on a draft that already
@@ -412,17 +276,12 @@ export function appendToDraft(ctx: Context, sessionId: string, text: string): bo
       // event map; this internal composer event is string-loose at runtime.
       const actxEmit = actx as unknown as { emit(name: string, payload: unknown): void }
       actxEmit.emit('slash/input-insert-text', {
-        text: `${leadFor(draft, null)}${text}`,
+        text: `${leadFor(draft)}${text}`,
         span: { draftRev: snapshot.draftRev, start: at, end: at },
       })
       return input.state.getSnapshot().draftRev !== snapshot.draftRev
     }
-    const splice = spliceInsert(draft, text, caret)
-    input.setDraft(splice.draft)
-    // Put the caret right after the inserted text once the value commit
-    // lands — see the module doc for why this keeps stacked inserts at the
-    // running position.
-    placeComposerCaretAfterInsert(splice.draft, splice.caretAfter)
+    input.setDraft(appendText(draft, text))
     return true
   } catch (error) {
     console.warn('[dsh-better-sidebar] draft insert failed:', error)

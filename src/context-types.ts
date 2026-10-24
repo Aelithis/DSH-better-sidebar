@@ -721,9 +721,8 @@ export interface SidebarSessionInput {
     }
   }
   /**
-   * Replace the trigger span with one reference chip (span-CAS'd). The host
-   * runs its own admission-phase and revision guards and reports whether the
-   * edit applied. Absent on hosts without the chip channel.
+   * Replace the trigger span with one reference chip (span-CAS'd). Absent on
+   * hosts without the chip channel.
    */
   insertReference?(
     ref: SidebarReferenceInsert,
