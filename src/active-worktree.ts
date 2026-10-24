@@ -68,12 +68,16 @@ const ACTIVE_ROOT_PATH_PATTERN = /[A-Za-z]:(?:\\|\/)[^\\/\s"'\x60,;|)<>*?]+(?:[\
  * route call, the client's 5 s poll  are exactly what the TTL exists to keep
  * free.
  *
- * `eventSeq` is the live session cursor observed when the entry was computed.
+ * `eventSeq` is the live session cursor observed when the entry was computed,
+ * and `gitResolved` says whether the base probe actually found a repository.
  * A TTL expiry alone means only that wall time passed; when the log has not
- * moved since, nothing this resolver reads can have changed, so the entry is
- * re-armed instead of snapshotting the log and scanning up to 4000 events
- * again (measured 9.6–44.7 ms per miss — the idle 5 s poll landed on one every
- * third ask). A moved cursor (or a host with no `seq`) keeps the old meaning.
+ * moved since, nothing the EVENT SCAN reads can have changed, so a resolved
+ * entry is re-armed instead of snapshotting the log and scanning up to 4000
+ * events again (measured 9.6–44.7 ms per miss — the idle 5 s poll landed on
+ * one every third ask). A negative/failed base probe is NOT re-armed: `git
+ * init` in a parent, a transient spawn failure, or a mount coming back are
+ * invisible to the event log, so those keep the wall-clock re-probe. A moved
+ * cursor (or a host with no `seq`) also keeps the old meaning.
  *
  * All three maps are BOUNDED: a long-lived host (and a `keepMounted` right
  * sidebar that keeps asking about every session it has ever shown) would
@@ -81,7 +85,7 @@ const ACTIVE_ROOT_PATH_PATTERN = /[A-Za-z]:(?:\\|\/)[^\\/\s"'\x60,;|)<>*?]+(?:[\
  * (`undefined` = "no git top level here"), which is what keeps a non-repo
  * session cheap; those entries are evictable like any other.
  */
-const activeWorktreeRootCache = new Map<string, { root: string; base: string; directoryEpoch: number | undefined; eventSeq: number | undefined; expires: number }>()
+const activeWorktreeRootCache = new Map<string, { root: string; base: string; directoryEpoch: number | undefined; eventSeq: number | undefined; gitResolved: boolean; expires: number }>()
 const pathTopCache = new Map<string, string | undefined>()
 const linkedWorktreeCache = new Map<string, boolean>()
 
@@ -394,10 +398,11 @@ export async function activeWorktreeRootOf(ctx: Context, sessionId: string, base
       cachePut(activeWorktreeRootCache, sessionId, cached, ACTIVE_ROOT_CACHE_MAX)
       return cached.root
     }
-    // Expired, but the event log has not moved: re-arm the entry. The only
-    // thing that can change the answer is an appended event (or a host that
-    // exposes no cursor at all), so those keep the old rescan.
-    if (liveSeq !== undefined && cached.eventSeq === liveSeq) {
+    // Expired, but the event log has not moved AND the base probe found a
+    // repository: nothing this resolver reads can have changed, so re-arm the
+    // entry. Negative/failed answers keep the wall-clock re-probe (see the
+    // entry doc), and so does a host with no cursor.
+    if (cached.gitResolved && liveSeq !== undefined && cached.eventSeq === liveSeq) {
       cachePut(activeWorktreeRootCache, sessionId, {
         ...cached,
         expires: Date.now() + ACTIVE_ROOT_TTL_MS,
@@ -432,13 +437,13 @@ async function resolveActiveWorktreeRoot(ctx: Context, sessionId: string, base: 
   if (top === undefined) {
     // "Not inside a repository" is an answer too (the base itself), and caching
     // it is what keeps a non-repo session from re-probing on every ask.
-    cachePut(activeWorktreeRootCache, sessionId, { root: base, base, directoryEpoch, eventSeq, expires: Date.now() + ACTIVE_ROOT_TTL_MS }, ACTIVE_ROOT_CACHE_MAX)
+    cachePut(activeWorktreeRootCache, sessionId, { root: base, base, directoryEpoch, eventSeq, gitResolved: false, expires: Date.now() + ACTIVE_ROOT_TTL_MS }, ACTIVE_ROOT_CACHE_MAX)
     return base
   }
   const canonicalTop = requireAbsolute(top)
   const effectiveBase = pathUnderOf(base, canonicalTop) ? base : canonicalTop
   const active = await activeRootFromEvents(await sessionEventsOf(ctx, sessionId), effectiveBase)
   const root = active ?? effectiveBase
-  cachePut(activeWorktreeRootCache, sessionId, { root, base, directoryEpoch, eventSeq, expires: Date.now() + ACTIVE_ROOT_TTL_MS }, ACTIVE_ROOT_CACHE_MAX)
+  cachePut(activeWorktreeRootCache, sessionId, { root, base, directoryEpoch, eventSeq, gitResolved: true, expires: Date.now() + ACTIVE_ROOT_TTL_MS }, ACTIVE_ROOT_CACHE_MAX)
   return root
 }

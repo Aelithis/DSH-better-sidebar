@@ -163,14 +163,23 @@ export function GitGraphSection({ scope, worktree, visible, refreshTick = 0, onP
   useLayoutEffect(() => { syncWindow() }, [syncWindow, page?.entries.length])
   // A panel resize (the details pane opening, a window resize, the sidebar
   // width drag) changes how many rows fit: re-measure so the mounted window
-  // still covers the viewport instead of leaving a blank band.
+  // still covers the viewport instead of leaving a blank band. A HIDDEN
+  // section holds no observer (AGENTS steady-state rule) — the effect depends
+  // on `visible`, re-measures on the way back, and drops any frame it had
+  // queued.
   useEffect(() => {
+    if (!visible) return
     const node = scrollRef.current
-    if (node === null || typeof ResizeObserver === 'undefined') return
+    if (node === null) return
+    syncWindow()
+    if (typeof ResizeObserver === 'undefined') return () => { scrollBatcher.dispose() }
     const observer = new ResizeObserver(() => { syncWindow() })
     observer.observe(node)
-    return () => { observer.disconnect() }
-  }, [syncWindow])
+    return () => {
+      scrollBatcher.dispose()
+      observer.disconnect()
+    }
+  }, [scrollBatcher, syncWindow, visible])
   useEffect(() => () => { scrollBatcher.dispose() }, [scrollBatcher])
   /** Row hover preview: the middle information rung between the one-line row
    *  (pills + subject) and the details card (everything). It opens only after

@@ -258,6 +258,48 @@ describe('FileTree level loading is batched', () => {
     expect(fsTree).not.toHaveBeenCalled()
   })
 
+  it('stops the compact fold-chain preload while parked', async () => {
+    // A fold chain is preloaded link by link: each level that lands reveals the
+    // next one. When an in-flight level returns AFTER the tab was parked, the
+    // chain used to keep walking off screen (up to MAX_COMPACT_DEPTH levels).
+    const dir = (path: string, compact: boolean): Record<string, unknown> => ({
+      name: path.slice(path.lastIndexOf('/') + 1), path, isDir: true, hidden: false, compact,
+    })
+    const compactLevel = (path: string): Record<string, unknown> => {
+      if (path === '/tmp') return { path, entries: [dir('/tmp/a', true)], truncated: false }
+      if (path === '/tmp/a') return { path, entries: [dir('/tmp/b', true)], truncated: false }
+      if (path === '/tmp/b') return { path, entries: [{ name: 'file.ts', path: '/tmp/b/file.ts', isDir: false }], truncated: false }
+      return { path, entries: [], truncated: false }
+    }
+    let release: (() => void) | undefined
+    fsTrees.mockImplementation(async (_scope: unknown, paths: readonly string[]) => {
+      // Hold the first fold link open so it can land after the park.
+      if (paths.length === 1 && paths[0] === '/tmp/a') {
+        await new Promise<void>(resolve => { release = resolve })
+      }
+      return { levels: paths.map(path => compactLevel(path)) }
+    })
+
+    harness = mountTree([], 0)
+    await flush()
+    // Root + the first fold link (`/tmp/a`, held open).
+    expect(fsTrees).toHaveBeenCalledTimes(2)
+    expect(release).toBeDefined()
+
+    harness.rerender([], 0, false)
+    await act(async () => { release!() })
+    await flush()
+    const parkedCalls = fsTrees.mock.calls.length
+    expect(fsTrees.mock.calls.some(call => (call[1] as string[]).includes('/tmp/b')),
+      'a parked tree must not walk the next fold link').toBe(false)
+
+    // Coming back resumes the chain (the root re-list re-reveals the frontier).
+    harness.rerender([], 0, true)
+    await flush()
+    expect(fsTrees.mock.calls.length).toBeGreaterThan(parkedCalls)
+    expect(fsTrees.mock.calls.some(call => (call[1] as string[]).includes('/tmp/b'))).toBe(true)
+  })
+
   it('re-lists ONLY the stale level when the directory watcher reports one', async () => {
     harness = mountTree(DIRS)
     await flush()

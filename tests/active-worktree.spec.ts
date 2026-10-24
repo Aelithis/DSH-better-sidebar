@@ -327,6 +327,35 @@ describe('active worktree root', () => {
   })
 
   /**
+   * A cache entry whose base probe found NO repository (or failed) must keep
+   * the wall-clock re-probe even when the event cursor is idle: `git init` in
+   * a parent, a transient spawn failure, or a mount that comes back are all
+   * invisible to the event log. Only a resolved git top may be re-armed.
+   */
+  it('keeps re-probing a non-repository base after the TTL with an idle cursor', async () => {
+    // A plain directory: `git rev-parse` fails, so the answer is the base.
+    const base = mkdtempSync(join(tmpdir(), 'dsh-active-root-'))
+    try {
+      const { ctx, scans } = cursorSessionCtx(base, [])
+      probed.length = 0
+      await expect(activeWorktreeRootOf(ctx, 's-norepo', base)).resolves.toBe(base)
+      expect(probed).toEqual([base])
+      expect(scans()).toBe(0)
+
+      probed.length = 0
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000)
+      try {
+        await expect(activeWorktreeRootOf(ctx, 's-norepo', base)).resolves.toBe(base)
+        expect(probed, 'a negative repository answer must not be re-armed forever').toEqual([base])
+      } finally {
+        clock.mockRestore()
+      }
+    } finally {
+      removeTree(base)
+    }
+  })
+
+  /**
    * The fallback: hosts (and detached sessions) without a live cursor expose no
    * `seq`, so the TTL keeps its old meaning — expire means re-scan.
    */

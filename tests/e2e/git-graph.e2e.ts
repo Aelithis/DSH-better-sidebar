@@ -107,6 +107,17 @@ test('read-only Git Graph renders merge history and filters without checkout', a
     // The row window is viewport-bound now; the PAGE size is what the state
     // carries, so assert it on the section rather than counting mounted rows.
     await expect(graph).toHaveAttribute('data-graph-count', '50')
+    // …but the mounted window must still reach the history: scrolling to the
+    // end appends the remaining commits, and the oldest one renders once the
+    // window follows to the new bottom. (Counting DOM rows alone would lose
+    // this reachability evidence.)
+    const topHash = await graph.locator('[data-graph-commit]').first().getAttribute('data-graph-commit')
+    await graphScroll.evaluate(el => { el.scrollTop = el.scrollHeight })
+    await expect(graph).toHaveAttribute('data-graph-count', '52', { timeout: 20_000 })
+    await graphScroll.evaluate(el => { el.scrollTop = el.scrollHeight })
+    await expect.poll(async () => graph.locator('[data-graph-commit]').first().getAttribute('data-graph-commit'))
+      .not.toBe(topHash)
+    await expect(graph.getByText('Graph base', { exact: true })).toBeVisible()
     const outer = page.locator('[data-git-scroll]')
     expect(await outer.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true)
     expect(await graph.evaluate(el => Math.round(el.getBoundingClientRect().height))).toBe(220)

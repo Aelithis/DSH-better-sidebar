@@ -825,6 +825,12 @@ export function FileTree(props: {
    * path — while leaving their current rows untouched until the answer lands.
    */
   const loadLevels = useCallback((paths: readonly string[], options?: { force?: boolean }) => {
+    // A PARKED tree must not fetch, whoever asked: the visible-set effect and
+    // the fold-chain preload are gated at their call sites, but an answer that
+    // lands after the tab was hidden can still re-enter here (the preload's
+    // next link, or the dropped-answer self-heal below). The un-park re-arm
+    // runs with `visible` already true, so it is unaffected.
+    if (visibleRef.current === false) return
     const force = options?.force === true
     const wanted = force
       ? [...new Set(paths)]
@@ -1038,7 +1044,12 @@ export function FileTree(props: {
     // visible-set effect above loading (or having loaded) that level. The walk
     // itself stops at the render cap, so a chain the row stopped folding at
     // MAX_COMPACT_DEPTH never keeps pulling deeper levels.
-    if (cwd === undefined) return
+    //
+    // A PARKED tree skips the walk too: an in-flight level can land after the
+    // tab was hidden, and without this guard the preload would keep pulling
+    // the next link off screen. Un-parking re-lists the root (watcher re-arm),
+    // and that data change resumes the chain from the frontier.
+    if (cwd === undefined || visibleRef.current === false) return
     loadLevels(compactLoadTargets(dataRef.current, [cwd, ...propsRef.current.expanded]))
   }, [cwd, data, loadLevels])
 

@@ -369,6 +369,13 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
    */
   const wheelBatcher = useRef(createFrameBatcher()).current
   const pendingWheelRef = useRef<{ x: number; y: number; k: number } | null>(null)
+  /**
+   * A background pan gesture owns the transform from pointerdown to release.
+   * Wheel zoom and the pan both commit a WHOLE transform, so a wheel mid-drag
+   * would be overwritten by the pan's next frame (or vice versa); the wheel is
+   * ignored while the gesture is live instead.
+   */
+  const panActiveRef = useRef(false)
 
   // Wheel-zoom to cursor (non-passive: the page must not scroll).
   useEffect(() => {
@@ -376,6 +383,7 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
     if (container === null) return
     const onWheel = (event: WheelEvent): void => {
       event.preventDefault()
+      if (panActiveRef.current) return
       const rect = container.getBoundingClientRect()
       const mx = event.clientX - rect.left
       const my = event.clientY - rect.top
@@ -388,11 +396,15 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
       if (next === base.k) return
       touchedRef.current = true
       stopGlide()
-      pendingWheelRef.current = {
+      // Clamp EACH composed step, not just the frame's final value: the old
+      // one-event-per-frame code clamped every step, and a later step's anchor
+      // math must start from the in-bounds transform the earlier one would
+      // have shown (otherwise coalescing changes where the zoom lands).
+      pendingWheelRef.current = clampTf({
         x: mx - (mx - base.x) * (next / base.k),
         y: my - (my - base.y) * (next / base.k),
         k: next,
-      }
+      })
       wheelBatcher.schedule(() => {
         const pending = pendingWheelRef.current
         if (pending === null) return
@@ -462,6 +474,7 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
     if (target.closest('[data-graph-controls]') !== null) return
     const startX = event.clientX
     const startY = event.clientY
+    panActiveRef.current = true
     const { x, y } = tfRef.current
     const onMove = (move: globalThis.PointerEvent): void => {
       const dx = move.clientX - startX
@@ -486,6 +499,7 @@ export function TasksGraph(props: TasksGraphProps): ReactNode {
       window.removeEventListener('pointerup', onUp)
       window.removeEventListener('pointercancel', onUp)
       panBatcher.flushNow()
+      panActiveRef.current = false
       draggingRef.current = false
       setDragging(false)
     }

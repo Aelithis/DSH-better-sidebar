@@ -514,6 +514,52 @@ function spacerHeight(scroll: HTMLElement, which: 'top' | 'bottom'): number {
   return node === null ? 0 : Number.parseFloat(node.style.height)
 }
 
+/** jsdom ships no ResizeObserver: install a recording fake for the gate test. */
+interface FakeResizeObserver {
+  targets: Element[]
+  disconnected: boolean
+}
+function installResizeObserver(): { observers: FakeResizeObserver[]; restore: () => void } {
+  const original = (globalThis as Record<string, unknown>).ResizeObserver
+  const observers: FakeResizeObserver[] = []
+  class Fake {
+    targets: Element[] = []
+    disconnected = false
+    constructor(public callback: ResizeObserverCallback) { observers.push(this) }
+    observe(target: Element): void { this.targets.push(target) }
+    unobserve(): void {}
+    disconnect(): void { this.disconnected = true }
+  }
+  ;(globalThis as Record<string, unknown>).ResizeObserver = Fake
+  return {
+    observers,
+    restore: () => {
+      if (original === undefined) delete (globalThis as Record<string, unknown>).ResizeObserver
+      else (globalThis as Record<string, unknown>).ResizeObserver = original
+    },
+  }
+}
+
+describe('graph visibility gate', () => {
+  it('holds its viewport observer only while visible', async () => {
+    const ro = installResizeObserver()
+    vi.spyOn(api, 'gitGraph').mockResolvedValue(graphPage([entry(HASH_A)]))
+    const hidden = renderRoot(createElement(GitGraphSection, { ...defaults, visible: false }))
+    try {
+      await flush()
+      expect(ro.observers, 'a hidden graph holds no observer').toHaveLength(0)
+    } finally { hidden.unmount() }
+
+    const shown = renderRoot(createElement(GitGraphSection, defaults))
+    try {
+      await flush()
+      expect(ro.observers).toHaveLength(1)
+      expect(ro.observers[0]!.targets).toHaveLength(1)
+    } finally { shown.unmount(); ro.restore() }
+    expect(ro.observers[0]!.disconnected, 'unmount disconnects').toBe(true)
+  })
+})
+
 describe('graph history windowing', () => {
   it('mounts only the viewport window and keeps the spacers in step with the scroll position', async () => {
     // The host caps the walk at 10000 rows; 200 is already enough that the DOM
