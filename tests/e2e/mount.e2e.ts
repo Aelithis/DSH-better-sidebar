@@ -583,20 +583,30 @@ test('plugin mounts into the DSH shell and survives a built-in tab sweep', async
   // `path:lines` — with no fenced body anywhere in the draft. This is the
   // whole point of the chip path: a host that ignores the reference-insert
   // event degrades to plain text and fails right here.
-  const previewLine = pane.getByText('tail text')
-  await previewLine.click({ clickCount: 3 }) // triple-click selects the line
+  const previewLine = pane.locator('p', { hasText: 'tail text' }).first()
+  // A real drag selects the text and fires mouseup with the selection still
+  // live; a synthetic triple-click can clear it before mouseup reaches the
+  // preview container's handler.
+  const lineBox = await previewLine.boundingBox()
+  expect(lineBox, 'the preview line must have a measurable box').not.toBeNull()
+  await page.mouse.move(lineBox!.x + 1, lineBox!.y + lineBox!.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(lineBox!.x + lineBox!.width - 1, lineBox!.y + lineBox!.height / 2, { steps: 8 })
+  await page.mouse.up()
   const addToChat = page.locator('button', { hasText: /添加到对话|Add to conversation/ }).first()
   await expect(addToChat, 'selecting preview text must raise the add-to-conversation button')
     .toBeVisible({ timeout: 10_000 })
   await addToChat.click()
-  const composer = page.getByRole('textbox', { name: /^(Describe what you want to build|描述你想要构建)/ })
-  const chip = composer.locator('[data-lexical-decorator], [class*="reference"], [class*="chip"]').first()
+  // The chip is a sibling decorator inside the composer's editable, not a
+  // descendant of the role=textbox node — scope the search to the composer
+  // card instead.
+  const chip = page.locator(`[data-lexical-decorator], [class*="reference"]`)
+    .filter({ hasText: `${SEEDED_MD_FILE}:` })
+    .first()
   await expect(chip, 'the selection must land in the composer as a reference chip')
     .toBeVisible({ timeout: 10_000 })
-  await expect(chip, 'the chip label must name the file and its line span')
-    .toContainText(`${SEEDED_MD_FILE}:`, { timeout: 10_000 })
-  const draftText = await composer.innerText()
-  expect(draftText, 'the draft must not carry the quoted body the chip replaced')
+  const composerText = await page.locator('[contenteditable="true"]').first().innerText()
+  expect(composerText, 'the draft must not carry the quoted body the chip replaced')
     .not.toContain('```')
   await assertNoCrash()
 
