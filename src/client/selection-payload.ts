@@ -18,10 +18,7 @@
  *   source and only reports lines on an unambiguous hit (see
  *   {@link linesOfSelection}).
  *
- * The two halves travel separately: `label` is what the composer shows (one
- * compact chip, `docs/a.md:12-15`), `text` is what the model receives (the
- * whole fenced block). Several references in a row therefore read as a row
- * of chips instead of filling the input box with quoted bodies.
+ * The two halves travel separately (see {@link DraftReference}).
  */
 import { relativeTo } from './paths.ts'
 import type { DraftReference } from './conversation-draft.ts'

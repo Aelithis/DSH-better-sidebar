@@ -31,8 +31,7 @@ import { useEffect, useRef, useState, type RefObject } from 'react'
 
 /**
  * The floating "add to conversation" action: payload + viewport anchor.
- * The payload type is the caller's — the text viewers carry a
- * {@link DraftReference} (chip label + model text), string callers stay as-is.
+ * The payload type belongs to the caller; the hook only carries it through.
  */
 export interface SelectionPopup<T = string> {
   insert: T

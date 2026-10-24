@@ -672,10 +672,25 @@ export interface SidebarSessionOccurrence {
   length: number
 }
 
+/** One structured reference chip's insertion payload (mirror of the host's
+ *  `ReferenceInsert`). */
+export interface SidebarReferenceInsert {
+  /** Trigger source id; `'reference'` for a programmatic insert. */
+  source: string
+  /** What the model receives on send — the chip's full serialized form. */
+  ref: string
+  /** What the composer shows in place of `ref`. */
+  label: string
+  /** Chip icon family; the host picks its own default when omitted. */
+  appearance?: 'session' | 'file' | 'folder'
+  /** The text this chip occupies in the draft projection. */
+  clipboardText: string
+}
+
 /** The composer draft face the sidebar reaches through `ctx.conversation.input`. */
 export interface SidebarSessionInput {
   /** The live input store (draft read for append). `draftRev` is the machine's
-   *  span-CAS revision — required to mint a structured file-reference chip. */
+   *  span-CAS revision — required to mint a structured reference chip. */
   state: {
     getSnapshot(): {
       draft: string
@@ -689,11 +704,18 @@ export interface SidebarSessionInput {
        * Absent on hosts without the chip channel.
        */
       occurrences?: readonly SidebarSessionOccurrence[]
-      /** Admission phase; `adjudicating`/`submitting` freeze draft writes. */
-      phase?: string
     }
   }
-  /** Replace the draft text (the input machine's single public write path). */
+  /**
+   * Replace the trigger span with one reference chip (span-CAS'd). The host
+   * runs its own admission-phase and revision guards and reports whether the
+   * edit applied. Absent on hosts without the chip channel.
+   */
+  insertReference?(
+    ref: SidebarReferenceInsert,
+    span: { start: number; end: number; draftRev: number },
+  ): boolean
+  /** Replace the draft text — flattens every existing chip into its text. */
   setDraft(text: string): void
 }
 
