@@ -32,8 +32,42 @@
  * separating space on the left, so stacked inserts stay at their running
  * position (A|B + C + D → ACD|B).
  */
-import type { Context, SidebarConversation } from '../context-types.ts'
+import type {
+  Context,
+  SidebarConversation,
+  SidebarSessionInput,
+  SidebarSessionOccurrence,
+} from '../context-types.ts'
 import { baseName, workspaceRelativePath } from './paths.ts'
+
+/**
+ * One structured reference to insert as a chip: the compact `label` the
+ * composer shows, and the `text` the model receives on send. The two are
+ * deliberately different — a selection reads as `docs/a.md:12-15` on screen
+ * while the model still gets the whole fenced block.
+ */
+export interface DraftReference {
+  label: string
+  text: string
+  /**
+   * What the draft string carries for this chip (the clipboard projection).
+   * Defaults to `label`; a file reference spells its `@path` here instead.
+   * Keep it short: this is the form a remounted session re-seeds the draft
+   * from, and it cannot be turned back into a chip.
+   */
+  clipboardText?: string
+}
+
+/** The composer shell state one chip insert is minted against. */
+type ComposerSnapshot = ReturnType<SidebarSessionInput['state']['getSnapshot']>
+
+/** The host's reference-insertion payload (see `ReferenceInsert` in dsh-client-ui-conversation). */
+interface ChipReference {
+  ref: string
+  label: string
+  appearance?: 'file' | 'folder' | 'session'
+  clipboardText: string
+}
 
 /** A resolved composer caret/selection in draft coordinates. */
 export interface DraftCaret {
@@ -162,6 +196,104 @@ export function placeComposerCaretAfterInsert(expectedDraft: string, caretIndex:
 }
 
 /**
+ * Fold one clipboard-projection offset to its detect-projection twin.
+ *
+ * The host maintains two coordinate systems over the same document: the
+ * clipboard projection (`InputState.draft`, `occurrences`) expands every chip
+ * to its whole `clipboardText`, while the detect projection — the one every
+ * insert/replace event's `span` must speak — collapses each chip to a single
+ * placeholder character. Deriving a span from a draft offset without folding
+ * therefore overshoots by `length - 1` per chip, and the host rejects the
+ * out-of-range span (`applied = false`) — the second chip insert of a session
+ * would silently fail.
+ *
+ * An offset inside a chip's expansion snaps to that chip's trailing edge: the
+ * host only ever replaces whole chips, never splits one. An offset exactly at
+ * a chip's START resolves to the position BEFORE the chip — the host's own
+ * `detectOffsetOfClipboardOffset` reads that case as "inside" and returns the
+ * trailing edge, which would move a caret one chip too far right.
+ */
+export function foldClipboardOffset(
+  draft: string,
+  occurrences: readonly SidebarSessionOccurrence[],
+  offset: number,
+): number {
+  const target = Math.max(0, Math.min(offset, draft.length))
+  let shrink = 0
+  for (const occurrence of occurrences) {
+    const end = occurrence.offset + occurrence.length
+    if (target >= end) {
+      // The whole chip sits at or before the offset: it contributes one
+      // character instead of its expansion.
+      shrink += occurrence.length - 1
+      continue
+    }
+    if (target > occurrence.offset) {
+      // Inside the chip's expansion — the host only replaces whole chips, so
+      // snap to this chip's trailing edge.
+      return Math.max(0, occurrence.offset - shrink + 1)
+    }
+    break
+  }
+  return Math.max(0, target - shrink)
+}
+
+/**
+ * Mint one reference chip through the host's own insert event (the same
+ * `slash/input-insert-reference` channel the native `@` picker uses), so the
+ * composer shows a compact chip while the model receives `reference.text`.
+ *
+ * The chip's `clipboardText` is the compact `label`, not the full payload:
+ * the clipboard projection is what survives a session remount (the host
+ * re-seeds a draft from that string), and a full fenced block there would
+ * re-expand into the very wall of text this chip exists to avoid. The model
+ * text rides in `ref`, which is serialized back to its full form on send.
+ *
+ * Returns false when the host refused the insert (stale revision, a frozen
+ * submission phase, or no chip channel at all) so the caller can fall back.
+ */
+export function insertDraftReference(
+  ctx: Context,
+  sessionId: string,
+  reference: DraftReference,
+): boolean {
+  try {
+    const actx = ctx.sessions.scope(sessionId)
+    if (actx === undefined) return false
+    const conversation = ctx.get('conversation') as SidebarConversation | undefined
+    if (conversation === undefined) return false
+    const input = conversation.input.for(actx)
+    const before: ComposerSnapshot = input.state.getSnapshot()
+    if (before.draftRev === undefined) return false
+    // Mirrors the host's own admission whitelist; a frozen composer refuses
+    // every draft write, chip or plain text alike.
+    if (before.phase !== undefined && before.phase !== 'plain' && before.phase !== 'claimed') return false
+    const occurrences = before.occurrences ?? []
+    // Chips always append at the document end (there is no caret API and the
+    // composer is a contenteditable, not a textarea — `probeComposerCaret`
+    // never resolves one), so the span is the folded end position.
+    const at = foldClipboardOffset(before.draft, occurrences, before.draft.length)
+    const chip: ChipReference = {
+      ref: reference.text,
+      label: reference.label,
+      appearance: 'file',
+      clipboardText: reference.clipboardText ?? reference.label,
+    }
+    // The session-scope Context's typed `emit` is keyed to DSH's closed event
+    // map; this internal composer event is deliberately string-loose at runtime.
+    ;(actx as unknown as { emit(name: string, payload: unknown): void }).emit('slash/input-insert-reference', {
+      reference: { source: 'reference', ...chip },
+      span: { draftRev: before.draftRev, start: at, end: at },
+    })
+    const after: ComposerSnapshot = input.state.getSnapshot()
+    return after.draftRev !== before.draftRev
+  } catch (error) {
+    console.warn('[dsh-better-sidebar] reference chip insert failed:', error)
+    return false
+  }
+}
+
+/**
  * Insert `text` into the session's composer draft at the composer's live
  * caret (see {@link probeComposerCaret}), falling back to appending at the
  * end when the caret cannot be resolved. Returns false — and logs — when the
@@ -180,9 +312,27 @@ export function appendToDraft(ctx: Context, sessionId: string, text: string): bo
       return false
     }
     const input = conversation.input.for(actx)
-    const draft = input.state.getSnapshot().draft
+    const snapshot = input.state.getSnapshot()
+    const draft = snapshot.draft
+    const occurrences = snapshot.occurrences ?? []
     const caret = probeComposerCaret(draft)
     const { draft: next, caretAfter } = spliceInsert(draft, text, caret)
+    if (occurrences.length > 0) {
+      // `setDraft` rebuilds the document from a plain string, which flattens
+      // every existing chip into its text — so on a draft that already
+      // carries chips, insert through the span event instead. The separator
+      // is the same one `spliceInsert` would have added on the left.
+      const at = foldClipboardOffset(draft, occurrences, caret === null ? draft.length : caret.start)
+      const lead = caret === null
+        ? (draft.trim() === '' || /\s$/.test(draft) ? '' : ' ')
+        : (caret.start === 0 || /\s$/.test(draft.slice(0, caret.start)) ? '' : ' ')
+      const actxEmit = actx as unknown as { emit(name: string, payload: unknown): void }
+      actxEmit.emit('slash/input-insert-text', {
+        text: `${lead}${text}`,
+        span: { draftRev: snapshot.draftRev, start: at, end: at },
+      })
+      return input.state.getSnapshot().draftRev !== snapshot.draftRev
+    }
     input.setDraft(next)
     // Put the caret right after the inserted text once the value commit
     // lands — see the module doc for why this keeps stacked inserts at the
@@ -281,34 +431,9 @@ export function insertWorkspaceReference(ctx: Context, sessionId: string, path: 
 export function insertFileReference(ctx: Context, sessionId: string, relativePath: string): boolean {
   const reference = mentionFor(relativePath, 'file')
   if (reference === undefined) return false
-  try {
-    const actx = ctx.sessions.scope(sessionId)
-    if (actx === undefined) return false
-    const conversation = ctx.get('conversation') as SidebarConversation | undefined
-    if (conversation === undefined) return false
-    const input = conversation.input.for(actx)
-    const before = input.state.getSnapshot()
-    if (before.draftRev === undefined) return false
-    // The session-scope Context's typed `emit` is keyed to DSH's closed event
-    // map; this internal composer event is deliberately string-loose at runtime.
-    ;(actx as unknown as { emit(name: string, payload: unknown): void }).emit('slash/input-insert-reference', {
-      reference: {
-        source: 'reference',
-        ref: reference.mention,
-        label: reference.label,
-        appearance: 'file',
-        clipboardText: reference.mention,
-      },
-      span: {
-        draftRev: before.draftRev,
-        start: before.draft.length,
-        end: before.draft.length,
-      },
-    })
-    const after = input.state.getSnapshot()
-    return after.draftRev !== before.draftRev
-  } catch (error) {
-    console.warn('[dsh-better-sidebar] file-reference insert failed:', error)
-    return false
-  }
+  return insertDraftReference(ctx, sessionId, {
+    label: reference.label,
+    text: reference.mention,
+    clipboardText: reference.mention,
+  })
 }

@@ -38,7 +38,7 @@ import { cmSurfaceTheme, CmThemeCompartment } from './cm-themes.ts'
 import { cmSearchExtensions, CmSearchPhrases } from './cm-search.ts'
 import { isDarkScheme, subscribeColorScheme } from './theme.ts'
 import { SandboxStatusBar } from './SandboxStatusBar.tsx'
-import { appendToDraft } from './conversation-draft.ts'
+import { appendToDraft, insertDraftReference, type DraftReference } from './conversation-draft.ts'
 import { useSelectionPopup } from './selection-popup.ts'
 import { buildSelectionInsert, linesOfSelection } from './selection-payload.ts'
 import { analyzeMarkdownHtml } from './markdown-html.ts'
@@ -220,8 +220,14 @@ export function TextEditor(props: FileViewerProps) {
    * listeners (outside mousedown, Escape, hidden tab/window, surface
    * leaving the viewport) — see selection-popup.ts.
    */
-  const selectionPopup = useSelectionPopup({
-    onCommit: (insert) => { appendToDraft(ctx, scope.sessionId, insert) },
+  const selectionPopup = useSelectionPopup<DraftReference>({
+    // The chip is the whole point of this surface: the composer shows one
+    // compact `path:lines` reference while the model still receives the full
+    // quoted body. A host without the chip channel falls back to plain text.
+    onCommit: (insert) => {
+      if (insertDraftReference(ctx, scope.sessionId, insert)) return
+      appendToDraft(ctx, scope.sessionId, insert.text)
+    },
     // The surface that must stay on screen: the markdown preview container
     // in preview mode, the CodeMirror host otherwise.
     getSurface: () => (markdown && mode === 'preview' ? mdRef.current : hostRef.current),

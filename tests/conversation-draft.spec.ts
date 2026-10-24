@@ -12,7 +12,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Context } from '../src/context-types.ts'
 import {
   appendToDraft,
+  foldClipboardOffset,
   insertAtCaret,
+  insertDraftReference,
   placeComposerCaretAfterInsert,
   probeComposerCaret,
 } from '../src/client/conversation-draft.ts'
@@ -245,5 +247,182 @@ describe('appendToDraft', () => {
     expect(appendToDraft(ctx, 's1', 'X')).toBe(false)
     expect(consoleWarn).toHaveBeenCalledTimes(1)
     consoleWarn.mockRestore()
+  })
+})
+
+describe('foldClipboardOffset', () => {
+  // 'ab' + chip('docs/a.md:12') + ' cd' — the clipboard projection expands the
+  // chip; the detect projection collapses it to one character.
+  const draft = 'abdocs/a.md:12 cd'
+  const occurrences = [{ offset: 2, length: 12 }]
+
+  it('leaves an offset alone when the draft carries no chips', () => {
+    expect(foldClipboardOffset('abcdef', [], 4)).toBe(4)
+  })
+
+  it('leaves an offset before the first chip untouched', () => {
+    expect(foldClipboardOffset(draft, occurrences, 1)).toBe(1)
+  })
+
+  it('shrinks an offset past a chip by its expansion minus the placeholder', () => {
+    // 'ab' + 1 placeholder + ' cd'
+    expect(foldClipboardOffset(draft, occurrences, draft.length)).toBe(6)
+  })
+
+  it('lands right after the placeholder for an offset at the chip end', () => {
+    expect(foldClipboardOffset(draft, occurrences, 14)).toBe(3)
+  })
+
+  it('snaps an offset inside the chip to its trailing edge', () => {
+    expect(foldClipboardOffset(draft, occurrences, 8)).toBe(3)
+  })
+
+  it('reads an offset at the chip start as the position before it', () => {
+    expect(foldClipboardOffset(draft, occurrences, 2)).toBe(2)
+  })
+
+  it('folds several chips independently', () => {
+    // 'x' + chip('a.md:1') + ' ' + chip('b.md:2') + ' z'
+    const two = 'xa.md:1 b.md:2 z'
+    const chips = [{ offset: 1, length: 6 }, { offset: 8, length: 6 }]
+    expect(foldClipboardOffset(two, chips, two.length)).toBe(6)
+  })
+
+  it('clamps an out-of-range offset into the draft', () => {
+    expect(foldClipboardOffset('ab', [], 99)).toBe(2)
+    expect(foldClipboardOffset('ab', [], -3)).toBe(0)
+  })
+})
+
+describe('insertDraftReference', () => {
+  /** A fake composer whose revision advances on every emitted chip insert. */
+  function chipCtx(options: {
+    draft?: string
+    occurrences?: { offset: number; length: number }[]
+    phase?: string
+    draftRev?: number
+    /** Return false to simulate the host refusing the insert. */
+    accept?: boolean
+    withConversation?: boolean
+  } = {}) {
+    let draft = options.draft ?? ''
+    let draftRev = options.draftRev ?? 0
+    const emitted: { name: string; payload: unknown }[] = []
+    const input = {
+      state: {
+        getSnapshot: () => ({
+          draft,
+          draftRev,
+          occurrences: options.occurrences ?? [],
+          ...options.phase === undefined ? {} : { phase: options.phase },
+        }),
+      },
+      setDraft: (next: string): void => { draft = next; draftRev += 1 },
+    }
+    const actx = {
+      emit: (name: string, payload: unknown): void => {
+        emitted.push({ name, payload })
+        if (options.accept === false) return
+        draftRev += 1
+      },
+    }
+    const ctx = {
+      sessions: { scope: (): unknown => actx },
+      get: (name: string): unknown =>
+        options.withConversation === false || name !== 'conversation'
+          ? undefined
+          : { input: { for: (): unknown => input } },
+    } as unknown as Context
+    return { ctx, emitted, snapshot: () => ({ draft, draftRev }) }
+  }
+
+  it('emits one reference chip carrying the label and the model text apart', () => {
+    const fake = chipCtx({ draft: 'hello' })
+    expect(insertDraftReference(fake.ctx, 's1', { label: 'a.md:3', text: '```a.md:3\nx\n```' })).toBe(true)
+    expect(fake.emitted).toHaveLength(1)
+    expect(fake.emitted[0]?.name).toBe('slash/input-insert-reference')
+    expect(fake.emitted[0]?.payload).toEqual({
+      reference: {
+        source: 'reference',
+        ref: '```a.md:3\nx\n```',
+        label: 'a.md:3',
+        appearance: 'file',
+        clipboardText: 'a.md:3',
+      },
+      span: { draftRev: 0, start: 5, end: 5 },
+    })
+  })
+
+  it('folds the span past chips already in the draft', () => {
+    const fake = chipCtx({ draft: 'abdocs/a.md:12 cd', occurrences: [{ offset: 2, length: 12 }] })
+    insertDraftReference(fake.ctx, 's1', { label: 'b.md:1', text: 'B' })
+    expect((fake.emitted[0]?.payload as { span: { start: number } }).span.start).toBe(6)
+  })
+
+  it('reports false when the host refused the insert (revision unchanged)', () => {
+    const fake = chipCtx({ draft: 'x', accept: false })
+    expect(insertDraftReference(fake.ctx, 's1', { label: 'a', text: 'a' })).toBe(false)
+  })
+
+  it('reports false when the composer is frozen mid-submission', () => {
+    const fake = chipCtx({ draft: 'x', phase: 'submitting' })
+    expect(insertDraftReference(fake.ctx, 's1', { label: 'a', text: 'a' })).toBe(false)
+    expect(fake.emitted).toHaveLength(0)
+  })
+
+  it('reports false when the host has no chip channel (no draftRev)', () => {
+    const ctx = {
+      sessions: { scope: (): unknown => ({ emit: (): void => undefined }) },
+      get: (): unknown => ({ input: { for: () => ({ state: { getSnapshot: () => ({ draft: 'x' }) } }) } }),
+    } as unknown as Context
+    expect(insertDraftReference(ctx, 's1', { label: 'a', text: 'a' })).toBe(false)
+  })
+
+  it('reports false when the conversation service is missing', () => {
+    const fake = chipCtx({ withConversation: false })
+    expect(insertDraftReference(fake.ctx, 's1', { label: 'a', text: 'a' })).toBe(false)
+  })
+})
+
+describe('appendToDraft on a draft that already carries chips', () => {
+  /** A fake ctx whose setDraft would flatten the chips, plus a span emitter. */
+  function chippedCtx(draft: string, occurrences: { offset: number; length: number }[]) {
+    const emitted: { name: string; payload: unknown }[] = []
+    const setDrafts: string[] = []
+    const input = {
+      state: { getSnapshot: () => ({ draft, draftRev: 3, occurrences }) },
+      setDraft: (next: string): void => { setDrafts.push(next) },
+    }
+    const actx = { emit: (name: string, payload: unknown): void => { emitted.push({ name, payload }) } }
+    const ctx = {
+      sessions: { scope: (): unknown => actx },
+      get: (): unknown => ({ input: { for: (): unknown => input } }),
+    } as unknown as Context
+    return { ctx, emitted, setDrafts }
+  }
+
+  it('inserts through the span event instead of rebuilding the draft', () => {
+    const fake = chippedCtx('abdocs/a.md:12 cd', [{ offset: 2, length: 12 }])
+    appendToDraft(fake.ctx, 's1', 'X')
+    expect(fake.setDrafts).toEqual([])
+    expect(fake.emitted).toHaveLength(1)
+    expect(fake.emitted[0]?.name).toBe('slash/input-insert-text')
+    const payload = fake.emitted[0]?.payload as { text: string; span: { start: number; end: number } }
+    expect(payload.span).toEqual({ draftRev: 3, start: 6, end: 6 })
+    // The draft ends in 'd', so the insert carries its own separating space.
+    expect(payload.text).toBe(' X')
+  })
+
+  it('adds the separating space the draft end needs', () => {
+    const fake = chippedCtx('abdocs/a.md:12', [{ offset: 2, length: 12 }])
+    appendToDraft(fake.ctx, 's1', 'X')
+    expect((fake.emitted[0]?.payload as { text: string }).text).toBe(' X')
+  })
+
+  it('keeps the plain setDraft path when the draft has no chips', () => {
+    const fake = chippedCtx('hello', [])
+    appendToDraft(fake.ctx, 's1', 'X')
+    expect(fake.emitted).toEqual([])
+    expect(fake.setDrafts).toEqual(['hello X'])
   })
 })

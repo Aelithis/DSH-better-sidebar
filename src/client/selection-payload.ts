@@ -17,8 +17,14 @@
  *   source lines directly, so it reverse-searches the selected text in the
  *   source and only reports lines on an unambiguous hit (see
  *   {@link linesOfSelection}).
+ *
+ * The two halves travel separately: `label` is what the composer shows (one
+ * compact chip, `docs/a.md:12-15`), `text` is what the model receives (the
+ * whole fenced block). Several references in a row therefore read as a row
+ * of chips instead of filling the input box with quoted bodies.
  */
 import { relativeTo } from './paths.ts'
+import type { DraftReference } from './conversation-draft.ts'
 
 /** Max inserted selection length (UTF-16 code units, i.e. JS `.length`). */
 export const SELECTION_LIMIT = 500
@@ -41,19 +47,19 @@ export function headerOf(path: string, cwd: string | undefined, lines?: Selectio
 }
 
 /**
- * The full text appended to the composer draft for one selection.
- * Over the limit the content is dropped: the plain path line is the whole
- * payload (an empty fenced block would just occupy the draft).
+ * The composer payload for one selection: the chip label and the model text.
+ * Over the limit the content is dropped and both halves are the plain path
+ * line (an empty fenced block would just occupy the draft).
  */
 export function buildSelectionInsert(
   path: string,
   cwd: string | undefined,
   lines: SelectionLines | undefined,
   selected: string,
-): string {
+): DraftReference {
   const header = headerOf(path, cwd, lines)
-  if (selected.length > SELECTION_LIMIT) return header
-  return `\`\`\`${header}\n${selected}\n\`\`\``
+  if (selected.length > SELECTION_LIMIT) return { label: header, text: header }
+  return { label: header, text: `\`\`\`${header}\n${selected}\n\`\`\`` }
 }
 
 /** 1-based line number of a character index in a text. */
