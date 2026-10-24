@@ -577,6 +577,29 @@ test('plugin mounts into the DSH shell and survives a built-in tab sweep', async
   await expect(modal, 'Esc must close the zoom modal').toHaveCount(0, { timeout: 10_000 })
   await assertNoCrash()
 
+  // Selection references commit as CHIPS, not quoted blocks: select a line in
+  // the markdown preview, click the floating "add to conversation" button, and
+  // require the composer to hold one reference chip whose label is
+  // `path:lines` — with no fenced body anywhere in the draft. This is the
+  // whole point of the chip path: a host that ignores the reference-insert
+  // event degrades to plain text and fails right here.
+  const previewLine = pane.getByText('tail text')
+  await previewLine.click({ clickCount: 3 }) // triple-click selects the line
+  const addToChat = page.locator('button', { hasText: /添加到对话|Add to conversation/ }).first()
+  await expect(addToChat, 'selecting preview text must raise the add-to-conversation button')
+    .toBeVisible({ timeout: 10_000 })
+  await addToChat.click()
+  const composer = page.getByRole('textbox', { name: /^(Describe what you want to build|描述你想要构建)/ })
+  const chip = composer.locator('[data-lexical-decorator], [class*="reference"], [class*="chip"]').first()
+  await expect(chip, 'the selection must land in the composer as a reference chip')
+    .toBeVisible({ timeout: 10_000 })
+  await expect(chip, 'the chip label must name the file and its line span')
+    .toContainText(`${SEEDED_MD_FILE}:`, { timeout: 10_000 })
+  const draftText = await composer.innerText()
+  expect(draftText, 'the draft must not carry the quoted body the chip replaced')
+    .not.toContain('```')
+  await assertNoCrash()
+
   // README-style markdown (raw-HTML runs + TOC): open the seeded file and
   // require the full round-trip — sanitized HTML leaves (badge image as a real
   // element, active content stripped), markdown nested inside the unclosed
