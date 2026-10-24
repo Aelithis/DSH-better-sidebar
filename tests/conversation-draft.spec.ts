@@ -304,10 +304,13 @@ function composerCtx(options: {
   draft?: string
   occurrences?: { offset: number; length: number }[]
   draftRev?: number
+  phase?: 'plain' | 'adjudicating' | 'claimed' | 'submitting'
   /** Omit the `insertReference` facade (an older host without chip support). */
   withChipChannel?: boolean
   /** Return false from the facade to simulate the host refusing the insert. */
   accept?: boolean
+  /** Apply the edit, then throw — the host's own update listeners failing. */
+  throwAfterApply?: boolean
   withConversation?: boolean
 } = {}) {
   let draft = options.draft ?? ''
@@ -324,6 +327,8 @@ function composerCtx(options: {
         draft,
         ...rev === undefined ? {} : { draftRev: rev },
         occurrences: options.occurrences ?? [],
+        ...options.phase === undefined ? {} : { phase: options.phase },
+        ...options.phase !== 'claimed' ? {} : { claim: { token: '/goal ' } },
       }),
     },
     setDraft: (next: string): void => { setDrafts.push(next); draft = next; bump() },
@@ -334,6 +339,7 @@ function composerCtx(options: {
             chipInserts.push({ ref, span })
             if (options.accept === false) return false
             bump()
+            if (options.throwAfterApply === true) throw new Error('host listener blew up')
             return true
           },
         },
@@ -358,22 +364,28 @@ describe('insertDraftReference', () => {
   it('hands the host one chip carrying the label and the model text apart', () => {
     const fake = composerCtx({ draft: 'hello' })
     expect(insertDraftReference(fake.ctx, 's1', { label: 'a.md:3', text: '```a.md:3\nx\n```' })).toBe(true)
+    // `hello` ends in a non-space, so a separator is inserted first (the host
+    // only adds one after the chip) — the chip then lands one place later.
+    expect(fake.emitted).toEqual([{
+      name: 'slash/input-insert-text',
+      payload: { text: ' ', span: { draftRev: 0, start: 5, end: 5 } },
+    }])
     expect(fake.chipInserts).toEqual([{
       ref: {
         source: 'reference',
         ref: '```a.md:3\nx\n```',
         label: 'a.md:3',
-        appearance: 'file',
+        // No `appearance`: this chip's text is a fenced block, not a path.
         clipboardText: 'a.md:3',
       },
-      span: { draftRev: 0, start: 5, end: 5 },
+      span: { draftRev: 1, start: 6, end: 6 },
     }])
   })
 
   it('folds the span past chips already in the draft', () => {
     const fake = composerCtx({ draft: 'abdocs/a.md:12 cd', occurrences: [{ offset: 2, length: 12 }] })
     insertDraftReference(fake.ctx, 's1', { label: 'b.md:1', text: 'B' })
-    expect((fake.chipInserts[0]?.span as { start: number }).start).toBe(6)
+    expect((fake.chipInserts[0]?.span as { start: number }).start).toBe(7)
   })
 
   it('reports false when the host refused the insert', () => {
@@ -395,6 +407,72 @@ describe('insertDraftReference', () => {
   it('reports false when the conversation service is missing', () => {
     const fake = composerCtx({ withConversation: false })
     expect(insertDraftReference(fake.ctx, 's1', { label: 'a', text: 'a' })).toBe(false)
+  })
+
+  it('omits appearance for a reference whose text is not a path', () => {
+    const fake = composerCtx({ draft: 'hello' })
+    insertDraftReference(fake.ctx, 's1', { label: 'a.md:3', text: '```a.md:3\nx\n```' })
+    expect(fake.chipInserts[0]?.ref).not.toHaveProperty('appearance')
+  })
+
+  it('carries the appearance a path-shaped reference asks for', () => {
+    const fake = composerCtx({ draft: 'hello' })
+    insertDraftReference(fake.ctx, 's1', { label: 'a.md', text: '@a.md', appearance: 'file' })
+    expect((fake.chipInserts[0]?.ref as { appearance?: string }).appearance).toBe('file')
+  })
+
+  it('offsets past a command chip, which never appears in occurrences', () => {
+    // '/goal ' is a command chip: 6 draft characters, 1 detect character.
+    const fake = composerCtx({ draft: '/goal ', phase: 'claimed' })
+    insertDraftReference(fake.ctx, 's1', { label: 'a', text: 'a' })
+    expect((fake.chipInserts[0]?.span as { start: number }).start).toBe(1)
+  })
+
+  it('adds both the command chip and reference chips to the offset', () => {
+    // '/goal ' (1 detect) + chip 'docs/a.md:12' (1 detect) → append at 2.
+    const fake = composerCtx({
+      draft: '/goal docs/a.md:12',
+      phase: 'claimed',
+      occurrences: [{ offset: 6, length: 12 }],
+    })
+    insertDraftReference(fake.ctx, 's1', { label: 'b', text: 'b' })
+    // 2 folded positions + the reserved separator space.
+    expect((fake.chipInserts[0]?.span as { start: number }).start).toBe(3)
+  })
+
+  it('reports false while the submission is frozen', () => {
+    const fake = composerCtx({ draft: 'x', phase: 'submitting' })
+    expect(insertDraftReference(fake.ctx, 's1', { label: 'a', text: 'a' })).toBe(false)
+    expect(fake.chipInserts).toEqual([])
+  })
+
+  it('reports true when the host applied the edit and then threw', () => {
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const fake = composerCtx({ draft: 'x', throwAfterApply: true })
+    expect(insertDraftReference(fake.ctx, 's1', { label: 'a', text: 'a' })).toBe(true)
+    consoleWarn.mockRestore()
+  })
+
+  it('reserves a separator so the chip cannot stick to the last word', () => {
+    // The host adds a space after a chip but not before it.
+    const fake = composerCtx({ draft: 'hello' })
+    insertDraftReference(fake.ctx, 's1', { label: 'a.md:3', text: 'A' })
+    expect(fake.emitted[0]?.payload).toMatchObject({ text: ' ' })
+    expect((fake.chipInserts[0]?.span as { start: number }).start).toBe(6)
+  })
+
+  it('reserves no separator when the draft already ends in whitespace', () => {
+    const fake = composerCtx({ draft: 'hello ' })
+    insertDraftReference(fake.ctx, 's1', { label: 'a.md:3', text: 'A' })
+    expect(fake.emitted).toEqual([])
+    expect((fake.chipInserts[0]?.span as { start: number }).start).toBe(6)
+  })
+
+  it('reserves no separator on an empty draft', () => {
+    const fake = composerCtx({ draft: '' })
+    insertDraftReference(fake.ctx, 's1', { label: 'a.md:3', text: 'A' })
+    expect(fake.emitted).toEqual([])
+    expect((fake.chipInserts[0]?.span as { start: number }).start).toBe(0)
   })
 })
 
@@ -422,5 +500,16 @@ describe('appendToDraft on a draft that already carries chips', () => {
     appendToDraft(fake.ctx, 's1', 'X')
     expect(fake.emitted).toEqual([])
     expect(fake.setDrafts).toEqual(['hello X'])
+  })
+
+  it('never flattens a command chip, even though it is not an occurrence', () => {
+    // `setDraft` would rebuild `/goal ` as literal text and drop the claim.
+    const fake = composerCtx({ draft: '/goal ', draftRev: 3, phase: 'claimed' })
+    appendToDraft(fake.ctx, 's1', 'X')
+    expect(fake.setDrafts).toEqual([])
+    expect(fake.emitted).toHaveLength(1)
+    expect(fake.emitted[0]?.name).toBe('slash/input-insert-text')
+    // '/goal ' folds to one detect character; nothing follows it.
+    expect((fake.emitted[0]?.payload as { span: { start: number } }).span.start).toBe(1)
   })
 })

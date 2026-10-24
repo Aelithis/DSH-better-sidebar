@@ -583,6 +583,12 @@ test('plugin mounts into the DSH shell and survives a built-in tab sweep', async
   // `path:lines` — with no fenced body anywhere in the draft. This is the
   // whole point of the chip path: a host that ignores the reference-insert
   // event degrades to plain text and fails right here.
+  // Seed the draft with a word that does NOT end in whitespace: the host's
+  // chip insert only adds a space after the chip, so without the plugin's own
+  // leading separator the chip would read `hello` + chip with no gap.
+  const composer = composerEditable(page)
+  await composer.click()
+  await page.keyboard.type('hello')
   const previewLine = pane.locator('p', { hasText: 'tail text' }).first()
   // A real drag selects the text and fires mouseup with the selection still
   // live; a synthetic triple-click can clear it before mouseup reaches the
@@ -597,17 +603,24 @@ test('plugin mounts into the DSH shell and survives a built-in tab sweep', async
   await expect(addToChat, 'selecting preview text must raise the add-to-conversation button')
     .toBeVisible({ timeout: 10_000 })
   await addToChat.click()
-  // The chip is a sibling decorator inside the composer's editable, not a
-  // descendant of the role=textbox node — scope the search to the composer
-  // card instead.
-  const chip = page.locator(`[data-lexical-decorator], [class*="reference"]`)
-    .filter({ hasText: `${SEEDED_MD_FILE}:` })
-    .first()
+  // `data-composer-chip` is the host's own anchor for a composer chip (its
+  // JSDoc names e2e as the reason it exists) — a bare `[class*="reference"]`
+  // match could land on any element whose hashed class happens to contain it.
+  const chip = page.locator(`[data-composer-chip]`).filter({ hasText: `${SEEDED_MD_FILE}:` }).first()
   await expect(chip, 'the selection must land in the composer as a reference chip')
     .toBeVisible({ timeout: 10_000 })
-  const composerText = await composerEditable(page).innerText()
+  // A selection chip's `ref` is a fenced block, not a path: the host must not
+  // mark it openable, or a click would hand that block to the file opener.
+  await expect(chip, 'a selection chip must not advertise itself as openable')
+    .not.toHaveClass(/openable/u)
+  const composerText = await composer.innerText()
   expect(composerText, 'the draft must not carry the quoted body the chip replaced')
     .not.toContain('```')
+  // The chip must not fuse with the word typed before it. The exact separator
+  // is the composer's business (Lexical may render it as a line break rather
+  // than a space), so assert the boundary, not the character.
+  expect(composerText, 'the chip must not stick to the word typed before it')
+    .toMatch(/hello\s/u)
   await assertNoCrash()
 
   // README-style markdown (raw-HTML runs + TOC): open the seeded file and

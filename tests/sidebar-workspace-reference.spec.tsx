@@ -92,9 +92,11 @@ describe('Sidebar workspace references', () => {
     const view = mount('/work/src', { root: '/work', chip: true })
     try {
       view.insert('/work/docs/my notes.md', false)
+      // The draft `before` ends in a non-space, so a separator is emitted
+      // first: the revision and the append offset both move one place.
       expect(view.insertReference).toHaveBeenCalledWith({
         source: 'reference', ref: '@"docs/my notes.md"', label: 'my notes.md', appearance: 'file', clipboardText: '@"docs/my notes.md"',
-      }, { draftRev: 1, start: 6, end: 6 })
+      }, { draftRev: 2, start: 7, end: 7 })
       expect(view.setDraft).not.toHaveBeenCalled()
     } finally { view.unmount() }
   })

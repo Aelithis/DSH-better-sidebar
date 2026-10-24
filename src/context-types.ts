@@ -704,6 +704,20 @@ export interface SidebarSessionInput {
        * Absent on hosts without the chip channel.
        */
       occurrences?: readonly SidebarSessionOccurrence[]
+      /**
+       * Admission phase. `claimed` means a command chip (`/goal`) heads the
+       * draft; `adjudicating`/`submitting` freeze every write. A command chip
+       * is NOT in `occurrences` (the host only collects reference chips), yet
+       * it still collapses to one character in the detect projection — so a
+       * span derived from `draft` is wrong whenever `phase === 'claimed'`.
+       */
+      phase?: 'plain' | 'adjudicating' | 'claimed' | 'submitting'
+      /**
+       * The claimed command's spelling with its trailing separator (`/goal `),
+       * present exactly while `phase` is `claimed`/`submitting`. The host
+       * treats it as one chip covering this exact draft prefix.
+       */
+      claim?: { readonly token: string }
     }
   }
   /**
