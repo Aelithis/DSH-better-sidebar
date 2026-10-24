@@ -7,7 +7,7 @@
  * Mounted by {@link GitLens} on the repo/worktree target the lens has already
  * selected; it owns its own bounded page (`git.graph`) and reports the
  * selected commit upward for the tab's bottom pane (`details` tab). */
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import {
   Button, IconBranchOutlineRegular, IconCheckOutlineRegular, IconGlobeOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives'
@@ -17,6 +17,8 @@ import { relativeTime, t } from '../locales.ts'
 import { Notice } from '../ui/index.ts'
 import { AnchoredPopover } from '../AnchoredPopover.tsx'
 import { edgePath, layoutGraph } from './graph-layout.ts'
+import { createFrameBatcher } from '../frame-batcher.ts'
+import { windowedRange } from './git-graph-windowing.ts'
 import css from './graph.module.css'
 
 type GraphPage = Awaited<ReturnType<typeof api.gitGraph>>
@@ -138,6 +140,47 @@ export function GitGraphSection({ scope, worktree, visible, refreshTick = 0, onP
   const appending = useRef(false)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const sentinelRef = useRef<HTMLDivElement | null>(null)
+  /**
+   * The scroll container's measured viewport, and the per-frame coalescer that
+   * keeps it in step with a scroll stream (a trackpad fires several scroll
+   * events per display frame; one commit per frame is enough to move the
+   * window, and each commit reads layout once).
+   */
+  const [view, setView] = useState({ scrollTop: 0, height: 0 })
+  const scrollBatcher = useRef(createFrameBatcher()).current
+  const syncWindow = useCallback((): void => {
+    const node = scrollRef.current
+    if (node === null) return
+    const scrollTop = node.scrollTop
+    const height = node.clientHeight
+    setView(current => (current.scrollTop === scrollTop && current.height === height
+      ? current
+      : { scrollTop, height }))
+  }, [])
+  // A page append/shrink changes the content under the scroll position; the
+  // browser clamps a stale scrollTop only after the DOM commit, so re-read it
+  // in the layout phase. The pure range function clamps anyway.
+  useLayoutEffect(() => { syncWindow() }, [syncWindow, page?.entries.length])
+  // A panel resize (the details pane opening, a window resize, the sidebar
+  // width drag) changes how many rows fit: re-measure so the mounted window
+  // still covers the viewport instead of leaving a blank band. A HIDDEN
+  // section holds no observer (AGENTS steady-state rule) — the effect depends
+  // on `visible`, re-measures on the way back, and drops any frame it had
+  // queued.
+  useEffect(() => {
+    if (!visible) return
+    const node = scrollRef.current
+    if (node === null) return
+    syncWindow()
+    if (typeof ResizeObserver === 'undefined') return () => { scrollBatcher.dispose() }
+    const observer = new ResizeObserver(() => { syncWindow() })
+    observer.observe(node)
+    return () => {
+      scrollBatcher.dispose()
+      observer.disconnect()
+    }
+  }, [scrollBatcher, syncWindow, visible])
+  useEffect(() => () => { scrollBatcher.dispose() }, [scrollBatcher])
   /** Row hover preview: the middle information rung between the one-line row
    *  (pills + subject) and the details card (everything). It opens only after
    *  a short dwell so scrolling past rows never flashes cards; the pointer
@@ -227,6 +270,12 @@ export function GitGraphSection({ scope, worktree, visible, refreshTick = 0, onP
 
   const rows = useMemo(() => layoutGraph(page?.entries ?? []), [page?.entries])
   const width = Math.max(28, ...rows.map(row => laneX(row.laneCount) + 2))
+  const range = windowedRange({
+    count: page?.entries.length ?? 0,
+    rowHeight: ROW_HEIGHT,
+    scrollTop: view.scrollTop,
+    viewportHeight: view.height,
+  })
   const remotes = useMemo(() => remoteRefNames(branches), [branches])
   const selectedIndex = selectedRef?.kind === 'commit'
     && selectedRef.worktree === worktree
@@ -262,7 +311,8 @@ export function GitGraphSection({ scope, worktree, visible, refreshTick = 0, onP
     setPage(null)
   }
 
-  return <section className={css.root} aria-label={t('gitGraph')} data-git-graph>
+  return <section className={css.root} aria-label={t('gitGraph')} data-git-graph
+    data-graph-count={page?.entries.length ?? 0}>
     <div className={css.toolbar}>
       <select className={css.select} aria-label={t('graphBranchFilter')}
         value={branch} onChange={event => { chooseBranch(event.target.value) }}>
@@ -271,14 +321,21 @@ export function GitGraphSection({ scope, worktree, visible, refreshTick = 0, onP
         {branch && !branches.some(item => item.ref === branch) && <option value={branch}>{branch}</option>}
       </select>
     </div>
-    <div className={css.scroll} aria-busy={loading} ref={scrollRef}>
+    <div className={css.scroll} aria-busy={loading} ref={scrollRef} data-graph-scroll
+      onScroll={() => {
+        // The window may unmount the row the hover card is anchored to.
+        if (hover !== null || hoverTimer.current !== null) cancelHover()
+        scrollBatcher.schedule(syncWindow)
+      }}>
       {error !== null && <div className={css.notice} role="alert">
         <Notice kind="warn">{stale ? t('graphStale') : t('graphLoadError')}{!stale && `: ${error}`}</Notice>
         <Button onClick={() => { if (stale || !failedAppend.current) setRetry(value => value + 1); else void request(true) }}>{t('retry')}</Button>
       </div>}
       {loading && <div className={css.notice} role="status">{t('loading')}</div>}
       {!loading && !error && page !== null && page.entries.length === 0 && <div className={css.notice}>{t(page.isRepo ? 'graphEmpty' : 'notRepo')}</div>}
-      {page?.entries.map((entry, index) => {
+      {range.top > 0 && <div aria-hidden="true" data-graph-spacer="top" style={{ height: range.top }} />}
+      {page?.entries.slice(range.start, range.end).map((entry, offset) => {
+        const index = range.start + offset
         const row = rows[index]!
         const slot = colorSlot(row.colorIndex)
         return <button key={entry.hashFull} type="button" className={css.row}
@@ -302,6 +359,7 @@ export function GitGraphSection({ scope, worktree, visible, refreshTick = 0, onP
           <span className={css.subject}>{entry.subject}</span>
         </button>
       })}
+      {range.bottom > 0 && <div aria-hidden="true" data-graph-spacer="bottom" style={{ height: range.bottom }} />}
       {page?.hasMore && !stale && <div className={css.notice} ref={sentinelRef} data-graph-sentinel>
         <Button disabled={loading} onClick={() => { void request(true) }}>{t('graphLoadMore')}</Button>
       </div>}

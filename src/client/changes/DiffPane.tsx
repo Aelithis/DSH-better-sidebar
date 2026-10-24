@@ -430,18 +430,27 @@ export function DiffPane({ target, ctx, scope, height, onHeightCommit, onClose, 
     [htmlOp, scope, contentAbs],
   )
 
-  // Header stats for git targets come off the parsed patch text.
-  const gitStats = useMemo(() => {
+  /**
+   * ONE parse of the patch per target: the header stats and the file rows both
+   * read it. Parsing an ≤8MB patch twice on the UI thread (once here for the
+   * stats, once inside DiffFiles) was visible when a large commit was opened.
+   */
+  const gitParsed = useMemo(() => {
     if (target.kind !== 'git' || diffText === null || diffText === '') return null
+    return parseUnifiedDiff(diffText)
+  }, [target.kind, diffText])
+  // Header stats for git targets come off that shared parse.
+  const gitStats = useMemo(() => {
+    if (gitParsed === null) return null
     let added = 0
     let deleted = 0
-    for (const file of parseUnifiedDiff(diffText).files) {
+    for (const file of gitParsed.files) {
       const stats = diffStats(unifiedSegments(file))
       added += stats.added
       deleted += stats.deleted
     }
     return { added, deleted }
-  }, [target, diffText])
+  }, [gitParsed])
 
   // ── Resize: drag the top handle; commit on release (persisted by the
   //    shell). Arrow keys resize by a step for keyboard users. ────────────
@@ -662,6 +671,7 @@ export function DiffPane({ target, ctx, scope, height, onHeightCommit, onClose, 
                       {((diffText !== null && diffText !== '') || untracked !== undefined) && (
                         <DiffFiles
                           diff={diffText ?? ''}
+                          parsed={untracked === undefined ? gitParsed ?? undefined : undefined}
                           resolveFold={resolveFold}
                           untrackedPath={untracked !== undefined && target.ref.kind === 'worktree' ? target.ref.path : undefined}
                           untrackedContent={untracked}

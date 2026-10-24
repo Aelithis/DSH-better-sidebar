@@ -614,6 +614,122 @@ describe('Tasks page graph interactions and team board', () => {
     unmount()
   })
 
+  it('coalesces wheel zooms into one update per animation frame without losing steps', async () => {
+    const store = makeStore(snapshotWithChildren(2))
+    const { container, unmount } = renderRoot(
+      createElement(SubagentView, { sessionId: 'root', active: true, ctx: makeCtx(store) }),
+    )
+    const canvas = container.querySelector('[role="group"]') as HTMLElement
+    const inner = canvas.querySelector('div[style*="transform"]') as HTMLElement
+    const scaleOf = (style: string | null): number => Number(/scale\(([\d.]+)\)/.exec(style ?? '')?.[1] ?? NaN)
+    await act(async () => { await new Promise<void>(resolve => requestAnimationFrame(() => resolve())) })
+    const settled = inner.getAttribute('style')
+    const baseScale = scaleOf(settled)
+
+    // A trackpad reports several wheel events between two frames. None may
+    // commit on its own, and the frame must apply the SUM of the deltas (the
+    // old code re-read the drawn transform for every event, so only one step
+    // survived).
+    const steps = 5
+    await act(async () => {
+      for (let step = 0; step < steps; step += 1) {
+        canvas.dispatchEvent(new WheelEvent('wheel', {
+          deltaY: -10, clientX: 100, clientY: 100, bubbles: true, cancelable: true,
+        }))
+      }
+    })
+    expect(inner.getAttribute('style'), 'no commit before the frame').toBe(settled)
+
+    await act(async () => { await new Promise<void>(resolve => requestAnimationFrame(() => resolve())) })
+    const afterFrame = scaleOf(inner.getAttribute('style'))
+    expect(afterFrame, 'the frame applies the batch').not.toBe(baseScale)
+    // One event per frame would give base * e^0.014; the coalesced frame gives
+    // base * e^(0.014 * steps).
+    expect(afterFrame).toBeCloseTo(baseScale * Math.exp(0.014 * steps), 3)
+    unmount()
+  })
+
+  /** The canvas transform as numbers (the style is `translate(x, y) scale(k)`). */
+  function transformOf(style: string | null): { x: number; y: number; k: number } {
+    const match = /translate\(([-\d.]+)px, ([-\d.]+)px\) scale\(([\d.]+)\)/.exec(style ?? '')
+    return { x: Number(match?.[1]), y: Number(match?.[2]), k: Number(match?.[3]) }
+  }
+
+  it('makes a coalesced wheel frame equivalent to rendering each step', async () => {
+    const store = makeStore(snapshotWithChildren(2))
+    const settle = async (): Promise<void> => {
+      await act(async () => { await new Promise<void>(resolve => requestAnimationFrame(() => resolve())) })
+    }
+    const wheel = (canvas: HTMLElement, deltaY: number): void => {
+      canvas.dispatchEvent(new WheelEvent('wheel', {
+        deltaY, clientX: 200, clientY: 200, bubbles: true, cancelable: true,
+      }))
+    }
+    const mount = (): { canvas: HTMLElement; inner: HTMLElement; unmount: () => void } => {
+      const rendered = renderRoot(
+        createElement(SubagentView, { sessionId: 'root', active: true, ctx: makeCtx(store) }),
+      )
+      const canvas = rendered.container.querySelector('[role="group"]') as HTMLElement
+      const inner = canvas.querySelector('div[style*="transform"]') as HTMLElement
+      return { canvas, inner, unmount: rendered.unmount }
+    }
+
+    // One event per frame: the reference the coalesced frame must match.
+    const sequential = mount()
+    await settle()
+    // Zoom out far enough that the first step hits the pan bound (PAN_KEEP=72
+    // with a zero-width jsdom canvas), then zoom back in around the same point.
+    await act(async () => { wheel(sequential.canvas, 990) })
+    await settle()
+    await act(async () => { wheel(sequential.canvas, -290) })
+    await settle()
+    const stepwise = transformOf(sequential.inner.getAttribute('style'))
+    sequential.unmount()
+
+    // Both events in one frame must compose to the SAME transform. Clamping
+    // only the final value (instead of each step) lands elsewhere once the
+    // intermediate transform hit a pan bound.
+    const batched = mount()
+    await settle()
+    await act(async () => { wheel(batched.canvas, 990); wheel(batched.canvas, -290) })
+    await settle()
+    const composed = transformOf(batched.inner.getAttribute('style'))
+    batched.unmount()
+
+    expect(composed.k).toBeCloseTo(stepwise.k, 5)
+    expect(composed.x).toBeCloseTo(stepwise.x, 5)
+    expect(composed.y).toBeCloseTo(stepwise.y, 5)
+  })
+
+  it('lets a background pan own the gesture: a wheel mid-drag is ignored', async () => {
+    const store = makeStore(snapshotWithChildren(2))
+    const { container, unmount } = renderRoot(
+      createElement(SubagentView, { sessionId: 'root', active: true, ctx: makeCtx(store) }),
+    )
+    const canvas = container.querySelector('[role="group"]') as HTMLElement
+    const inner = canvas.querySelector('div[style*="transform"]') as HTMLElement
+    await act(async () => { await new Promise<void>(resolve => requestAnimationFrame(() => resolve())) })
+
+    await act(async () => {
+      canvas.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 5, clientY: 5 }))
+      window.dispatchEvent(new MouseEvent('pointermove', { bubbles: true, clientX: 205, clientY: 205 }))
+    })
+    await act(async () => { await new Promise<void>(resolve => requestAnimationFrame(() => resolve())) })
+    const dragged = inner.getAttribute('style')
+
+    await act(async () => {
+      canvas.dispatchEvent(new WheelEvent('wheel', {
+        deltaY: -200, clientX: 100, clientY: 100, bubbles: true, cancelable: true,
+      }))
+    })
+    await act(async () => { await new Promise<void>(resolve => requestAnimationFrame(() => resolve())) })
+    expect(inner.getAttribute('style'), 'the pan gesture owns the transform').toBe(dragged)
+
+    await act(async () => { window.dispatchEvent(new MouseEvent('pointerup', { bubbles: true })) })
+    expect(inner.getAttribute('style')).toBe(dragged)
+    unmount()
+  })
+
   it('activates a graph node after a background pointerdown (no click theft)', async () => {
     const navigation: NavigationSpy = { opened: [] }
     const store = makeStore(snapshotWithChildren(1))
