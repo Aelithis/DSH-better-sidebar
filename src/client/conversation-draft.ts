@@ -326,6 +326,12 @@ export function appendToDraft(ctx: Context, sessionId: string, text: string): bo
       const lead = caret === null
         ? (draft.trim() === '' || /\s$/.test(draft) ? '' : ' ')
         : (caret.start === 0 || /\s$/.test(draft.slice(0, caret.start)) ? '' : ' ')
+      if (snapshot.draftRev === undefined) {
+        // No revision means no span channel either — the only remaining write
+        // path (`setDraft`) would flatten every chip, so refuse instead.
+        console.warn('[dsh-better-sidebar] draft insert skipped: chip draft without a revision')
+        return false
+      }
       const actxEmit = actx as unknown as { emit(name: string, payload: unknown): void }
       actxEmit.emit('slash/input-insert-text', {
         text: `${lead}${text}`,
