@@ -294,55 +294,72 @@ describe('foldClipboardOffset', () => {
   })
 })
 
-describe('insertDraftReference', () => {
-  /** A fake composer whose revision advances on every emitted chip insert. */
-  function chipCtx(options: {
-    draft?: string
-    occurrences?: { offset: number; length: number }[]
-    phase?: string
-    draftRev?: number
-    /** Return false to simulate the host refusing the insert. */
-    accept?: boolean
-    withConversation?: boolean
-  } = {}) {
-    let draft = options.draft ?? ''
-    let draftRev = options.draftRev ?? 0
-    const emitted: { name: string; payload: unknown }[] = []
-    const input = {
-      state: {
-        getSnapshot: () => ({
-          draft,
-          draftRev,
-          occurrences: options.occurrences ?? [],
-          ...options.phase === undefined ? {} : { phase: options.phase },
-        }),
-      },
-      setDraft: (next: string): void => { draft = next; draftRev += 1 },
-    }
-    const actx = {
-      emit: (name: string, payload: unknown): void => {
-        emitted.push({ name, payload })
-        if (options.accept === false) return
-        draftRev += 1
-      },
-    }
-    const ctx = {
-      sessions: { scope: (): unknown => actx },
-      get: (name: string): unknown =>
-        options.withConversation === false || name !== 'conversation'
-          ? undefined
-          : { input: { for: (): unknown => input } },
-    } as unknown as Context
-    return { ctx, emitted, snapshot: () => ({ draft, draftRev }) }
+/**
+ * A fake composer exposing the conversation face these two functions use:
+ * the snapshot store, the `insertReference` facade, and the session-scope
+ * `emit` the span channel goes through. Every write records what it was
+ * called with so a test can assert which channel ran.
+ */
+function composerCtx(options: {
+  draft?: string
+  occurrences?: { offset: number; length: number }[]
+  draftRev?: number
+  /** Omit the `insertReference` facade (an older host without chip support). */
+  withChipChannel?: boolean
+  /** Return false from the facade to simulate the host refusing the insert. */
+  accept?: boolean
+  withConversation?: boolean
+} = {}) {
+  let draft = options.draft ?? ''
+  // `draftRev: undefined` is a meaningful case (a host with no revision), so
+  // only an absent key takes the default.
+  let rev: number | undefined = 'draftRev' in options ? options.draftRev : 0
+  const bump = (): void => { if (rev !== undefined) rev += 1 }
+  const setDrafts: string[] = []
+  const emitted: { name: string; payload: unknown }[] = []
+  const chipInserts: { ref: unknown; span: unknown }[] = []
+  const input = {
+    state: {
+      getSnapshot: () => ({
+        draft,
+        ...rev === undefined ? {} : { draftRev: rev },
+        occurrences: options.occurrences ?? [],
+      }),
+    },
+    setDraft: (next: string): void => { setDrafts.push(next); draft = next; bump() },
+    ...options.withChipChannel === false
+      ? {}
+      : {
+          insertReference: (ref: unknown, span: unknown): boolean => {
+            chipInserts.push({ ref, span })
+            if (options.accept === false) return false
+            bump()
+            return true
+          },
+        },
   }
+  const actx = {
+    emit: (name: string, payload: unknown): void => {
+      emitted.push({ name, payload })
+      bump()
+    },
+  }
+  const ctx = {
+    sessions: { scope: (): unknown => actx },
+    get: (name: string): unknown =>
+      options.withConversation === false || name !== 'conversation'
+        ? undefined
+        : { input: { for: (): unknown => input } },
+  } as unknown as Context
+  return { ctx, emitted, setDrafts, chipInserts }
+}
 
-  it('emits one reference chip carrying the label and the model text apart', () => {
-    const fake = chipCtx({ draft: 'hello' })
+describe('insertDraftReference', () => {
+  it('hands the host one chip carrying the label and the model text apart', () => {
+    const fake = composerCtx({ draft: 'hello' })
     expect(insertDraftReference(fake.ctx, 's1', { label: 'a.md:3', text: '```a.md:3\nx\n```' })).toBe(true)
-    expect(fake.emitted).toHaveLength(1)
-    expect(fake.emitted[0]?.name).toBe('slash/input-insert-reference')
-    expect(fake.emitted[0]?.payload).toEqual({
-      reference: {
+    expect(fake.chipInserts).toEqual([{
+      ref: {
         source: 'reference',
         ref: '```a.md:3\nx\n```',
         label: 'a.md:3',
@@ -350,59 +367,40 @@ describe('insertDraftReference', () => {
         clipboardText: 'a.md:3',
       },
       span: { draftRev: 0, start: 5, end: 5 },
-    })
+    }])
   })
 
   it('folds the span past chips already in the draft', () => {
-    const fake = chipCtx({ draft: 'abdocs/a.md:12 cd', occurrences: [{ offset: 2, length: 12 }] })
+    const fake = composerCtx({ draft: 'abdocs/a.md:12 cd', occurrences: [{ offset: 2, length: 12 }] })
     insertDraftReference(fake.ctx, 's1', { label: 'b.md:1', text: 'B' })
-    expect((fake.emitted[0]?.payload as { span: { start: number } }).span.start).toBe(6)
+    expect((fake.chipInserts[0]?.span as { start: number }).start).toBe(6)
   })
 
-  it('reports false when the host refused the insert (revision unchanged)', () => {
-    const fake = chipCtx({ draft: 'x', accept: false })
+  it('reports false when the host refused the insert', () => {
+    const fake = composerCtx({ draft: 'x', accept: false })
     expect(insertDraftReference(fake.ctx, 's1', { label: 'a', text: 'a' })).toBe(false)
   })
 
-  it('reports false when the composer is frozen mid-submission', () => {
-    const fake = chipCtx({ draft: 'x', phase: 'submitting' })
+  it('reports false when the host has no chip facade', () => {
+    const fake = composerCtx({ draft: 'x', withChipChannel: false })
     expect(insertDraftReference(fake.ctx, 's1', { label: 'a', text: 'a' })).toBe(false)
-    expect(fake.emitted).toHaveLength(0)
+    expect(fake.chipInserts).toEqual([])
   })
 
-  it('reports false when the host has no chip channel (no draftRev)', () => {
-    const ctx = {
-      sessions: { scope: (): unknown => ({ emit: (): void => undefined }) },
-      get: (): unknown => ({ input: { for: () => ({ state: { getSnapshot: () => ({ draft: 'x' }) } }) } }),
-    } as unknown as Context
-    expect(insertDraftReference(ctx, 's1', { label: 'a', text: 'a' })).toBe(false)
+  it('reports false when the host exposes no draft revision', () => {
+    const fake = composerCtx({ draft: 'x', draftRev: undefined })
+    expect(insertDraftReference(fake.ctx, 's1', { label: 'a', text: 'a' })).toBe(false)
   })
 
   it('reports false when the conversation service is missing', () => {
-    const fake = chipCtx({ withConversation: false })
+    const fake = composerCtx({ withConversation: false })
     expect(insertDraftReference(fake.ctx, 's1', { label: 'a', text: 'a' })).toBe(false)
   })
 })
 
 describe('appendToDraft on a draft that already carries chips', () => {
-  /** A fake ctx whose setDraft would flatten the chips, plus a span emitter. */
-  function chippedCtx(draft: string, occurrences: { offset: number; length: number }[]) {
-    const emitted: { name: string; payload: unknown }[] = []
-    const setDrafts: string[] = []
-    const input = {
-      state: { getSnapshot: () => ({ draft, draftRev: 3, occurrences }) },
-      setDraft: (next: string): void => { setDrafts.push(next) },
-    }
-    const actx = { emit: (name: string, payload: unknown): void => { emitted.push({ name, payload }) } }
-    const ctx = {
-      sessions: { scope: (): unknown => actx },
-      get: (): unknown => ({ input: { for: (): unknown => input } }),
-    } as unknown as Context
-    return { ctx, emitted, setDrafts }
-  }
-
   it('inserts through the span event instead of rebuilding the draft', () => {
-    const fake = chippedCtx('abdocs/a.md:12 cd', [{ offset: 2, length: 12 }])
+    const fake = composerCtx({ draft: 'abdocs/a.md:12 cd', draftRev: 3, occurrences: [{ offset: 2, length: 12 }] })
     appendToDraft(fake.ctx, 's1', 'X')
     expect(fake.setDrafts).toEqual([])
     expect(fake.emitted).toHaveLength(1)
@@ -414,13 +412,13 @@ describe('appendToDraft on a draft that already carries chips', () => {
   })
 
   it('adds the separating space the draft end needs', () => {
-    const fake = chippedCtx('abdocs/a.md:12', [{ offset: 2, length: 12 }])
+    const fake = composerCtx({ draft: 'abdocs/a.md:12', draftRev: 3, occurrences: [{ offset: 2, length: 12 }] })
     appendToDraft(fake.ctx, 's1', 'X')
     expect((fake.emitted[0]?.payload as { text: string }).text).toBe(' X')
   })
 
   it('keeps the plain setDraft path when the draft has no chips', () => {
-    const fake = chippedCtx('hello', [])
+    const fake = composerCtx({ draft: 'hello', draftRev: 3 })
     appendToDraft(fake.ctx, 's1', 'X')
     expect(fake.emitted).toEqual([])
     expect(fake.setDrafts).toEqual(['hello X'])

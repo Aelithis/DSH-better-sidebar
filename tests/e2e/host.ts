@@ -201,6 +201,17 @@ export async function hostRpc<T = unknown>(
 }
 
 /**
+ * The host composer's editable. Role+name, not `[contenteditable="true"]`:
+ * the plugin's own CodeMirror surface is also contenteditable (and stays in
+ * the DOM, merely hidden, in preview mode), so a bare attribute match is
+ * DOM-order dependent.
+ * @param page - the lane's page.
+ */
+export function composerLocator(page: Page) {
+  return page.getByRole('textbox', { name: /^(Describe what you want to build|描述你想要构建)/ })
+}
+
+/**
  * Send one message in the session the shell opened, so the conversation header
  * (and the native right Sidebar's corner control) exists: DSH renders the
  * header only for a session with content, while a freshly seeded blank
@@ -212,7 +223,7 @@ export async function hostRpc<T = unknown>(
  * @param page - the lane's page.
  */
 export async function sendFirstMessage(page: Page): Promise<void> {
-  const composer = page.getByRole('textbox', { name: /^(Describe what you want to build|描述你想要构建)/ })
+  const composer = composerLocator(page)
   await expect(composer).toBeVisible({ timeout: 60_000 })
   await composer.click()
   await page.keyboard.type('mount lane smoke')

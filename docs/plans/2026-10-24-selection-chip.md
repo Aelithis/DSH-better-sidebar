@@ -62,6 +62,6 @@
 
 ## 6. 已知边界
 
-- 气泡的 `clipboardText` 与 `ref` 都是 `label`（文件引用另存 `@path`），宿主提交前 `trim`。
+- 气泡的 `clipboardText` 取 `label`（文件引用另取 `@path`），`ref` 存发送用的完整正文，宿主提交前 `trim`。
 - 全空白草稿上插入会留一个前导空格（宿主只允许整气泡替换）。
 - 气泡路径不调用 `placeComposerCaretAfterInsert`：宿主事件本身接管光标，DOM 光标恢复只服务 `setDraft` 那条路径。
