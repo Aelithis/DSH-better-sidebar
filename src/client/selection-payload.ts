@@ -18,10 +18,10 @@
  *   source and only reports lines on an unambiguous hit (see
  *   {@link linesOfSelection}).
  *
- * The two halves travel separately (see {@link DraftReference}).
+ * The two halves travel separately (see {@link PendingReference}).
  */
 import { relativeTo } from './paths.ts'
-import type { DraftReference } from './conversation-draft.ts'
+import type { PendingReference } from './conversation-draft.ts'
 
 /** Max inserted selection length (UTF-16 code units, i.e. JS `.length`). */
 export const SELECTION_LIMIT = 500
@@ -53,7 +53,7 @@ export function buildSelectionInsert(
   cwd: string | undefined,
   lines: SelectionLines | undefined,
   selected: string,
-): DraftReference {
+): PendingReference {
   const header = headerOf(path, cwd, lines)
   if (selected.length > SELECTION_LIMIT) return { label: header, text: header }
   return { label: header, text: `\`\`\`${header}\n${selected}\n\`\`\`` }

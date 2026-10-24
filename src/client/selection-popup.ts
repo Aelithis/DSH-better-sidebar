@@ -33,13 +33,13 @@ import { useEffect, useRef, useState, type RefObject } from 'react'
  * The floating "add to conversation" action: payload + viewport anchor.
  * The payload type belongs to the caller; the hook only carries it through.
  */
-export interface SelectionPopup<T = string> {
+export interface SelectionPopup<T> {
   insert: T
   left: number
   top: number
 }
 
-export interface SelectionPopupOptions<T = string> {
+export interface SelectionPopupOptions<T> {
   /** Commit the payload into the composer draft (button click). */
   onCommit(insert: T): void
   /**
@@ -50,7 +50,7 @@ export interface SelectionPopupOptions<T = string> {
   getSurface(): HTMLElement | null
 }
 
-export interface SelectionPopupControls<T = string> {
+export interface SelectionPopupControls<T> {
   /** The current popup (null = hidden). */
   popup: SelectionPopup<T> | null
   /** Attach to the portaled button element. */
@@ -63,7 +63,7 @@ export interface SelectionPopupControls<T = string> {
   commit(): void
 }
 
-export function useSelectionPopup<T = string>(options: SelectionPopupOptions<T>): SelectionPopupControls<T> {
+export function useSelectionPopup<T>(options: SelectionPopupOptions<T>): SelectionPopupControls<T> {
   // Latest-callback refs: the dismissal listeners live for the mount's
   // lifetime, so they must not capture stale closures across renders.
   const onCommitRef = useRef(options.onCommit)

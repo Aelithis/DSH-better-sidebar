@@ -38,7 +38,7 @@ import { cmSurfaceTheme, CmThemeCompartment } from './cm-themes.ts'
 import { cmSearchExtensions, CmSearchPhrases } from './cm-search.ts'
 import { isDarkScheme, subscribeColorScheme } from './theme.ts'
 import { SandboxStatusBar } from './SandboxStatusBar.tsx'
-import { insertReferenceOrText, type DraftReference } from './conversation-draft.ts'
+import { insertReferenceOrText, type PendingReference } from './conversation-draft.ts'
 import { useSelectionPopup } from './selection-popup.ts'
 import { buildSelectionInsert, linesOfSelection } from './selection-payload.ts'
 import { analyzeMarkdownHtml } from './markdown-html.ts'
@@ -220,7 +220,7 @@ export function TextEditor(props: FileViewerProps) {
    * listeners (outside mousedown, Escape, hidden tab/window, surface
    * leaving the viewport) — see selection-popup.ts.
    */
-  const selectionPopup = useSelectionPopup<DraftReference>({
+  const selectionPopup = useSelectionPopup<PendingReference>({
     onCommit: (insert) => {
       insertReferenceOrText(ctx, scope.sessionId, insert)
     },

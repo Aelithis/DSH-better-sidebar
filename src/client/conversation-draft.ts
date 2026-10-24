@@ -33,8 +33,12 @@ import { baseName, workspaceRelativePath } from './paths.ts'
  * composer shows, and the `text` the model receives on send. The two are
  * deliberately different — a selection reads as `docs/a.md:12-15` on screen
  * while the model still gets the whole fenced block.
+ *
+ * Named `Pending*` to keep clear of the host's own `DraftReference`, which is
+ * the opposite thing: a chip ALREADY in the draft, carrying its offset and
+ * length.
  */
-export interface DraftReference {
+export interface PendingReference {
   label: string
   text: string
   /**
@@ -146,7 +150,7 @@ function appendOffset(snapshot: ReturnType<SidebarSessionInput['state']['getSnap
  * whether the edit applied.
  *
  * The chip's `clipboardText` is the compact `label`, not the full payload —
- * see {@link DraftReference.clipboardText}.
+ * see {@link PendingReference.clipboardText}.
  *
  * Returns false when the host refused the insert (stale revision, a frozen
  * submission phase, or no chip channel at all) so the caller can fall back.
@@ -154,7 +158,7 @@ function appendOffset(snapshot: ReturnType<SidebarSessionInput['state']['getSnap
 export function insertDraftReference(
   ctx: Context,
   sessionId: string,
-  reference: DraftReference,
+  reference: PendingReference,
 ): boolean {
   let before: number | undefined
   try {
@@ -298,7 +302,7 @@ export function appendToDraft(ctx: Context, sessionId: string, text: string): bo
 export function insertReferenceOrText(
   ctx: Context,
   sessionId: string,
-  reference: DraftReference,
+  reference: PendingReference,
 ): boolean {
   return insertDraftReference(ctx, sessionId, reference) || appendToDraft(ctx, sessionId, reference.text)
 }
