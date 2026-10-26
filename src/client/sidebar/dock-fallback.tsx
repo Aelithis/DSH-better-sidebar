@@ -134,22 +134,26 @@ function slotOccupiedByRect(cx: number, cy: number): boolean {
  * 因此这里从锚点左侧起逐像素左移，取**最近的一个真的空着**的槽位。走查是**有界**的：
  * 最多 {@link MAX_RETREAT_STEPS} 步（400px）——真实的宿主编簇只有几个 28px 按钮，退过
  * 400px 说明整排都被占着，而每一步都要采样 5 个点做命中测试，不封顶的走查（旧值 400 步）
- * 会把一次 tick 变成上千次命中测试。到达上限仍未找到空位就接受当前槽位；一直退到
- * 视口左缘（`left <= 4`）仍被占时停在最左（宁可贴边，也不叠在宿主控件上）。
+ * 会把一次 tick 变成上千次命中测试。走查有两条下限：macOS 桌面壳的标题栏左侧是系统窗口
+ * 按钮（红绿灯，约 88px），原生控件不会出现在命中测试栈里，所以那条下限必须显式保留；
+ * 若下限之上仍无空位，接受与宿主内容重叠——空白会话没有别的底部工作台 opener，宁可叠
+ * 内容也不叠系统控件、更不能把唯一入口藏掉。
  * @returns 视口坐标下的 top/left。
  */
 function measure(): { top: number; left: number } {
   const anchor = document.querySelector('[data-sidebar-right-expand], [data-sidebar-right-toggle]')
-  if (anchor === null) return { top: 8, left: window.innerWidth - BUTTON_SIZE - GAP - 8 }
-  const rect = anchor.getBoundingClientRect()
-  const top = Math.max(4, rect.top + (rect.height - BUTTON_SIZE) / 2)
-  let left = Math.max(4, rect.left - GAP - BUTTON_SIZE)
-  for (let step = 0; step < MAX_RETREAT_STEPS; step++) {
-    if (slotFree(left, top)) break
+  const rect = anchor?.getBoundingClientRect()
+  const top = rect === undefined ? 8 : Math.max(4, rect.top + (rect.height - BUTTON_SIZE) / 2)
+  let left = rect === undefined ? window.innerWidth - BUTTON_SIZE - GAP - 8 : rect.left - GAP - BUTTON_SIZE
+  // 复用宿主 preload 的平台属性；原生红绿灯不会出现在 elementsFromPoint 中。
+  // 48px 高度 / 88px 左侧留白与宿主 AppFrame / fullscreen dock strip 的几何一致。
+  const root = document.documentElement
+  const minLeft = root.dataset.platform === 'darwin' && !root.hasAttribute('data-fullscreen') && top < 48 ? 88 : 4
+  for (let step = 0; step < MAX_RETREAT_STEPS && left >= minLeft; step++) {
+    if (slotFree(left, top)) return { top, left }
     left -= STEP_PX
-    if (left <= 4) { left = 4; break }
   }
-  return { top, left }
+  return { top, left: Math.max(left, minLeft) }
 }
 
 export function DockFallback({ store }: { store: SidebarStore }): ReactNode {

@@ -222,6 +222,66 @@ describe('dock fallback（空白会话入口）', () => {
     }
   })
 
+  it('keeps an occupied desktop row outside the traffic-light reserve without losing the only entry', async () => {
+    phaseIs(true)
+    document.documentElement.dataset.platform = 'darwin'
+    const anchor = appendAnchor(100)
+    const hit = stubHitTest(() => [anchor])
+    const { unmount, store } = renderDockFallback()
+    try {
+      await settle()
+      const shell = document.querySelector<HTMLElement>('[data-dsh-dock-fallback]')
+      expect(shell, '空白会话没有其他 opener，不能隐藏唯一入口').not.toBeNull()
+      expect(Number.parseFloat(shell!.style.left), '无空位也不能落到 left<=4 或红绿灯区域').toBeGreaterThanOrEqual(88)
+      clickFallbackToggle()
+      expect(store.getSnapshot().state?.bottomOpen).toBe(true)
+    } finally {
+      unmount()
+      hit.restore()
+      anchor.remove()
+      delete document.documentElement.dataset.platform
+    }
+  })
+
+  it('avoids the desktop reserve even when native window controls are absent from the hit-test stack', async () => {
+    phaseIs(true)
+    document.documentElement.dataset.platform = 'darwin'
+    const anchor = appendAnchor(100)
+    const hit = stubHitTest(() => [])
+    const { unmount } = renderDockFallback()
+    try {
+      await settle()
+      const shell = document.querySelector<HTMLElement>('[data-dsh-dock-fallback]')
+      expect(shell).not.toBeNull()
+      expect(Number.parseFloat(shell!.style.left)).toBeGreaterThanOrEqual(88)
+    } finally {
+      unmount()
+      hit.restore()
+      anchor.remove()
+      delete document.documentElement.dataset.platform
+    }
+  })
+
+  it('keeps the bounded web walk (reaches the left edge, never hides)', async () => {
+    phaseIs(true)
+    const anchor = appendAnchor(100)
+    const hit = stubHitTest(() => [anchor])
+    const { unmount } = renderDockFallback()
+    try {
+      await settle()
+      const shell = document.querySelector<HTMLElement>('[data-dsh-dock-fallback]')
+      // Web keeps the original bounded walk: every sampled slot is occupied,
+      // so the entry stops at the viewport's left edge (4px). Hiding the only
+      // blank-session entry would be worse than a leftover overlap.
+      expect(shell).not.toBeNull()
+      expect(shell!.style.left).toBe('4px')
+    } finally {
+      unmount()
+      hit.restore()
+      anchor.remove()
+    }
+  })
+
   // 占位判定走命中测试而不是角色筛选：该点下面整摞元素只要有不透明的小控件就算占着。
   // 这里把命中测试桩成「前两个槽位被盖住」，断言入口继续左移。
   it('steps past tab chips that are not buttons (hit-test occupancy)', async () => {
@@ -394,7 +454,7 @@ describe('dock fallback（空白会话入口）', () => {
       expect(hit.hits(), '让位走查必须封顶在 100 步（400px）').toBe(100)
       const shell = document.querySelector<HTMLElement>('[data-dsh-dock-fallback]')
       // 锚点在 500、按钮 28px、间距 8px → 起点 464；100 步 × 4px = 400px → 64。
-      // 旧上限（400 步）会一路退到视口左缘并停成 4px。
+      // 耗尽上限后停在 464 - 400，而不是视口左缘；隐藏唯一入口不是可接受的兜底。
       expect(shell!.style.left, '耗尽上限后停在 464 - 400，而不是视口左缘').toBe('64px')
     } finally {
       unmount()
