@@ -269,6 +269,49 @@ describe('graph toolbar', () => {
       expect(detachedPills.map(pill => pill.getAttribute('data-color'))).toEqual(['1', '1'])
     } finally { mounted.unmount() }
   })
+
+  it('renders tag refs as neutral pills that never become the current branch or a lane colour', async () => {
+    // The server decorates a tag with a `tag: ` prefix (a branch and a tag may
+    // share a name). The pill keeps that literal text marker, takes the
+    // neutral tone and never occupies a lane-palette slot; a tag is never
+    // folded into HEAD as "the current branch" either.
+    const branches = [
+      { ref: 'refs/heads/main', name: 'main', hashFull: HASH_A },
+      { ref: 'refs/remotes/origin/main', name: 'origin/main', hashFull: HASH_A },
+    ]
+    const rows = [
+      commit(HASH_A, ['HEAD', 'tag: v1', 'main', 'origin/main']),
+      // A tag named like the local branch must not steal the fold: this
+      // detached HEAD has no local branch, so HEAD stands alone and both the
+      // tag and the remote stay their own kind.
+      commit(HASH_B, ['HEAD', 'tag: main', 'origin/main'], [HASH_A]),
+    ]
+    vi.spyOn(api, 'gitGraph').mockResolvedValue(graphPage(rows, branches))
+    const mounted = renderRoot(createElement(GitGraphSection, defaults))
+    try {
+      await flush()
+      const tip = mounted.container.querySelector<HTMLElement>(`[data-graph-commit="${HASH_A}"]`)!
+      const pills = [...tip.querySelectorAll<HTMLElement>('[data-tone]')]
+      expect(pills.map(pill => [pill.textContent, pill.getAttribute('data-tone'), pill.getAttribute('data-current')])).toEqual([
+        ['tag: v1', 'tag', null],
+        ['main', 'head', 'true'],
+        ['origin/main', 'remote', null],
+      ])
+      // Tag pills wear the neutral tone; only branch/remote pills take the
+      // row's lane slot.
+      expect(pills.map(pill => pill.getAttribute('data-color'))).toEqual([null, '0', '0'])
+      // The literal `tag: ` prefix is the kind marker — no branch or remote glyph.
+      expect(pills[0]!.querySelectorAll('svg')).toHaveLength(0)
+      const detached = mounted.container.querySelector<HTMLElement>(`[data-graph-commit="${HASH_B}"]`)!
+      const detachedPills = [...detached.querySelectorAll<HTMLElement>('[data-tone]')]
+      expect(detachedPills.map(pill => [pill.textContent, pill.getAttribute('data-tone'), pill.getAttribute('data-current')])).toEqual([
+        ['HEAD', 'head', 'true'],
+        ['tag: main', 'tag', null],
+        ['origin/main', 'remote', null],
+      ])
+      expect(detachedPills[1]!.getAttribute('data-color')).toBeNull()
+    } finally { mounted.unmount() }
+  })
 })
 
 describe('graph commit rows and details', () => {
@@ -437,6 +480,28 @@ describe('graph commit rows and details', () => {
       // wear the lane colour the lens reported for the selected row.
       expect(pills[1]!.querySelectorAll('svg')).toHaveLength(2)
       expect(pills.map(pill => pill.getAttribute('data-color'))).toEqual(['3', '3'])
+    } finally { mounted.unmount() }
+  })
+
+  it('renders the tag pill in the details card without stealing the same-named branch\'s HEAD fold', async () => {
+    // The details card is the other surface the user reads refs on, so a tag
+    // must render there too. Same name on purpose: `tag: main` and the local
+    // `main` are distinct, HEAD folds into the BRANCH, and the tag keeps the
+    // neutral tone with no lane slot.
+    const selected = commit(HASH_A, ['HEAD', 'tag: main', 'main'])
+    const mounted = renderRoot(createElement(CommitDetails, { entry: selected, slot: 2 }))
+    try {
+      const details = mounted.container.querySelector<HTMLElement>(`section[aria-label="${t('graphDetails')}"]`)!
+      const pills = [...details.querySelectorAll<HTMLElement>('[data-tone]')]
+      expect(pills.map(pill => [pill.textContent, pill.getAttribute('data-tone'), pill.getAttribute('data-current')])).toEqual([
+        ['tag: main', 'tag', null],
+        ['main', 'head', 'true'],
+      ])
+      expect(pills.map(pill => pill.getAttribute('data-color'))).toEqual([null, '2'])
+      // The tag's literal `tag: ` text marker is its kind glyph; the current
+      // branch still carries the check + branch icons.
+      expect(pills[0]!.querySelectorAll('svg')).toHaveLength(0)
+      expect(pills[1]!.querySelectorAll('svg')).toHaveLength(2)
     } finally { mounted.unmount() }
   })
 })

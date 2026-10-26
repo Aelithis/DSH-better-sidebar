@@ -1170,6 +1170,7 @@ interface SettingsDescriptor {
 - **z-index**：面板宿主层 25、按钮簇 45——低于 DSH ui-cordis 插件面板（30）与浮层栈（100/1000+），浮层天然盖住侧边栏。
 - **更改行选中态**：Git 文件行和本轮操作行保持原有布局；选中只绘制 `--dsw-alias-interactive-bg-active` 背景，以及行内 inset 4px、宽 2px 的 `--dsw-alias-state-business-primary` 标记。选中规则与缩进参考线的绝对定位规则必须分开；`tests/theme.spec.ts` 解析实际 CSS 规则守护，挂载测试验证点击后文件行仍在原分组内。
 - **提交图高度**：更改区保持自然高度，提交图区填满固定底栏上方的剩余空间，不设 `vh` 或固定最大高度。展开的图谱分区以 248px（28px 标题 + 220px 视口）为最小高度参与 flex 分配，避免自动最小内容高度把长历史撑到外层；折叠后只保留标题，长历史在内部滚动；更改列表过长时仍由原外层滚动容器承载。预览区展开或窗口缩放后随可用空间调整，无需额外尺寸观察器。
+- **提交图的 ref pills（含 tag）**：分支/远端/HEAD 按 lane 调色板上色（五个 `--dsw-alias-state-*`）；tag 是装饰而非 lane，使用中性 `--dsw-alias-label-secondary` + 虚线边框，不占 `data-color` 槽位，并以服务端返回的 `tag: ` 名称前缀作为文字 kind 标记（不新增图标/文案）。HEAD 只折叠进本地分支，tag 永不成为 current（detached HEAD 场景同样）；`tests/theme.spec.ts` 钉住 tag 的 CSS 规则，`tests/git-graph-ui.spec.tsx` 钉住 tone / current / 无调色板槽位。
 
 - **Context 诊断入口与提示**：图标沿用宿主 `Button` 与 `IconContextInjectionOutlineRegular`，标题栏为固定宽度按钮。跨会话错误通过 `shell.overlay` 展示一条可关闭提示，背景取 `--dsw-alias-bg-layer-3`、边框与图标取 `--dsw-alias-state-warn-primary`、正文取 label 令牌；宽度受视口约束，目标名与错误文案允许任意位置换行。能力中途消失时仍保留本次错误，不依赖来源弹层继续挂载。
 
