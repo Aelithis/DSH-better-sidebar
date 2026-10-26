@@ -28,6 +28,7 @@ export interface GitGraphResult {
 
 const MAX_OUTPUT = 8 * 1024 * 1024
 const MAX_OFFSET = 10_000
+const MAX_GRAPH_TAGS = 5000
 const MAX_HISTORY_REFS = 100_000
 const MAX_SHALLOW_BYTES = 1024 * 1024
 const OID = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/
@@ -37,13 +38,16 @@ const fail = (message: string, code = 'bad-request'): never => {
 
 /** Separate read-only runner: bounded buffers, no prompts/lazy network fetches,
  * replacement objects or optional index writes. Never pass client revisions. */
-function readGit(cwd: string, args: string[], allowMissing = false): Promise<string> {
+function readGit(cwd: string, args: string[], allowMissing = false, truncateOutput = false): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile('git', ['-C', cwd, '--no-pager', '--no-replace-objects', '-c', 'color.ui=false', ...args], {
       encoding: 'utf8', timeout: 10_000, maxBuffer: MAX_OUTPUT, windowsHide: true,
       env: { ...process.env, LC_ALL: 'C', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', GIT_NO_LAZY_FETCH: '1' },
     }, (error, stdout, stderr) => {
       if (!error) return resolve(stdout)
+      // Optional decorations may retain a complete-line prefix at MAX_OUTPUT;
+      // oversized tag inventories must not make the whole graph unavailable.
+      if (truncateOutput && error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return resolve(stdout.slice(0, stdout.lastIndexOf('\n') + 1))
       if (allowMissing && error.code === 1 && !stderr.trim()) return resolve('')
       reject(new GitCommandError(stderr.trim() || error.message, 'git-error', args[0] ?? 'graph'))
     })
@@ -74,13 +78,31 @@ async function snapshotOf(root: string, branch: string | undefined) {
   const symbolicHead = (await readGit(root, ['symbolic-ref', '--quiet', 'HEAD'], true)).trim()
   if (head && !OID.test(head)) fail('Invalid HEAD', 'git-error')
   if (!head && (!symbolicHead || branches.some(item => item.ref === symbolicHead))) fail('Cannot resolve HEAD', 'git-error')
-  const fingerprint = createHash('sha256').update(JSON.stringify({ root, branch, branches, head, symbolicHead })).digest('hex')
+  // Tags have their own count/output budgets: keep the first 5000 by refname
+  // (or the complete-line prefix fitting MAX_OUTPUT), without consuming the
+  // branch limit or adding tag-only history to the traversal.
+  const rawTags = await readGit(root, ['for-each-ref', '--sort=refname', `--count=${MAX_GRAPH_TAGS}`,
+    '--format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)', 'refs/tags/'], false, true)
+  const tags = rawTags.trimEnd().split('\n').filter(Boolean).flatMap(line => {
+    const [ref, object, type, peeled, peeledType] = line.split('\0')
+    const hashFull = peeled || object
+    // Use Git's peeled target for annotated tags; only commit targets
+    // decorate graph entries, so tags pointing to trees/blobs are ignored.
+    if ((peeled ? peeledType : type) !== 'commit') return []
+    if (!ref?.startsWith('refs/tags/') || !hashFull || !OID.test(hashFull)) return fail('Invalid Git tag output', 'git-error')
+    return [{ name: `tag: ${ref.slice('refs/tags/'.length)}`, hashFull }]
+  })
+  const fingerprint = createHash('sha256').update(JSON.stringify({ root, branch, branches, tags: rawTags, head, symbolicHead })).digest('hex')
   const selected = branch === undefined ? undefined : branches.find(item => item.ref === branch)
   const tips = branch === undefined
     ? [...new Set([...branches.map(item => item.hashFull), ...(head ? [head] : [])])].sort()
     : selected ? [selected.hashFull] : []
   const decorations = new Map<string, string[]>()
-  for (const item of branches) decorations.set(item.hashFull, [...(decorations.get(item.hashFull) ?? []), item.name])
+  for (const item of [...branches, ...tags]) {
+    const refs = decorations.get(item.hashFull) ?? []
+    refs.push(item.name)
+    decorations.set(item.hashFull, refs)
+  }
   if (head) decorations.set(head, ['HEAD', ...(decorations.get(head) ?? [])])
   return { branches, fingerprint, tips, decorations, selected }
 }

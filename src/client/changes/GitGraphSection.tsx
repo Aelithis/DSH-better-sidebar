@@ -71,10 +71,23 @@ function remoteRefNames(branches: readonly Branch[]): ReadonlySet<string> {
   return new Set(branches.filter(item => item.ref.startsWith('refs/remotes/')).map(item => item.name))
 }
 
-/** HEAD is the local-current marker; remote refs read muted, local ones brand.
- *  Exported for {@link CommitDetails}, which renders the same pills. */
-export function refTone(ref: string, remotes: ReadonlySet<string>): 'head' | 'remote' | 'local' {
+/** The server's tag decoration prefix. A tag is the one ref kind that may share
+ *  its name with a branch, so the kind rides the name itself (`tag: v1`) rather
+ *  than a parallel map — and Git forbids spaces/colons in ref names, so the
+ *  prefix cannot collide with a real branch. */
+const TAG_PREFIX = 'tag: '
+
+/** Whether a decoration is a tag (`tag: ` prefix) rather than a branch/HEAD. */
+function isTagRef(ref: string): boolean {
+  return ref.startsWith(TAG_PREFIX)
+}
+
+/** HEAD is the local-current marker; remote refs read muted, local ones brand,
+ *  tags take their own neutral rung (never a lane colour). Exported for
+ *  {@link CommitDetails}, which renders the same pills. */
+export function refTone(ref: string, remotes: ReadonlySet<string>): 'head' | 'remote' | 'local' | 'tag' {
   if (ref === 'HEAD') return 'head'
+  if (isTagRef(ref)) return 'tag'
   return remotes.has(ref) ? 'remote' : 'local'
 }
 
@@ -82,7 +95,7 @@ export function refTone(ref: string, remotes: ReadonlySet<string>): 'head' | 're
  *  carries the "currently checked out" check. */
 export interface RefPillModel {
   readonly name: string
-  readonly tone: 'head' | 'remote' | 'local'
+  readonly tone: 'head' | 'remote' | 'local' | 'tag'
   readonly current: boolean
 }
 
@@ -90,11 +103,13 @@ export interface RefPillModel {
  *  `HEAD` never becomes a pill of its own — it folds into the current local
  *  branch's pill as a leading check, the convention every graph tool shares
  *  (GitLens, GitKraken, …); only a DETACHED head renders it standalone. The
- *  current branch's pill takes the emphasised `head` tone. */
+ *  current branch's pill takes the emphasised `head` tone. Tags are skipped by
+ *  that fold: they are decorations, not the checked-out branch (a tag may even
+ *  share a branch's name). */
 export function refPills(refs: readonly string[], remotes: ReadonlySet<string>): RefPillModel[] {
   const atHead = refs.includes('HEAD')
   const named = refs.filter(ref => ref !== 'HEAD')
-  const current = atHead ? named.find(ref => !remotes.has(ref)) : undefined
+  const current = atHead ? named.find(ref => !isTagRef(ref) && !remotes.has(ref)) : undefined
   const pills = named.map(name => ({
     name,
     tone: (name === current ? 'head' : refTone(name, remotes)) as RefPillModel['tone'],
@@ -108,12 +123,15 @@ export function refPills(refs: readonly string[], remotes: ReadonlySet<string>):
  *  leading check when this is the branch the worktree stands on. `slot` paints
  *  the pill in the commit's LANE colour (the same palette mapping the edges
  *  and the node dot resolve through), so a branch head is recognisable by
- *  colour alone. Shared by the graph rows, the hover card and the details
- *  card so a ref reads the same everywhere. */
+ *  colour alone. A tag is not a lane painter: it paints the neutral label rung,
+ *  carries no glyph, and the server's `tag: ` name prefix is its kind marker.
+ *  Shared by the graph rows, the hover card and the details card so a ref reads
+ *  the same everywhere. */
 export function RefPill({ pill, slot }: { pill: RefPillModel; slot?: number }) {
-  return <span className={css.ref} data-tone={pill.tone} data-color={slot} data-current={pill.current || undefined}>
+  const tag = pill.tone === 'tag'
+  return <span className={css.ref} data-tone={pill.tone} data-color={tag ? undefined : slot} data-current={pill.current || undefined}>
     {pill.current && <IconCheckOutlineRegular size={11} />}
-    {pill.tone === 'remote' ? <IconGlobeOutlineRegular size={11} /> : <IconBranchOutlineRegular size={11} />}
+    {!tag && (pill.tone === 'remote' ? <IconGlobeOutlineRegular size={11} /> : <IconBranchOutlineRegular size={11} />)}
     <span className={css.refName}>{pill.name}</span>
   </span>
 }
