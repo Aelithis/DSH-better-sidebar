@@ -40,6 +40,7 @@
 裁决记录：
 
 - **#1002 vs #1052**：两者都改 `conversation-draft.ts` 的插入路。以 #1052（较新、直连宿主 `insertReference` facade）为准；#1002 的文档与 CHANGELOG 保留。合并后 5 个直接相关 spec 79 例通过。
+- **#1002 的 mount e2e 与 #1052 语义冲突**：第一次 push 后 `plugin-mount` 在真实 DSH 上红——#1002 的 e2e 仍按「多行选区是 plain-text 围栏」断言 3 chips，而 #1052 把选区改成第 4 枚引用 chip（正文只在发送时展开）。已按 #1052 语义更新该 e2e（第 4 枚 chip 落地、label 带来源文件、不产生 plain-text reference；围栏载荷由 `tests/selection-payload.spec.ts` 钉住），并用真实 DSH `0.2.1-rc.1` 跑 `scripts/e2e-mount.sh --grep` 验证 1 passed。
 - **#1053 vs #1019**：#1019 的方向（去掉 500ms 采样）与稳态目标一致，但当前 CI 在 `tests/steady-state.spec.tsx` 红（入口改经宿主 slot 挂载后 500ms 表计数需重锚），且隐藏时拆观察者与「不停事件驱动刷新」冲突、observer 未合帧。UX 部分由 #1053 覆盖；#1019 建议拆成纯 perf PR。
 - **#1055 vs #1048**：#1055 在渲染前修根因；#1048 的候选路径探测是 ENOENT 后补救，另加错误视图与 21 份 i18n。已合 #1055；#1048 建议 rebase 后拆成精简错误 UX PR。
 
@@ -88,7 +89,8 @@
 | `pnpm test` | 最后一次全量：231 文件 / 2 831 用例通过（17 skipped）。此前两次全量分别出现 1 个未定位失败与 `tests/archive.spec.ts` 的 4 个 FileHandle-GC unhandled error（本机 Node 26 全量并发；该 spec 单跑 29/29 通过）；D 批新 spec 连续 5 轮 55/55 稳定。CI 为 Node 22，以 push 后的 `ci` 为准 |
 | `pnpm build` + `pnpm check:consumer-types` | 通过 |
 | 定向 spec | D 批修复：`git-graph*` / `text-editor-save-baseline` / `editor-conflict-reload` / `dock-fallback` 等 86 例通过 |
-| 未在本地跑 | `test:windows`、`test:mount`（由 push 后的 CI `ci-windows` / `plugin-mount` 覆盖） |
+| push 后 CI | 第二次 push（dev `6e29d91`，run [40287155113](https://github.com/omdsh-dev/DSH-better-sidebar/actions/runs/40287155113)）：**`ci` / `ci-windows` / `plugin-mount` 全绿**。第一次 push（`c7d0e12`）`plugin-mount` 因 #1002/#1052 的 e2e 语义冲突红，修复后复跑通过 |
+| 未在本地跑 | `test:windows`；`test:mount` 只跑了定向 `--grep` lane（真实 DSH `0.2.1-rc.1`，1 passed），全量 mount 与 Windows lane 由 push 后的 CI 覆盖 |
 
 ## 五、未做 / 后续
 
