@@ -27,26 +27,19 @@ function mount(cwd: string, options: { root?: string; phase?: 'pending' | 'ready
   let draft = 'before'
   let draftRev = 1
   const setDraft = vi.fn((text: string) => { draft = text; draftRev++ })
-  // The host's two composer events, applied for real: plain text splices at
-  // the span, a reference mints the chip plus its separating space. `chip:
-  // false` models a host that refuses the structured insert, which is how the
-  // plugin's plain-text fallback is exercised.
-  const emit = vi.fn((event: string, payload: unknown) => {
-    if (event === 'slash/input-insert-text') {
-      const { text, span } = payload as { text: string; span: { start: number; end: number } }
-      draft = `${draft.slice(0, span.start)}${text}${draft.slice(span.end)}`
-      draftRev++
-      return
-    }
-    if (event !== 'slash/input-insert-reference' || !options.chip) return
-    const { reference, span } = payload as {
-      reference: { clipboardText: string }
-      span: { start: number; end: number }
-    }
-    draft = `${draft.slice(0, span.start)}${reference.clipboardText} ${draft.slice(span.end)}`
-    draftRev++
+  const emit = vi.fn((_event: string, _payload: unknown) => {
+    if (options.chip) draftRev++
   })
-  const input = { state: { getSnapshot: () => ({ draft, draftRev }) }, setDraft }
+  const insertReference = vi.fn((_ref: unknown, _span: unknown) => {
+    if (!options.chip) return false
+    draftRev++
+    return true
+  })
+  const input = {
+    state: { getSnapshot: () => ({ draft, draftRev }) },
+    setDraft,
+    ...options.chip === false ? {} : { insertReference },
+  }
   const workspaces = { list: { getSnapshot: () => ({
     phase: options.phase ?? 'ready',
     state: options.state ?? 'idle',
@@ -80,7 +73,7 @@ function mount(cwd: string, options: { root?: string; phase?: 'pending' | 'ready
   expect(reference).toBeTypeOf('function')
   return {
     insert: (path: string, isDir: boolean) => { act(() => { reference!(path, isDir) }) },
-    draft: () => draft, emit, setDraft, warn,
+    draft: () => draft, emit, insertReference, setDraft, warn,
     unmount: () => { act(() => { root.unmount() }); container.remove() },
   }
 }
@@ -91,13 +84,7 @@ describe('Sidebar workspace references', () => {
     try {
       view.insert('/work/my dir', true)
       expect(view.draft()).toBe('before @"my dir/" ')
-      // A folder mention is plain text over a span — never a whole-draft
-      // rewrite, which would flatten every inline chip already in the draft.
-      expect(view.emit).toHaveBeenCalledWith('slash/input-insert-text', {
-        text: ' @"my dir/" ',
-        span: { draftRev: 1, start: 6, end: 6 },
-      })
-      expect(view.setDraft).not.toHaveBeenCalled()
+      expect(view.emit).not.toHaveBeenCalled()
     } finally { view.unmount() }
   })
 
@@ -105,10 +92,11 @@ describe('Sidebar workspace references', () => {
     const view = mount('/work/src', { root: '/work', chip: true })
     try {
       view.insert('/work/docs/my notes.md', false)
-      expect(view.emit).toHaveBeenCalledWith('slash/input-insert-reference', {
-        reference: { source: 'reference', ref: '@"docs/my notes.md"', label: 'my notes.md', appearance: 'file', clipboardText: '@"docs/my notes.md"' },
-        span: { draftRev: 1, start: 6, end: 6 },
-      })
+      // The draft `before` ends in a non-space, so a separator is emitted
+      // first: the revision and the append offset both move one place.
+      expect(view.insertReference).toHaveBeenCalledWith({
+        source: 'reference', ref: '@"docs/my notes.md"', label: 'my notes.md', appearance: 'file', clipboardText: '@"docs/my notes.md"',
+      }, { draftRev: 2, start: 7, end: 7 })
       expect(view.setDraft).not.toHaveBeenCalled()
     } finally { view.unmount() }
   })
@@ -120,16 +108,10 @@ describe('Sidebar workspace references', () => {
       const beforeFile = view.draft()
       expect(beforeFile).toMatch(/\s$/)
       view.insert('/work/notes.md', false)
-      expect(view.emit).toHaveBeenCalledWith('slash/input-insert-reference', {
-        reference: { source: 'reference', ref: '@notes.md', label: 'notes.md', appearance: 'file', clipboardText: '@notes.md' },
-        span: { draftRev: 2, start: beforeFile.length, end: beforeFile.length },
-      })
-      // The directory insert rode the plain-text event before it.
-      expect(view.emit).toHaveBeenNthCalledWith(1, 'slash/input-insert-text', {
-        text: expect.stringMatching(/^ @/u),
-        span: { draftRev: 1, start: 6, end: 6 },
-      })
-      expect(view.setDraft).not.toHaveBeenCalled()
+      expect(view.insertReference).toHaveBeenCalledWith({
+        source: 'reference', ref: '@notes.md', label: 'notes.md', appearance: 'file', clipboardText: '@notes.md',
+      }, { draftRev: 2, start: beforeFile.length, end: beforeFile.length })
+      expect(view.setDraft).toHaveBeenCalledTimes(1)
     } finally { view.unmount() }
   })
 
