@@ -46,7 +46,17 @@ const fsWrite = vi.mocked(api.fsWrite)
 const CONTENT = 'const a = 1\n'
 /** The user's unsaved edit (what the reload must NOT throw away). */
 const DRAFT_PREFIX = '// draft\n'
+const SECOND_PREFIX = '// second\n'
 const CHANGED_CONTENT = 'const a = 2\n'
+
+interface ViewerSpec {
+  id: string
+  ext: string
+  path: string
+}
+
+const CODE_VIEWER: ViewerSpec = { id: 'code', ext: 'ts', path: '/p/a.ts' }
+const MARKDOWN_VIEWER: ViewerSpec = { id: 'markdown', ext: 'md', path: '/p/a.md' }
 
 const readText = (content: string, mtimeMs: number): { kind: 'text'; content: string; size: number; mtimeMs: number } =>
   ({ kind: 'text', content, size: content.length, mtimeMs })
@@ -56,13 +66,13 @@ interface Harness {
   unmount: () => void
 }
 
-function setup(): { ctx: Context; store: ReturnType<typeof createSidebarStore>; tab: () => SidebarTab } {
+function setup(viewer: ViewerSpec = CODE_VIEWER): { ctx: Context; store: ReturnType<typeof createSidebarStore>; tab: () => SidebarTab } {
   const store = createSidebarStore()
   const service = createBetterSidebarService(store)
   service.registerTab({ id: 'editor', title: 'Editor', dedupeKey: (tab) => tab.path, component: () => null })
   service.registerFileViewer({
-    id: 'code',
-    exts: ['ts'],
+    id: viewer.id,
+    exts: [viewer.ext],
     priority: 0,
     fetchStrategy: 'fsRead',
     component: (props: FileViewerProps) => createElement(TextEditor, props),
@@ -73,14 +83,14 @@ function setup(): { ctx: Context; store: ReturnType<typeof createSidebarStore>; 
     sessions: { list: { subscribe: () => () => {}, getSnapshot: () => ({ byId: { s1: { cwd: '/p' } }, current: 's1' }) } },
     get: (name: string) => name === 'betterSidebar' ? service : undefined,
   } as unknown as Context
-  ctx.betterSidebar.openTab({ type: 'editor', title: 'a.ts', path: '/p/a.ts', id: 'editor:/p/a.ts' })
+  ctx.betterSidebar.openTab({ type: 'editor', title: viewer.path.split('/').pop()!, path: viewer.path, id: `editor:${viewer.path}` })
   const tab = (): SidebarTab => allLeaves(store.getSnapshot().state!.bottomSplits).flatMap(leaf => leaf.tabs)
-    .find(candidate => candidate.path === '/p/a.ts')!
+    .find(candidate => candidate.path === viewer.path)!
   return { ctx, store, tab }
 }
 
-function mount(): Harness {
-  const { ctx, store, tab } = setup()
+function mount(viewer: ViewerSpec = CODE_VIEWER): Harness {
+  const { ctx, store, tab } = setup(viewer)
   const root = renderRoot(createElement(EditorHost, {
     ctx,
     store: store as never,
@@ -103,21 +113,40 @@ function viewOf(container: HTMLElement): EditorView {
   return view
 }
 
-/** Type the user's edit through CodeMirror's own doc-change path. */
-function typeDraft(container: HTMLElement): void {
+/** Type through CodeMirror's own doc-change path (a keystroke). */
+function typeText(container: HTMLElement, text: string): void {
   act(() => {
-    viewOf(container).dispatch({ changes: { from: 0, insert: DRAFT_PREFIX } })
+    viewOf(container).dispatch({ changes: { from: 0, insert: text } })
   })
+}
+
+/** The user's first unsaved edit. */
+function typeDraft(container: HTMLElement): void {
+  typeText(container, DRAFT_PREFIX)
 }
 
 function click(element: Element): void {
   act(() => { element.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
 }
 
+function saveButton(container: HTMLElement): HTMLButtonElement {
+  const button = container.querySelector('button[aria-label="Save"]')
+  if (button === null) throw new Error('the host header has no save button')
+  return button as HTMLButtonElement
+}
+
+/** One of the host header's mode-toggle buttons, by label. */
+function modeButton(container: HTMLElement, label: string): HTMLButtonElement {
+  const button = Array.from(container.querySelectorAll('button'))
+    .find(candidate => candidate.textContent === label)
+  if (button === undefined) throw new Error(`no "${label}" mode button`)
+  return button as HTMLButtonElement
+}
+
 /** Save once and assert the host refused it as a conflict. */
 async function saveIntoConflict(container: HTMLElement): Promise<void> {
   fsWrite.mockRejectedValueOnce(new SidebarApiError('fs-conflict', 'changed on disk'))
-  click(container.querySelector('button[aria-label="Save"]')!)
+  click(saveButton(container))
   await settle()
   expect(container.textContent ?? '').toContain('changed on disk since it was loaded')
 }
@@ -166,7 +195,7 @@ describe('save-conflict banner: reload with a dirty draft (#1059)', () => {
       expect(viewOf(container), 'the same editor instance stays mounted').toBe(before)
       expect(viewOf(container).state.doc.toString()).toBe(`${DRAFT_PREFIX}${CONTENT}`)
       // The next save carries the fresh baseline (200) and is accepted.
-      click(container.querySelector('button[aria-label="Save"]')!)
+      click(saveButton(container))
       await settle()
       expect(fsWrite).toHaveBeenCalledTimes(2)
       expect(fsWrite.mock.calls[1]![2]).toBe(`${DRAFT_PREFIX}${CONTENT}`)
@@ -194,6 +223,42 @@ describe('save-conflict banner: reload with a dirty draft (#1059)', () => {
       expect(viewOf(container), 'no remount on a declined reload').toBe(before)
       expect(viewOf(container).state.doc.toString()).toBe(`${DRAFT_PREFIX}${CONTENT}`)
       expect(container.textContent ?? '').toContain('changed on disk since it was loaded')
+    } finally {
+      unmount()
+    }
+  })
+
+  it('compares against the last SAVED bytes when an edit-mode save did not reload', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    fsRead.mockImplementation(() => Promise.resolve(readText(CONTENT, 100)))
+    const { container, unmount } = mount(MARKDOWN_VIEWER)
+    try {
+      await settle()
+      // Markdown opens in preview; the host header's Edit toggle shows source.
+      click(modeButton(container, 'Edit'))
+      typeDraft(container)
+      // A successful save in EDIT mode does not reload (the host keeps the
+      // caret), so `content` stays at the bytes loaded when the tab opened.
+      click(saveButton(container))
+      await settle()
+      expect(fsWrite).toHaveBeenCalledTimes(1)
+      expect(fsWrite.mock.calls[0]![2]).toBe(`${DRAFT_PREFIX}${CONTENT}`)
+      // The tool touches the file: same bytes as the last SAVE, new mtime.
+      fsRead.mockImplementation(() => Promise.resolve(readText(`${DRAFT_PREFIX}${CONTENT}`, 200)))
+      typeText(container, SECOND_PREFIX)
+      await saveIntoConflict(container)
+      click(reloadButton(container))
+      await settle()
+      // In-place: no confirm, the second draft survives, the comparison point
+      // was the saved bytes (not the stale `content` prop).
+      expect(confirm).not.toHaveBeenCalled()
+      expect(container.textContent ?? '').not.toContain('changed on disk since it was loaded')
+      expect(viewOf(container).state.doc.toString()).toBe(`${SECOND_PREFIX}${DRAFT_PREFIX}${CONTENT}`)
+      click(saveButton(container))
+      await settle()
+      expect(fsWrite).toHaveBeenCalledTimes(3)
+      expect(fsWrite.mock.calls[2]![2]).toBe(`${SECOND_PREFIX}${DRAFT_PREFIX}${CONTENT}`)
+      expect(fsWrite.mock.calls[2]![3]).toBe(200)
     } finally {
       unmount()
     }

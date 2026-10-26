@@ -140,9 +140,16 @@ export function TextEditor(props: FileViewerProps) {
   const viewRef = useRef<CodeMirrorView | null>(null)
   const savingRef = useRef(false)
   /** The mtime the draft is based on (`null` = the file did not exist yet).
-   *  Seeded from the load, refreshed by every successful save, and reset by
-   *  the file-switch effect. */
+   *  Seeded from the load, re-based whenever a fresh load reports a new mtime
+   *  (a reload may return the SAME text — see the effect below), refreshed by
+   *  every successful save, and reset by the file-switch effect. */
   const mtimeRef = useRef<number | null>(props.mtimeMs ?? null)
+  /** The bytes the save baseline belongs to: the last loaded document,
+   *  advanced by every successful save (an edit-mode save never reloads, so
+   *  `props.content` alone can lag behind disk). The conflict banner's reload
+   *  compares the disk read against THIS — never the live draft, which is
+   *  expected to differ because it holds the unsaved edit. */
+  const savedTextRef = useRef<string | null>(content ?? null)
   /** The theme compartment of the current view (reconfigured on scheme flip). */
   const themeCompRef = useRef<CmThemeCompartment | null>(null)
   /** The search-phrases compartment of the current view (reconfigured on a
@@ -288,11 +295,23 @@ export function TextEditor(props: FileViewerProps) {
     setConflict(false)
     // The freshly loaded bytes are the new save baseline.
     mtimeRef.current = props.mtimeMs ?? null
+    savedTextRef.current = content ?? null
     selectionPopup.hide()
     // hide() reads a live ref; the reset must fire only on a content (file)
     // swap, and the hook object's identity churns on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [content])
+
+  // The save baseline follows every fresh load, not only a content swap: a
+  // reload can return the SAME bytes with a new mtime (`touch`, `git checkout`,
+  // a formatter rewriting identical text). `content` then never changes and
+  // the file-switch effect above never runs, so the stale baseline would keep
+  // being sent and the host would answer `fs-conflict` forever (#1059).
+  // Baseline only: the mode/draft/dirty reset above stays tied to a new
+  // document, not to a re-read of the same one.
+  useEffect(() => {
+    mtimeRef.current = props.mtimeMs ?? null
+  }, [props.mtimeMs])
 
   // A different file switches the remembered preview scroll position to that
   // file's own entry (first open: none, so the preview starts at the top).
@@ -697,17 +716,21 @@ export function TextEditor(props: FileViewerProps) {
   const save = (): void => {
     const view = viewRef.current
     if (view === null || savingRef.current) return
+    // The bytes this request writes: the same string becomes the baseline text
+    // once the host accepts it (the draft may keep changing while in flight).
+    const text = view.state.doc.toString()
     savingRef.current = true
     setSaveState('saving')
     // Optimistic concurrency: the draft was based on the bytes read at
     // `mtimeMs`; a file that changed on disk since is REFUSED (fs-conflict)
     // instead of clobbering whatever wrote it (the model, another tab, an
     // external editor). `null` = the file did not exist when loaded.
-    api.fsWrite(scope, path, view.state.doc.toString(), mtimeRef.current ?? null).then((result) => {
+    api.fsWrite(scope, path, text, mtimeRef.current ?? null).then((result) => {
       savingRef.current = false
       // Adopt the fresh baseline the host reports (absent on a stat failure —
       // keep the old one, the next save just re-checks).
       if (typeof result.mtimeMs === 'number') mtimeRef.current = result.mtimeMs
+      savedTextRef.current = text
       setDraft(null)
       setDirty(false)
       setConflict(false)
@@ -724,6 +747,35 @@ export function TextEditor(props: FileViewerProps) {
         return
       }
       setSaveState('failed')
+    })
+  }
+
+  /**
+   * The conflict banner's "Reload from disk". A reload whose bytes equal the
+   * ones the save baseline was taken from carries no content change — only a
+   * new mtime — so it is resolved IN PLACE: adopt the fresh baseline and keep
+   * the draft (see {@link savedTextRef}: the live draft legitimately differs,
+   * it holds the unsaved edit).
+   * No dirty-confirm is involved: it would ask to discard edits that are not
+   * discarded (and a shell that cannot surface that dialog treats it as a
+   * decline), which used to turn a touch-only change into an endless
+   * fs-conflict loop (#1059). A genuinely different document still defers to
+   * the host's explicit reload, its unsaved-edits guard included.
+   */
+  const reloadAfterConflict = (): void => {
+    const baseline = savedTextRef.current
+    api.fsRead(scope, path).then((result) => {
+      if (result.kind !== 'text' || baseline === null || !sameDocument(result.content, baseline)) {
+        props.onReload?.()
+        return
+      }
+      // Same bytes on disk as the last load/save: only the baseline moved.
+      mtimeRef.current = result.mtimeMs ?? null
+      setConflict(false)
+    }).catch(() => {
+      // A failed probe must not swallow the user's explicit reload: the host
+      // owns the error surface (unreadable file, dead session).
+      props.onReload?.()
     })
   }
 
@@ -959,7 +1011,7 @@ export function TextEditor(props: FileViewerProps) {
               <button
                 type="button"
                 className={css.editorBannerAction}
-                onClick={() => { props.onReload?.() }}
+                onClick={reloadAfterConflict}
               >
                 {t('saveConflictReload')}
               </button>
