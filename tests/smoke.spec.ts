@@ -805,6 +805,46 @@ describe('session cwd resolution over the API route', () => {
     expect(releases).toBe(2)
   })
 
+  it('shares one cold observation between concurrent same-session cwd calls', async () => {
+    let reads = 0
+    let releases = 0
+    let unblock!: () => void
+    const gate = new Promise<void>((resolve) => { unblock = resolve })
+    const shared = resolvePath('/cold-shared-execution')
+    const route = mount({ sessionQuery: {
+      observeSession: async () => {
+        reads += 1
+        await gate
+        return {
+          header: { cwd: resolvePath('/original-project') },
+          projections: { values: { workingDirectory: shared } },
+          [Symbol.dispose]: () => { releases += 1 },
+        }
+      },
+    } })
+    // A session switch fires the twelve routes at once; every one needs cwd.
+    const calls = Array.from({ length: 12 }, () =>
+      invoke(route, 'session.cwd', { sessionId: 'wd-shared', cwd: '/stale-client' }))
+    await Promise.resolve()
+    unblock()
+    const results = await Promise.all(calls)
+    expect(reads, 'concurrent same-key asks must share ONE cold read').toBe(1)
+    expect(releases, 'the shared observation is released once').toBe(1)
+    for (const result of results) {
+      expect(result).toMatchObject({ ok: true, value: { cwd: shared } })
+    }
+  })
+
+  it('does not share a resolution across different client cwd hints', async () => {
+    const route = mount({})
+    const [first, second] = await Promise.all([
+      invoke(route, 'session.cwd', { sessionId: 'wd-hints', cwd: resolvePath('/hint-a') }),
+      invoke(route, 'session.cwd', { sessionId: 'wd-hints', cwd: resolvePath('/hint-b') }),
+    ])
+    expect(first).toMatchObject({ ok: true, value: { cwd: resolvePath('/hint-a') } })
+    expect(second).toMatchObject({ ok: true, value: { cwd: resolvePath('/hint-b') } })
+  })
+
   it('uses the host custom default for a null cold working-directory projection before a stale client hint', async () => {
     const defaultDirectory = resolvePath('/configured-execution-default')
     let releases = 0

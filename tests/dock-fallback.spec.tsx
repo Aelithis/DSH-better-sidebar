@@ -112,6 +112,10 @@ async function settle(): Promise<void> {
 
 describe('dock fallback（空白会话入口）', () => {
   beforeEach(() => {
+    // The store persists per-session state to localStorage; a test that opens
+    // the workbench must not seed the next test's store with
+    // `bottomOpen: true` (the click would close it instead of open it).
+    localStorage.clear()
     intervals.clear()
     vi.spyOn(globalThis, 'setInterval').mockImplementation(((fn: () => void, ms?: number) => {
       const id = ++intervalSeq
@@ -233,6 +237,7 @@ describe('dock fallback（空白会话入口）', () => {
       const shell = document.querySelector<HTMLElement>('[data-dsh-dock-fallback]')
       expect(shell, '空白会话没有其他 opener，不能隐藏唯一入口').not.toBeNull()
       expect(Number.parseFloat(shell!.style.left), '无空位也不能落到 left<=4 或红绿灯区域').toBeGreaterThanOrEqual(88)
+      expect(store.getSnapshot().state?.bottomOpen, '本用例从关闭态开始').toBe(false)
       clickFallbackToggle()
       expect(store.getSnapshot().state?.bottomOpen).toBe(true)
     } finally {

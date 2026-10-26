@@ -100,6 +100,7 @@ If something fails, check the FAQ table in https://github.com/omdsh-dev/DSH-bett
 
 **v0.28.1 — UX and reliability patch**
 
+- **OOM fix**: cold cwd reads shared by the twelve `/sidebar/*` routes are merged per session and client hint, so a session-switch burst no longer decodes the same large session log N times in parallel
 - **Silent wrong-file writes are gone**: tab reconciliation now covers tabs in background sessions, and worktree sessions use one address base — a renamed/deleted file is no longer re-created on the next save, and a chat link never opens a same-named file from another checkout
 - **Host crash guard**: pathological `git status` output is capped with a latch and a process-tree kill, turning "host dies with `RangeError`" into one failed SCM refresh
 - **Git page**: histories with more than 1,000 branches load again; tags now decorate commits, rows and details, and tag changes invalidate pagination
