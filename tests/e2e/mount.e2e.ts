@@ -1073,14 +1073,23 @@ test('the explorer @-reference button keeps earlier chips (no whole-draft rewrit
   const quoteButton = page.getByRole('button', { name: /Add to conversation|添加到对话/ })
   await expect(quoteButton, 'the selection popup must offer the quote').toHaveCount(1, { timeout: 10_000 })
   await quoteButton.click()
+  // Since the selection-to-chat rework (#1052) the quote lands as its own
+  // reference CHIP — the fenced body is serialized only when the draft is
+  // sent — so the chip count grows to four and the three earlier chips stay
+  // intact. `buildSelectionInsert` in the unit suite pins the verbatim payload
+  // (fences + newlines); the DOM only carries the compact `path:lines` label.
   await expect(
     chips,
-    'the multi-line quote must leave every chip intact',
-  ).toHaveCount(3, { timeout: 15_000 })
-  const composed = await composer.evaluate((element) => element.textContent ?? '')
-  expect(composed, 'the quote must arrive verbatim, fences and newlines included').toContain('```')
-  expect(composed, 'the quote must keep its line breaks').toContain('\n')
-  expect(composed).toContain('tail text')
+    'the multi-line quote must land as its own chip and leave every earlier chip intact',
+  ).toHaveCount(4, { timeout: 15_000 })
+  await expect(
+    chips.last(),
+    'the quote chip must carry the file its selection came from',
+  ).toContainText(SEEDED_MD_FILE, { timeout: 10_000 })
+  await expect(
+    page.locator('[data-composer-text-ref]'),
+    'the quote must not degrade into decorated plain text',
+  ).toHaveCount(1)
 
   expect(pageErrors, 'no page error while inserting references').toEqual([])
 })
