@@ -44,7 +44,7 @@ dsh plugin --profile web add dsh-better-sidebar@latest
 
 Then **hard-refresh the browser** (Cmd/Ctrl+Shift+R). Requires DSH **0.2.1-rc.1+**.
 
-> **Compatibility warning — v0.28.0 will take over this plugin's npm `latest`.** DSH's own npm `latest` still points to **0.2.0-rc.2**, which is **not compatible** with v0.28.0. On that host, pin `dsh-better-sidebar@0.26.1` instead of using the command above. DSH 0.2.1-alpha.5 users must pin `dsh-better-sidebar@0.28.0-alpha.0`. Upgrade the host explicitly to `0.2.1-rc.1` before installing v0.28.0; the two packages' `latest` tags are independent.
+> **Compatibility warning — match the plugin to the host line.** As of 2026-10-26, DSH's npm `latest` is **0.2.1-rc.2**, so the command above installs the compatible v0.28.0. Hosts still on **0.2.0-rc.2** must pin `dsh-better-sidebar@0.26.1` (and should upgrade the host to `0.2.1-rc.2` first); DSH 0.2.1-alpha.5 users must pin `dsh-better-sidebar@0.28.0-alpha.0`. The marketplace installer picks the plugin's `latest` regardless of host version, so an old host gets a version-rejection error — upgrade the host or pin the version explicitly. The two packages' `latest` tags are independent.
 
 <details>
 <summary><b>Pick the plugin version for your DSH version</b></summary>

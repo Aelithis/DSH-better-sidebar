@@ -4,6 +4,18 @@
 
 ### 未发布
 
+- **runGit 输出上限加固**（#999）：字节封顶后的 chunk 一律丢弃（闩锁）、超时/封顶路径统一销毁 stdio 并 SIGKILL 进程树、stderr 纳入同一预算；病态工作区的结果从「宿主 `RangeError` 崩溃」降为「一次 SCM 刷新失败」。
+- **worktree 会话的根选择与地址基准**（#956 / #947 / #950 / #952）：同一会话不再有两个基准——聊天链接按会话 header cwd 解析、打开/保存不再二次拼接，linked worktree 里也不再静默读到另一检出的同名文件。
+- **关闭侧聊页签时归档其会话**（#981 / #942）：线程的完整父会话副本不再作为独立会话残留在工作区列表里。
+- **编辑器刷新后保留阅读位置**（#965）：页签重新落座不再回到文件顶部。
+- **浮窗右下角缩放手柄不再被 tab 内容压住**（#1012）。
+- **草稿插入与选区引用**（#1002 / #1052）：@ 提及 / 引用插入不再把输入框里已有的 chip 展平成纯文本；「添加到对话」改为紧凑引用 chip，正文只在发送时展开。
+- 🏷 **改名只在标题本来就来自文件名时才跟着改**（[#915](https://github.com/omdsh-dev/DSH-better-sidebar/issues/915) 后续）：页签调解此前**无条件**把标题写成新的基名，于是**作者自设的标题**会被一次改名悄悄替换掉——宿主的 agent-opens 推送就带着模型自己给的名字（`use-host-feeds` → `openFile(scope, path, title)`），消费插件也可以自己标名字。现在只有标题**等于该页签路径的基名**（也就是打开时由文件名派生的那种）才跟着新名字走；目录改名本来就不动后代（后代基名没变），两处口径因此一致。原生承载面的 `SidebarSurface.pathTabs()` 随之交出每个记录的 `title`（`NativePathTab` 新增字段）。
+  - 🧪 测试：`tests/editor-unsaved-guard.spec.tsx` 新增 1 例（同一个文件的两个页签：派生标题跟着走、自设标题原样保留，底部工作台那一路一并断言）；`tests/native-surface.spec.ts` 的枚举断言带上 `title`。判别性实测：把判定换回无条件改写 → 该用例红。
+- 🧷 **改名 / 删除的页签调解覆盖后台会话的底部工作台**（[#915](https://github.com/omdsh-dev/DSH-better-sidebar/issues/915) 后续）：上一批（#912）让调解同时走**原生右侧栏**的记录，但底部工作台那一路仍只读**当前会话**的快照（`pathTabsOf` 吃 `store.getSnapshot()`），而底部工作台是**按会话**存的——后台会话里开着的文件页（`target: 'bottom'` 的打开、或在原生承载面之前持久化下来的布局）既不跟着改名、也不随删除关闭，切回去的下一次保存照样把改名掉的文件 / 删掉的文件重建出来。现在枚举走 `store.getSessionStates()`（**每个已缓存会话**都在内），每行都带上**自己的会话**；写入也不再落到「碰巧在屏」的那个会话上——`updateTab` / `closeTab` 遇到**不在屏的会话**改走定向通道（`store.reduceFor`，与定向 `openTab(seed, scope)` 同一条路：写进那个会话的自己的布局，不发布、不通知），当前会话继续走发布通道、界面照常重渲染。删除仍先问未保存的草稿，且问题问在**内容会话**里（草稿注册表的键是 `sessionId::tabId`）。
+  - 🧪 测试：`tests/editor-unsaved-guard.spec.tsx` 新增 2 例（后台会话的底部页面在改名后跟着走、且当前会话既没被写也没被重新发布；删除时按**它自己的**草稿先问、关在它自己的布局里）。判别性实测：把枚举收回「只看当前会话」→ 2 条红；把定向写入换回发布通道 → 2 条红；把草稿确认的会话换成当前会话 → 删除那条红。
+- **[#1013] 超过 1000 个分支/远程跟踪引用时仍可访问提交历史**：界面显示明确标注的提交列表，保留提交选择与详情。列表读取本地分支、远程分支和当前 HEAD；分页通过 Git 引用、HEAD 与 shallow 边界的状态指纹校验，状态变化时要求刷新。引用输出上限为 8 MiB，引用数量上限为 100,000，shallow 元数据上限为 1 MiB。
+- **导出插件图标子路径**：增加 `dsh-better-sidebar/icon` 包入口，方便其他包按 `exports` 规则读取 `icon.svg`。
 - ⚡ **页签内容不再因无关重渲染而重读整份文件**：页签 body 拿到的 `scope` 对象此前每次渲染都新建，而编辑器、差异预览、侧聊都拿它当记忆化/副作用的依赖；只要某个**被比较的字段**变了（在文件树里展开目录走 `expanded`，以及 `revealed`、语言切换、页签注册表更新），差异预览就会重跑全文改写、「内容」页重新读取整份文件并闪一下加载态。现在 `scope` 由 `useSessionScope` 按会话与 cwd 缓存，页签内容、差异页签、以及徽标 / 右侧动作区 / `+` 菜单的注册表接口共用同一份稳定对象（后三者是对外部插件公开的接口，插件对 `scope` 做记忆化不再逐渲染失效）。差异预览「内容」页的刷新改由表头刷新按钮驱动——它此前只靠这种副作用顺带刷新，改稳之后会失去刷新路径。
 - **Markdown 链接里的 Windows 反斜杠**：`[x](C:\ws\_analysis\r.md)` 的 `\_` 被 Markdown 当作转义，路径少一个分隔符（变成 `C:\ws_analysis\r.md`），点击后 `ENOENT`。源代码改写现在把本地 destination 的反斜杠统一成正斜杠（Windows 两种写法都接受），UNC 前缀保持 `\\`，避免被解析成协议相对的 `//host/share`。修复 #1037。
 - **右栏展开时仍可开关底部工作台**：会话头的底部工作台开关此前在宿主右侧面板展开时整枚隐藏，导致「先开右栏就再也打不开工作台」，必须先收起右栏。现在照常显示（它在会话头 utilities，与右栏那簇控件分属两列，不会重叠）。空白会话的 fixed 兜底入口保持原行为：那个入口锚在右栏控件左侧，展开时锚点落在面板内部。`tests/bottom-toggle.spec.tsx` 守护。
@@ -23,8 +35,6 @@
 
 ### v0.28.0
 
-- **[#1013] 超过 1000 个分支/远程跟踪引用时仍可访问提交历史**：界面显示明确标注的提交列表，保留提交选择与详情。列表读取本地分支、远程分支和当前 HEAD；分页通过 Git 引用、HEAD 与 shallow 边界的状态指纹校验，状态变化时要求刷新。引用输出上限为 8 MiB，引用数量上限为 100,000，shallow 元数据上限为 1 MiB。
-- **导出插件图标子路径**：增加 `dsh-better-sidebar/icon` 包入口，方便其他包按 `exports` 规则读取 `icon.svg`。
 - **正式版支持线前移到 DSH 0.2.1-rc.1+**：13 条 DSH peer 下限统一为 `^0.2.1-rc.1`，开发依赖、CI 与安装脚本使用精确 RC 基线。不新增运行时兼容层、不改功能实现。
 - **沿用已发布 alpha 的功能**：上游 alpha.5 → rc.1 完整源码树差异共 355 项，全部为 `package.json`，源码零变化；本次仅同步版本、依赖声明与文档。伴随依赖调整为 Cordis peer `^4.0.5` / dev `4.0.5`、group `1.0.5`、schemastery `~3.18.5`，include 保持 `1.0.10`。
 - **发布渠道切换至 npm `latest`**：插件 v0.28.0 即将接管 `latest`，现有 workflow 按正式版本号自动选择该标签，无需修改。**宿主 npm `latest` 此时仍是 0.2.0-rc.2，不能安装本版**；该宿主必须固定插件 **v0.26.1**。DSH 0.2.1-alpha.5 用户固定 **v0.28.0-alpha.0**；0.2.0-rc.1、0.1.7 及更早支持线保持原指引。用户已明确接受两个包的 `latest` 不对齐风险。
@@ -89,10 +99,6 @@
   - **幽灵输入改为精确清扫**：冷恢复（`sidechat.prompt` → `agents.resume`）此前没有 create 路径那道 `inbox.clear()` 围栏。现在改为 `dropInheritedGhosts`——只折**继承前缀**得到幽灵 id 集合，再逐个 `agent.inbox.remove(id)`，精确且幂等，不会误杀「用户在线程里排队、宿主重启后尚未领取」的合法输入。同时确认幽灵的来源比原先记录的更宽：父会话 mid-turn 且工具有未返回调用时，种子被截断在 `turn/start` **之前**，而 inbox 的领取 splice 发生在 `turn/start` **之后**，所以父会话本轮开头已领取的输入在种子折叠里仍是 pending。
   - 🧪 测试：新增 `tests/sidechat-push.spec.ts`、`tests/use-sidechat-push.spec.ts`、`tests/sidechat-transcript.spec.ts`；`tests/sidechat-core.spec.ts` / `tests/sidechat-routes.spec.ts` / `tests/sidechat-view.spec.tsx` 大幅增补（含真实 `Session.create` + 真实 `SessionProjectionRegistry` 的种子验证）；挂载 lane 的 sidechat 宿主路由烟测同步。
 
-- 🏷 **改名只在标题本来就来自文件名时才跟着改**（[#915](https://github.com/omdsh-dev/DSH-better-sidebar/issues/915) 后续）：页签调解此前**无条件**把标题写成新的基名，于是**作者自设的标题**会被一次改名悄悄替换掉——宿主的 agent-opens 推送就带着模型自己给的名字（`use-host-feeds` → `openFile(scope, path, title)`），消费插件也可以自己标名字。现在只有标题**等于该页签路径的基名**（也就是打开时由文件名派生的那种）才跟着新名字走；目录改名本来就不动后代（后代基名没变），两处口径因此一致。原生承载面的 `SidebarSurface.pathTabs()` 随之交出每个记录的 `title`（`NativePathTab` 新增字段）。
-  - 🧪 测试：`tests/editor-unsaved-guard.spec.tsx` 新增 1 例（同一个文件的两个页签：派生标题跟着走、自设标题原样保留，底部工作台那一路一并断言）；`tests/native-surface.spec.ts` 的枚举断言带上 `title`。判别性实测：把判定换回无条件改写 → 该用例红。
-- 🧷 **改名 / 删除的页签调解覆盖后台会话的底部工作台**（[#915](https://github.com/omdsh-dev/DSH-better-sidebar/issues/915) 后续）：上一批（#912）让调解同时走**原生右侧栏**的记录，但底部工作台那一路仍只读**当前会话**的快照（`pathTabsOf` 吃 `store.getSnapshot()`），而底部工作台是**按会话**存的——后台会话里开着的文件页（`target: 'bottom'` 的打开、或在原生承载面之前持久化下来的布局）既不跟着改名、也不随删除关闭，切回去的下一次保存照样把改名掉的文件 / 删掉的文件重建出来。现在枚举走 `store.getSessionStates()`（**每个已缓存会话**都在内），每行都带上**自己的会话**；写入也不再落到「碰巧在屏」的那个会话上——`updateTab` / `closeTab` 遇到**不在屏的会话**改走定向通道（`store.reduceFor`，与定向 `openTab(seed, scope)` 同一条路：写进那个会话的自己的布局，不发布、不通知），当前会话继续走发布通道、界面照常重渲染。删除仍先问未保存的草稿，且问题问在**内容会话**里（草稿注册表的键是 `sessionId::tabId`）。
-  - 🧪 测试：`tests/editor-unsaved-guard.spec.tsx` 新增 2 例（后台会话的底部页面在改名后跟着走、且当前会话既没被写也没被重新发布；删除时按**它自己的**草稿先问、关在它自己的布局里）。判别性实测：把枚举收回「只看当前会话」→ 2 条红；把定向写入换回发布通道 → 2 条红；把草稿确认的会话换成当前会话 → 删除那条红。
 
 - 🛡 **三处静默数据问题**（[#898](https://github.com/omdsh-dev/DSH-better-sidebar/issues/898) / [#899](https://github.com/omdsh-dev/DSH-better-sidebar/issues/899) / [#900](https://github.com/omdsh-dev/DSH-better-sidebar/issues/900)）：① 编辑器草稿守卫的记账键从**裸 tab id** 改成 **`会话::tab id`**——原生右栏每个会话的 id 都从 `tab1` 重新计数、底部工作台对同一路径在各会话复用 `editor:<path>`，两套身份原先挤在同一个键上，**另一个会话打开编辑器就会把本会话的草稿记录一并删掉**（刷新时静默丢失）；② 面包屑折叠行（`a/b/c` 压成一行）的重命名此前提交的是**链头**目录、与预填名不一致——不改字直接回车等于把父目录改名，现在落到链尾；③ 无 BOM 的 16 位小端数据（低幅采样表 / 未压缩音频数据段这类）不再被判成 UTF-16 文本打开、保存后整份改写（奇数长度还会丢尾字节）：新的文本闸门要求 ≥90% 的单元是合法文本单元。同批还带了 dev 新增代码的一轮去重（内部导出 `runGitRaw` / `bottomTerminalKey` / `formatModelRoute` / `dirtyCountForSession` 收敛，仓内调用点同批改完）。（贡献者 PR [#901](https://github.com/omdsh-dev/DSH-better-sidebar/pull/901) @UNscientific-9）
   - 🧪 测试：`tests/editor-unsaved-guard.spec.tsx`（跨会话草稿：第二个会话挂同一个原生 id，既不能清掉、也不能确认掉第一个会话的草稿）、`tests/file-tree-compact-fold.spec.tsx`（折叠行重命名断言落到链尾：`/tmp/a/b/c` → `renamed`）、`tests/text-encoding.spec.ts`（uint16LE 采样表 / WAV `data` 段 / 奇数长度判二进制，真 UTF-16LE/BE 仍是文本）。

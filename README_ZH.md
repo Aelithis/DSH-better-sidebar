@@ -44,7 +44,7 @@ dsh plugin --profile web add dsh-better-sidebar@latest
 
 装完**硬刷新浏览器**（Cmd/Ctrl+Shift+R）即可。要求 DSH **0.2.1-rc.1+**。
 
-> **兼容性警告：插件 v0.28.0 即将接管 npm `latest`。** DSH 自身的 npm `latest` 此时仍是 **0.2.0-rc.2**，**不能使用 v0.28.0**；该宿主必须固定 `dsh-better-sidebar@0.26.1`，不要执行上方浮动安装命令。DSH 0.2.1-alpha.5 用户固定 `dsh-better-sidebar@0.28.0-alpha.0`。安装 v0.28.0 前请显式升级宿主到 `0.2.1-rc.1`，两个包的 `latest` 标签不是同一支持线。
+> **兼容性警告：插件版本必须与宿主线匹配。** 截至 2026-10-26，DSH 的 npm `latest` 是 **0.2.1-rc.2**，上方命令安装的 v0.28.0 与之兼容。仍停留在 **0.2.0-rc.2** 的宿主必须固定 `dsh-better-sidebar@0.26.1`（并建议先升级宿主到 `0.2.1-rc.2`）；DSH 0.2.1-alpha.5 用户固定 `dsh-better-sidebar@0.28.0-alpha.0`。市场安装器按插件的 `latest` 安装、不按宿主版本选版本，旧宿主会收到版本拒绝错误——请升级宿主或显式固定版本。两个包的 `latest` 标签不是同一支持线。
 
 <details>
 <summary><b>按 DSH 版本选插件版本</b></summary>
