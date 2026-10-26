@@ -172,6 +172,19 @@ describe('skin contract: the plugin owns no color of its own', () => {
     }
   })
 
+  it('tag ref pills take the neutral label token instead of a lane-palette slot', () => {
+    // The graph's ref pills are painted by lane slot (`data-color` → the five
+    // `--dsw-alias-state-*` colours); a tag is a decoration, not a lane, so its
+    // rule must resolve to a NEUTRAL label token and keep the text marker
+    // legible with a dashed outline.
+    const styles = readFileSync(resolve(ROOT, 'src/client/changes/graph.module.css'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+    const block = /\.ref\[data-tone="tag"\] \{([^}]*)\}/.exec(styles)?.[1]
+    if (block === undefined) throw new Error('the tag ref pill rule must exist in graph.module.css')
+    expect(block).toContain('color: var(--dsw-alias-label-secondary)')
+    expect(block).toContain('border-style: dashed')
+  })
+
   it('the graph viewport fills its container without a viewport-relative height cap', () => {
     const sheet = document.createElement('style')
     sheet.textContent = readFileSync(resolve(ROOT, 'src/client/changes/changes.module.css'), 'utf8')

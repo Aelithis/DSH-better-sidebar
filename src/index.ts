@@ -39,7 +39,7 @@ import { createSidechatPushHub } from './sidechat-push.ts'
 import { launchExternal } from './open-external.ts'
 import { createArchiveTasks, respondArchiveDownload, type ArchiveTasks } from './archive-route.ts'
 import * as git from './git.ts'
-import { gitGraph, type GitGraphOptions } from './git-graph.ts'
+import { gitGraph, gitHistory, type GitGraphOptions, type GitHistoryOptions } from './git-graph.ts'
 import { SettingsConflictError } from '@deepseek-ai/dsh-settings'
 import { AgentOpenRegistry, registerOpenTool, type AgentOpenRequest } from './agent-opens.ts'
 import { buildSubagentLiveApi, type SidebarSubagentLiveRoutes } from './subagent-live-route.ts'
@@ -635,11 +635,37 @@ function buildApi(
   assistantLive: AssistantLiveBuffer,
   archiveTasks: ArchiveTasks,
 ): Record<string, ApiMethod> {
+  /**
+   * Same-key sharing for the shared cwd path. All twelve routes below resolve
+   * the session cwd through here, and a session switch fires them at once. A
+   * detached (cold) session costs one host observation per call — a full log
+   * read plus decode, e.g. 39 MB for a large session — and the host's cold
+   * cache only helps AFTER a read completes; concurrent same-key asks all miss
+   * it. A client burst therefore used to decode the same log N times in
+   * parallel (44 × 39 MB ≈ 1.7 GB, OOM on 0.28.0). Concurrent asks for the same
+   * session + client hint now share ONE resolution; the hint is part of the key
+   * because it is a fallback the result depends on. No TTL: the host already
+   * caches completed cold reads by persistence revision, so the leader's result
+   * is what every follower and every later ask reuses.
+   */
+  const cwdInFlight = new Map<string, Promise<{ sessionId: string; cwd: string }>>()
   const cwdOf = async (payload: unknown): Promise<{ sessionId: string; cwd: string }> => {
     const sessionId = requireString(payload, 'sessionId')
     const record = payload as { cwd?: unknown } | null
     const clientCwd = typeof record?.cwd === 'string' && record.cwd !== '' ? record.cwd : undefined
-    return { sessionId, cwd: await activeWorktreeRootOf(ctx, sessionId, await sessionCwdOf(ctx, sessionId, clientCwd)) }
+    const key = `${sessionId}\u0000${clientCwd ?? ''}`
+    const pending = cwdInFlight.get(key)
+    if (pending !== undefined) return pending
+    const resolved = (async (): Promise<{ sessionId: string; cwd: string }> => ({
+      sessionId,
+      cwd: await activeWorktreeRootOf(ctx, sessionId, await sessionCwdOf(ctx, sessionId, clientCwd)),
+    }))()
+    cwdInFlight.set(key, resolved)
+    try {
+      return await resolved
+    } finally {
+      cwdInFlight.delete(key)
+    }
   }
   /** Resolve the optional Git-panel checkout selector against the selected
    * session repository. Unlike `cwd`, `worktree` is never trusted directly. */
@@ -902,6 +928,16 @@ function buildApi(
       } catch (error) {
         // The shared Git mapper collapses legacy command codes. Preserve the
         // graph cursor's refresh signal rather than reporting a generic error.
+        if (error instanceof git.GitCommandError && (error.code === 'graph-stale' || error.code === 'graph-limit' || error.code === 'bad-request')) {
+          throw new SidebarError(error.code, error.message, error.code === 'graph-stale' ? 409 : 400)
+        }
+        throw error
+      }
+    },
+    'git.history': async (payload) => {
+      const { cwd } = await gitCwdOf(payload)
+      try { return await gitHistory(cwd, payload as GitHistoryOptions, selectedRepoOf(payload)) }
+      catch (error) {
         if (error instanceof git.GitCommandError && (error.code === 'graph-stale' || error.code === 'graph-limit' || error.code === 'bad-request')) {
           throw new SidebarError(error.code, error.message, error.code === 'graph-stale' ? 409 : 400)
         }

@@ -2,6 +2,41 @@
 
 > 本文档收录 dsh-better-sidebar 的完整发布历史（最新版摘要见 [README](README_ZH.md)；同步发布于 [GitHub Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases)）。
 
+### v0.28.1
+
+- 🛡 **并发同键冷读合并（OOM 修复）**：全量重启后会话全部转为 detached，12 条 `/sidebar/*` 路由共享的 cwd 解析会对同一会话各做一次宿主冷观察（整份日志读 + 解码；39MB 级会话 × 44 个并发请求 ≈ 1.7GB → OOM）。现在 `cwdOf()` 把**同一会话 + 同一客户端 cwd 提示**的并发请求合并为一次真实读，其余 await 同一结果；不引入 TTL（宿主本身按持久化 revision 缓存已完成冷读），客户端提示参与 key 以免跨提示串味。`tests/smoke.spec.ts` 新增「12 并发 → 1 次冷读」与「不同提示不合并」两例。
+- **runGit 输出上限加固**（#999）：字节封顶后的 chunk 一律丢弃（闩锁）、超时/封顶路径统一销毁 stdio 并 SIGKILL 进程树、stderr 纳入同一预算；病态工作区的结果从「宿主 `RangeError` 崩溃」降为「一次 SCM 刷新失败」。
+- **worktree 会话的根选择与地址基准**（#956 / #947 / #950 / #952）：同一会话不再有两个基准——聊天链接按会话 header cwd 解析、打开/保存不再二次拼接，linked worktree 里也不再静默读到另一检出的同名文件。
+- **关闭侧聊页签时归档其会话**（#981 / #942）：线程的完整父会话副本不再作为独立会话残留在工作区列表里。
+- **编辑器刷新后保留阅读位置**（#965）：页签重新落座不再回到文件顶部。
+- **浮窗右下角缩放手柄不再被 tab 内容压住**（#1012）。
+- **草稿插入与选区引用**（#1002 / #1052）：@ 提及 / 引用插入不再把输入框里已有的 chip 展平成纯文本；「添加到对话」改为紧凑引用 chip，正文只在发送时展开。
+- 🏷 **改名只在标题本来就来自文件名时才跟着改**（[#915](https://github.com/omdsh-dev/DSH-better-sidebar/issues/915) 后续）：页签调解此前**无条件**把标题写成新的基名，于是**作者自设的标题**会被一次改名悄悄替换掉——宿主的 agent-opens 推送就带着模型自己给的名字（`use-host-feeds` → `openFile(scope, path, title)`），消费插件也可以自己标名字。现在只有标题**等于该页签路径的基名**（也就是打开时由文件名派生的那种）才跟着新名字走；目录改名本来就不动后代（后代基名没变），两处口径因此一致。原生承载面的 `SidebarSurface.pathTabs()` 随之交出每个记录的 `title`（`NativePathTab` 新增字段）。
+  - 🧪 测试：`tests/editor-unsaved-guard.spec.tsx` 新增 1 例（同一个文件的两个页签：派生标题跟着走、自设标题原样保留，底部工作台那一路一并断言）；`tests/native-surface.spec.ts` 的枚举断言带上 `title`。判别性实测：把判定换回无条件改写 → 该用例红。
+- 🧷 **改名 / 删除的页签调解覆盖后台会话的底部工作台**（[#915](https://github.com/omdsh-dev/DSH-better-sidebar/issues/915) 后续）：上一批（#912）让调解同时走**原生右侧栏**的记录，但底部工作台那一路仍只读**当前会话**的快照（`pathTabsOf` 吃 `store.getSnapshot()`），而底部工作台是**按会话**存的——后台会话里开着的文件页（`target: 'bottom'` 的打开、或在原生承载面之前持久化下来的布局）既不跟着改名、也不随删除关闭，切回去的下一次保存照样把改名掉的文件 / 删掉的文件重建出来。现在枚举走 `store.getSessionStates()`（**每个已缓存会话**都在内），每行都带上**自己的会话**；写入也不再落到「碰巧在屏」的那个会话上——`updateTab` / `closeTab` 遇到**不在屏的会话**改走定向通道（`store.reduceFor`，与定向 `openTab(seed, scope)` 同一条路：写进那个会话的自己的布局，不发布、不通知），当前会话继续走发布通道、界面照常重渲染。删除仍先问未保存的草稿，且问题问在**内容会话**里（草稿注册表的键是 `sessionId::tabId`）。
+  - 🧪 测试：`tests/editor-unsaved-guard.spec.tsx` 新增 2 例（后台会话的底部页面在改名后跟着走、且当前会话既没被写也没被重新发布；删除时按**它自己的**草稿先问、关在它自己的布局里）。判别性实测：把枚举收回「只看当前会话」→ 2 条红；把定向写入换回发布通道 → 2 条红；把草稿确认的会话换成当前会话 → 删除那条红。
+- **[#1013] 超过 1000 个分支/远程跟踪引用时仍可访问提交历史**：界面显示明确标注的提交列表，保留提交选择与详情。列表读取本地分支、远程分支和当前 HEAD；分页通过 Git 引用、HEAD 与 shallow 边界的状态指纹校验，状态变化时要求刷新。引用输出上限为 8 MiB，引用数量上限为 100,000，shallow 元数据上限为 1 MiB。
+- **导出插件图标子路径**：增加 `dsh-better-sidebar/icon` 包入口，方便其他包按 `exports` 规则读取 `icon.svg`。
+- **恢复提交图的 tag 显示**（#983）：lightweight 与 annotated tag 装饰对应提交，行内与详情卡使用中性描边 pill，不影响 HEAD 与分支样式。Tag 独立按引用名保留前 5,000 条，并复用 8 MiB 输出上限（超限省略完整行之外的 tag，不让整页失败）；不计入 1,000 分支上限。Tag 清单纳入分页指纹，创建、移动或删除 tag 后旧游标要求刷新。
+- 🐞 **重新载入后保存不再死锁在 `fs-conflict`**（[#1059](https://github.com/omdsh-dev/DSH-better-sidebar/issues/1059)）：文件内容没变、只有修改时间变了（`touch` / `git checkout` / 格式化工具）时，编辑器的保存基线只在内容变化时刷新，重新载入拿到同样的文本后仍发送旧 `expectedMtimeMs`，宿主持续拒绝保存。现在：① 保存基线也跟随每次重新载入的 `mtimeMs` 更新；②「Reload from disk」发现磁盘文本与载入内容一致时**就地更新基线并保留草稿**，不再经过会丢草稿的脏确认，只有文本确实变化时才走原来的脏保护重载。真正的文件切换仍走原来的模式 / 草稿 / 脏标记重置。`tests/text-editor-save-baseline.spec.tsx` + `tests/editor-conflict-reload.spec.tsx` 守护。
+- 🐞 **桌面壳兜底入口避开标题栏左侧系统按钮**（[#992](https://github.com/omdsh-dev/DSH-better-sidebar/issues/992)）：macOS 桌面壳的原生红绿灯不在命中测试栈里，旧走查退到视口左缘（`left=4`）时会把入口压在系统按钮下。现在 darwin（非全屏、标题栏行）把左移下限抬到标题栏保留区 88px；下限之上仍无空位时接受与宿主内容重叠——空白会话没有别的底部工作台 opener，不隐藏唯一入口。web 保持原来的 100 步有界走查。`tests/dock-fallback.spec.tsx` 守护。
+- ⚡ **页签内容不再因无关重渲染而重读整份文件**：页签 body 拿到的 `scope` 对象此前每次渲染都新建，而编辑器、差异预览、侧聊都拿它当记忆化/副作用的依赖；只要某个**被比较的字段**变了（在文件树里展开目录走 `expanded`，以及 `revealed`、语言切换、页签注册表更新），差异预览就会重跑全文改写、「内容」页重新读取整份文件并闪一下加载态。现在 `scope` 由 `useSessionScope` 按会话与 cwd 缓存，页签内容、差异页签、以及徽标 / 右侧动作区 / `+` 菜单的注册表接口共用同一份稳定对象（后三者是对外部插件公开的接口，插件对 `scope` 做记忆化不再逐渲染失效）。差异预览「内容」页的刷新改由表头刷新按钮驱动——它此前只靠这种副作用顺带刷新，改稳之后会失去刷新路径。
+- **Markdown 链接里的 Windows 反斜杠**：`[x](C:\ws\_analysis\r.md)` 的 `\_` 被 Markdown 当作转义，路径少一个分隔符（变成 `C:\ws_analysis\r.md`），点击后 `ENOENT`。源代码改写现在把本地 destination 的反斜杠统一成正斜杠（Windows 两种写法都接受），UNC 前缀保持 `\\`，避免被解析成协议相对的 `//host/share`。修复 #1037。
+- **右栏展开时仍可开关底部工作台**：会话头的底部工作台开关此前在宿主右侧面板展开时整枚隐藏，导致「先开右栏就再也打不开工作台」，必须先收起右栏。现在照常显示（它在会话头 utilities，与右栏那簇控件分属两列，不会重叠）。空白会话的 fixed 兜底入口保持原行为：那个入口锚在右栏控件左侧，展开时锚点落在面板内部。`tests/bottom-toggle.spec.tsx` 守护。
+- ⚡ **卡顿扫描与一轮低风险收敛**（前端页面 + 宿主 `/sidebar/*` 请求；逐条取证与误报核实见[扫描记录](docs/plans/2026-10-24-perf-scan.md)）：
+  - **文件树在隐藏页签里不再干活**：宿主把访问过的页签 body 常驻挂载，此前每个隐藏的文件树仍会在窗口获得焦点、刷新 tick 或另一个树展开目录时发 `fs.trees` 并重渲染整棵树；现在停靠树在隐藏时不加载（含折叠链预加载：隐藏后才返回的在飞层不会再拉下一节）、不监听焦点刷新，重新可见时由目录 watcher 对整套被 watch 的目录发一次批量 `fs.trees`（此前是每目录一次 POST；隐藏期间恰好没有缓存且展开集身份同时变化时最多两批，超过宿主 64 条路径上限仍按上限拆批）。
+  - **任务图滚轮缩放改为每帧一次提交**：高回报率滚轮/触控板此前每个 wheel 事件都重绘整张图，且每帧只保住一步缩放；现在与平移共用 `frame batcher`，同一帧的缩放量按步夹紧后完整复合、只提交一次（与逐帧应用等价）；背景拖拽期间滚轮让位给拖拽，避免两种手势互相覆盖。
+  - **侧聊打字与流式输出不再重扫整段转录**：用户/助手行的本地图片与链接改写按**行对象**缓存（未变化的行在既有 `sidechat-transcript` 里本就是同一对象），输入框每键与每次流式 push 只重算变化的行。
+  - **Git diff 只解析一次 + 默认展开有预算**：变动页此前对同一份 patch 在 header 统计与文件行里各解析一遍（≤8MB 在 UI 线程跑两次），现在共用一份解析；默认展开按「变更行预算 2000」封顶，大 commit 不再一次挂载数千行（首屏仍有内容，其余文件一键展开）。
+  - **提交图历史行只挂载视口窗口**：`data-graph-count` 仍报整页条数，DOM 只保留视口 ± 8 行，上下留白维持真实滚动条与「加载更多」哨兵位置；深历史滚动/追加不再线性增长。
+  - **宿主侧两处常驻成本**：`/sidebar/bundle/*.js` 的 `HEAD` 不再为响应体 `readFile`（ETag 冷路径仍读一次算内容 hash，memo 命中后不读；客户端每次 HEAD 都在 GET 之后，因此实际是热命中）；`active-worktree` 在 15s TTL 到期、会话事件游标（`session.seq`）未动**且已解析到 git 顶层**时直接续期，不再重复快照/扫描最多 4000 条事件（实测 miss 9.6–44.7ms，空闲的 5s 轮询每到第三个就踩中）；非仓库/探测失败仍按 15s 重探，父目录后来 `git init` 或探测暂时失败都能恢复。
+  - 🧪 测试：`tests/tasks-page.spec.tsx`（同帧 5 次滚轮只提交一次且缩放量等于合计；同帧复合与逐帧应用等价；拖拽期间滚轮被忽略）、`tests/file-tree-dir-watch.spec.tsx`（re-arm 单次批量回调）、`tests/file-tree-batch-load.spec.tsx`（隐藏零请求、回屏恰一次批量、折叠链在隐藏后才返回时不继续预加载且回屏后接续）、`tests/editor-host.spec.tsx`（隐藏树对窗口焦点零提交、回屏一次批量）、`tests/sidechat-markdown-labels.spec.tsx`（输入框连敲两键：未变化行改写 0 次）、`tests/diff-files-collapse.spec.tsx`（默认展开按行预算 + 复用调用方解析）、`tests/git-graph-windowing.spec.ts` + `tests/git-graph-ui.spec.tsx`（窗口/留白/滚动跟随/页替换夹紧；隐藏时不留视口观察者）、`tests/bundle-route.spec.ts`（HEAD 无 body）、`tests/active-worktree.spec.ts`（游标未动不重扫、游标推进重扫、非仓库/失败仍按 TTL 重探、无游标宿主回退旧语义）。每条都在旧代码上先复现失败（见扫描记录 §3 与 §7）。
+- **任务图展开修复**：平移画布后，聚合卡和 Agent 卡的下一次点击不再被误判为拖动；展开聚合与查看详情恢复正常。
+- **任务图性能**：卡片内容使用独立 memo 边界，平移与布局补间不再重复渲染内容；布局用索引和显式栈替代逐边查找与深递归，同次宽度适配复用相同列数的布局。2000 个非根 Agent 的纯布局对照及 200/500 Agent 真浏览器证据见[验证记录](docs/plans/2026-10-23-tasks-folding-performance-validation.md)，布局加速不外推为整页加速。
+- **任务页拖拽改为每帧一次更新**：图模式背景平移、后台任务浮窗标题拖动、锚定弹层拖动不再按鼠标事件频率重绘（高回报率鼠标下此前每个 pointermove 都提交整块画布）；松手同步落位，点击判定与最终位置不变。实测同一帧内 100 次移动的画布提交由 98 次降到 1 次。
+- **已结束分支整体聚合**：只有整条分支全部结束才自动聚合；仍有运行后代、当前查看路径或未知子代理目录的分支保持可见，聚合计数覆盖隐藏的 Agent 后代。
+- **四项独立自动规则**：复用设置齿轮与现有偏好存储，分别控制已结束叶子聚合、已结束分支聚合、同一父级至少 3 个空闲队友聚合（workflow 内沿用原规则，也受空闲开关控制），以及 Agent 总数至少 8 个时后台任务抽屉自动收起，默认全部开启。未手动操作时设置即时生效；手动展开或收起始终优先。
+
 ### v0.28.0
 
 - **正式版支持线前移到 DSH 0.2.1-rc.1+**：13 条 DSH peer 下限统一为 `^0.2.1-rc.1`，开发依赖、CI 与安装脚本使用精确 RC 基线。不新增运行时兼容层、不改功能实现。
@@ -67,6 +102,7 @@
   - **per-thread 模型选择**：宿主对 `origin:'subagent'` 会话**显式禁用**自带选择器（`modelDirectories.assertAvailable`），`sessionController.selectModel` 也被 subagent fence 挡住，所以插件自建两条路由——`sidechat.models`（直通 `sessionController.modelCatalog()`，缺服务即 `available:false`，此时 UI 只提供「继承主对话」）与 `sidechat.model`（`ctx.get('llm').resolveCallConfig` 归一化后**同时**落 `session.append('model/selection')` 与 `installModelSelection(agent.ctx, ref)`，否则控制器缓存的 per-agent selection 永不回读投影；resume 后按日志里的有效选择重装）。
   - **幽灵输入改为精确清扫**：冷恢复（`sidechat.prompt` → `agents.resume`）此前没有 create 路径那道 `inbox.clear()` 围栏。现在改为 `dropInheritedGhosts`——只折**继承前缀**得到幽灵 id 集合，再逐个 `agent.inbox.remove(id)`，精确且幂等，不会误杀「用户在线程里排队、宿主重启后尚未领取」的合法输入。同时确认幽灵的来源比原先记录的更宽：父会话 mid-turn 且工具有未返回调用时，种子被截断在 `turn/start` **之前**，而 inbox 的领取 splice 发生在 `turn/start` **之后**，所以父会话本轮开头已领取的输入在种子折叠里仍是 pending。
   - 🧪 测试：新增 `tests/sidechat-push.spec.ts`、`tests/use-sidechat-push.spec.ts`、`tests/sidechat-transcript.spec.ts`；`tests/sidechat-core.spec.ts` / `tests/sidechat-routes.spec.ts` / `tests/sidechat-view.spec.tsx` 大幅增补（含真实 `Session.create` + 真实 `SessionProjectionRegistry` 的种子验证）；挂载 lane 的 sidechat 宿主路由烟测同步。
+
 
 - 🛡 **三处静默数据问题**（[#898](https://github.com/omdsh-dev/DSH-better-sidebar/issues/898) / [#899](https://github.com/omdsh-dev/DSH-better-sidebar/issues/899) / [#900](https://github.com/omdsh-dev/DSH-better-sidebar/issues/900)）：① 编辑器草稿守卫的记账键从**裸 tab id** 改成 **`会话::tab id`**——原生右栏每个会话的 id 都从 `tab1` 重新计数、底部工作台对同一路径在各会话复用 `editor:<path>`，两套身份原先挤在同一个键上，**另一个会话打开编辑器就会把本会话的草稿记录一并删掉**（刷新时静默丢失）；② 面包屑折叠行（`a/b/c` 压成一行）的重命名此前提交的是**链头**目录、与预填名不一致——不改字直接回车等于把父目录改名，现在落到链尾；③ 无 BOM 的 16 位小端数据（低幅采样表 / 未压缩音频数据段这类）不再被判成 UTF-16 文本打开、保存后整份改写（奇数长度还会丢尾字节）：新的文本闸门要求 ≥90% 的单元是合法文本单元。同批还带了 dev 新增代码的一轮去重（内部导出 `runGitRaw` / `bottomTerminalKey` / `formatModelRoute` / `dirtyCountForSession` 收敛，仓内调用点同批改完）。（贡献者 PR [#901](https://github.com/omdsh-dev/DSH-better-sidebar/pull/901) @UNscientific-9）
   - 🧪 测试：`tests/editor-unsaved-guard.spec.tsx`（跨会话草稿：第二个会话挂同一个原生 id，既不能清掉、也不能确认掉第一个会话的草稿）、`tests/file-tree-compact-fold.spec.tsx`（折叠行重命名断言落到链尾：`/tmp/a/b/c` → `renamed`）、`tests/text-encoding.spec.ts`（uint16LE 采样表 / WAV `data` 段 / 奇数长度判二进制，真 UTF-16LE/BE 仍是文本）。
