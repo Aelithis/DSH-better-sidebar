@@ -202,8 +202,8 @@ export function TextEditor(props: FileViewerProps) {
   /** Bumped by every save: the uncommitted diff moved while the file's git
    *  status entry (which only tracks its XY code) did not. */
   const [gitRevision, setGitRevision] = useState(0)
-  /** The view-side identity of the gutter's git source (stable across the
-   *  scope object's per-render identity churn). */
+  /** The view-side identity of the gutter's git source: rebuilt only when a
+   *  field it reads actually moves. */
   const gitHost = useMemo<GitGutterHost>(
     () => ({ scope: { sessionId: scope.sessionId, cwd: scope.cwd, repoRoot: scope.repoRoot }, path }),
     [scope.sessionId, scope.cwd, scope.repoRoot, path],

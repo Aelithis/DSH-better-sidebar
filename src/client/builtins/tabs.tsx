@@ -318,7 +318,7 @@ export function builtinTabs(ctx: Context): readonly TabDescriptor[] {
       dedupeKey: (tab) => tab.id,
       component: ({ scope, tab }) => (
         tab.diff === undefined ? null
-          : <DiffTab sessionId={scope.sessionId} cwd={scope.cwd} diff={tab.diff} />
+          : <DiffTab scope={scope} diff={tab.diff} />
       ),
     },
   ]

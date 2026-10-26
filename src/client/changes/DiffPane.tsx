@@ -308,6 +308,11 @@ export function DiffPane({ target, ctx, scope, height, onHeightCommit, onClose, 
   const [gitContent, setGitContent] = useState<
     { status: 'idle' | 'loading' | 'binary' | 'large' } | { status: 'text'; text: string } | { status: 'error'; error: string }
   >({ status: 'idle' })
+  // The pane owns the refresh GESTURE: the header button bumps this, and both
+  // loaders reload on it. The scope is stable, so a plain re-render no longer
+  // re-reads the file as a side effect — without this the content tab would
+  // keep bytes read before the file changed, and it has no other reload path.
+  const [refreshSeq, setRefreshSeq] = useState(0)
   useEffect(() => {
     if (gitWorktree === null) { setGitContent({ status: 'idle' }); return }
     // Deferred until the content view is the one on screen: opening a file to
@@ -327,7 +332,7 @@ export function DiffPane({ target, ctx, scope, height, onHeightCommit, onClose, 
         setGitContent({ status: 'error', error: reason instanceof Error ? reason.message : String(reason) })
       })
     return () => { controller.abort() }
-  }, [gitWorktree, scope, active])
+  }, [gitWorktree, scope, active, refreshSeq])
 
   // ── Op target material (pure snapshots; the prior content came with the
   //    target so a running op shows what is already known). ────────────────
@@ -589,7 +594,12 @@ export function DiffPane({ target, ctx, scope, height, onHeightCommit, onClose, 
               icon={<IconRefreshOutlineRegular size={14} />}
               label={t('refresh')}
               disabled={loading}
-              onClick={refresh}
+              onClick={() => {
+                // Both views reload: the patch (refresh) and the whole-file
+                // content tab, which read its bytes through its own fs.read.
+                refresh()
+                setRefreshSeq(sequence => sequence + 1)
+              }}
             />
             <IconButton
               size="sm"
