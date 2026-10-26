@@ -15,6 +15,8 @@
 - **Sidebar**: the bottom-workbench toggle stays visible while the right panel is open ([#989](https://github.com/omdsh-dev/DSH-better-sidebar/issues/989)); the macOS dock fallback avoids the window controls instead of pinning itself to the top-left corner ([#992](https://github.com/omdsh-dev/DSH-better-sidebar/issues/992)); a content-stable tab scope ends needless full-file re-reads ([#1057](https://github.com/omdsh-dev/DSH-better-sidebar/pull/1057)); closing a side-chat tab archives its session instead of leaving a copy behind ([#942](https://github.com/omdsh-dev/DSH-better-sidebar/issues/942)).
 - **Package**: export the `dsh-better-sidebar/icon` subpath so other packages can resolve `icon.svg` through `exports` ([#1016](https://github.com/omdsh-dev/DSH-better-sidebar/issues/1016)).
 
+**Community contributions**: @lhh010 (#999), @wang-kaopu (#1018, #1020), @yanzhaohui1999 (#929, #956, #1012, #1002), @finley08 (#965), @UNscientific-9 (#1052, #1057), @mvanhorn (#981), @z11y11w (#1055), @WinterXMQ (#1053).
+
 ### v0.28.0
 
 - **Stable plugin support moves to DSH 0.2.1-rc.1+**: all 13 DSH peer floors are `^0.2.1-rc.1`; development dependencies, CI and installers pin the exact RC baseline. No runtime compatibility layer or feature implementation changes are introduced.
