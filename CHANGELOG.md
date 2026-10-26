@@ -2,7 +2,7 @@
 
 > 本文档收录 dsh-better-sidebar 的完整发布历史（最新版摘要见 [README](README_ZH.md)；同步发布于 [GitHub Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases)）。
 
-### 未发布
+### v0.28.1
 
 - **runGit 输出上限加固**（#999）：字节封顶后的 chunk 一律丢弃（闩锁）、超时/封顶路径统一销毁 stdio 并 SIGKILL 进程树、stderr 纳入同一预算；病态工作区的结果从「宿主 `RangeError` 崩溃」降为「一次 SCM 刷新失败」。
 - **worktree 会话的根选择与地址基准**（#956 / #947 / #950 / #952）：同一会话不再有两个基准——聊天链接按会话 header cwd 解析、打开/保存不再二次拼接，linked worktree 里也不再静默读到另一检出的同名文件。
