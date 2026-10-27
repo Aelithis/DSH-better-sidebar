@@ -45,9 +45,34 @@
 
 ## 五、验证
 
-**已执行**：`pnpm typecheck` 通过；`pnpm exec vitest run tests/smoke.spec.ts tests/active-worktree.spec.ts` → 89 passed，1 failed（`serves a home-relative media path`，`mkdir $HOME/.dsh-sidebar-selftest-*` 被本会话文件沙箱拒绝；在未改动的 `dev` 上同样失败，判为环境限制）。
+### 5.1 门禁（已执行）
 
-**未执行**：没有 39.9 MB 真机会话，未在本机复现「36 → ?」的读次数变化。可证伪预测：同一场景下 `readStableSnapshot` 的调用数应降到 **每个冷会话 ≤1 次**（header 读不走该函数时直接归零），且 fs-watch 帧不再触发任何整份读。
+`pnpm typecheck` / `eslint`（改动文件）/ `pnpm build` 通过；`pnpm test` → 2834 passed，2 个失败均非本改动（`serves a home-relative media path` 因沙箱禁止写 `$HOME`，在未改动的 `dev` 上同样失败；`fs-watch` 一条并行负载下的 flake，单跑 3/3 通过）；CI 三条 lane（`ci` / `ci-windows` / `plugin-mount`）全绿。
+
+### 5.2 40 MB 越大会话实测（2026-10-27，本机）
+
+**造会话**：用宿主真实的 `@deepseek-ai/dsh-session` + `dsh-session-persistence-jsonl`（cordis 插件方式挂载）在 `/tmp` 建 scratch root，底下放一份本机真实的 13.8 MB 会话（`session.v4.jsonl.zstd`，13 382 条真实事件），再用写句柄追加 580 条合成 `user/message` 事件，扩到 **40,157,518 字节**（事故样本 39,886,933 字节）。
+
+**新代码（合并后的 `lib/index.js`）**：把插件挂在 detached 场景（`ctx.sessions.get` 恒 undefined），持久化用**真实**后端并包一层计数，然后并发发起 **12 个 `session.cwd` API 调用 + 36 个 `/sidebar/file` 调用**（后者与被 fs-watch 每帧走的 `sessionCwdOf` 是同一入口，且同样不经过 `cwdOf()` 单飞）：
+
+| 指标 | 结果 |
+| --- | --- |
+| `sessionPersistence.stat` 调用 | **1** |
+| `sessionPersistence.open` 调用（整份解码） | **0** |
+| 48 个并发调用总耗时 | **3 ms** |
+| RSS 增量 | **+0.3 MB** |
+| 解析结果 | 正确（header 的 workspace 地址） |
+
+**旧代码（`43db17f`，0.28.1）对照**：同一份产物、同样的绕过入口路径，6 个并发调用 → **6 次 `observeSession`**（每次一次完整 `open`+`read`），耗时 2.19 s，峰值 RSS +1,002 MB；按 6 倍外推，报告里的 36 次并发 ≈ **36 次整读、约 6.0 GB 峰值**——与 2026-10-19 事故记录的外置 watcher 峰值 6.2 GB 吻合。
+
+**单次整读成本**：同一份产物 `open()` + `read()` 一次 = 467 ms、RSS +501.6 MB（13 962 条事件）。
+
+### 5.3 未做
+
+- 没有用桌面壳（dsh-tauri）做端到端复跑；本轮是在真实持久化/真实产物上的进程内测量，UI 侧只验证到路由层。
+- 未提供事故方那份 39,886,933 字节样本，用的是同量级的本地重建产物。
+
+可证伪预测（仍成立）：同场景下 `readStableSnapshot` 对同一会话的调用数应为 0（新路径只走 `stat` 的 header 读），fs-watch 帧不再触发任何整份读。
 
 ## 六、留下的读取面（不在本次范围）
 

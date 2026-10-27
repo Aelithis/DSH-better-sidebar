@@ -4,10 +4,11 @@
 >
 > 📝 The Chinese [CHANGELOG](./CHANGELOG.md) is the authoritative, item-by-item record; this file carries the English summaries and has historically lagged behind it. Where the two disagree, the Chinese one is current.
 
-### Unreleased
+### v0.28.2
 
 - 🛡 **A detached session's cwd now comes from its stored workspace address instead of decoding the whole session log.** `sessionQuery.observeSession(..., { projectionMode: 'all' })` decodes the entire zstd artifact and hydrates every projection to answer with one `workingDirectory` string. The real startup fan-out never went through the 0.28.1 `cwdOf()` single-flight (which only covers `/sidebar/api`): the fs-watch socket sends **one frame per watched directory**, and `/sidebar/file|html` resolve cwd per resource, `/sidebar/upload|write` per call — so a 39 MB session was fully decoded dozens of times inside 130–180 ms (the 44-read OOM on 0.28.0 and the 36 reads reported against 0.28.1 are the same path, not a broken dedupe). The cold cwd now uses `sessionPersistence.stat` — a **header-only** read (first zstd frame) with a process-level memo and same-session in-flight sharing — and `activeWorktreeRootOf` returns that address for detached sessions. Once the host attaches the session, the committed `working_directory` and linked-worktree following resume as before.
   - Cost: until the session is attached, the sidebar roots at the original project rather than the agent's last directory/worktree; the next 5 s poll corrects it after attach.
+  - 📏 **Measured (40,157,518-byte session, rebuilt locally)**: 12 `session.cwd` + 36 bypass-entry calls concurrently → **1 header read, 0 full reads, 3 ms, +0.3 MB RSS**; the same artifact on the pre-fix build (`43db17f`) with 6 concurrent bypass calls → 6 full reads, +1002 MB peak RSS (≈6.0 GB extrapolated for 36, matching the 6.2 GB incident peak). One full read costs 467 ms / +501.6 MB. Method and limits: [record](docs/plans/2026-10-27-workspace-cwd-over-cold-reads.md) §5.2.
   - 🧪 `tests/smoke.spec.ts` rewrote that group of 8 cases. Rationale and trade-offs: [record](docs/plans/2026-10-27-workspace-cwd-over-cold-reads.md).
 
 ### v0.28.1

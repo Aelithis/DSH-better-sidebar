@@ -44,14 +44,14 @@ dsh plugin --profile web add dsh-better-sidebar@latest
 
 装完**硬刷新浏览器**（Cmd/Ctrl+Shift+R）即可。要求 DSH **0.2.1-rc.1+**。
 
-> **兼容性警告：插件版本必须与宿主线匹配。** 截至 2026-10-26，DSH 的 npm `latest` 是 **0.2.1-rc.2**，上方命令安装的 v0.28.1 与之兼容。仍停留在 **0.2.0-rc.2** 的宿主必须固定 `dsh-better-sidebar@0.26.1`（并建议先升级宿主到 `0.2.1-rc.2`）；DSH 0.2.1-alpha.5 用户固定 `dsh-better-sidebar@0.28.0-alpha.0`。市场安装器按插件的 `latest` 安装、不按宿主版本选版本，旧宿主会收到版本拒绝错误——请升级宿主或显式固定版本。两个包的 `latest` 标签不是同一支持线。
+> **兼容性警告：插件版本必须与宿主线匹配。** 截至 2026-10-26，DSH 的 npm `latest` 是 **0.2.1-rc.2**，上方命令安装的 v0.28.2 与之兼容。仍停留在 **0.2.0-rc.2** 的宿主必须固定 `dsh-better-sidebar@0.26.1`（并建议先升级宿主到 `0.2.1-rc.2`）；DSH 0.2.1-alpha.5 用户固定 `dsh-better-sidebar@0.28.0-alpha.0`。市场安装器按插件的 `latest` 安装、不按宿主版本选版本，旧宿主会收到版本拒绝错误——请升级宿主或显式固定版本。两个包的 `latest` 标签不是同一支持线。
 
 <details>
 <summary><b>按 DSH 版本选插件版本</b></summary>
 
 | 你的 DSH 版本 | 安装命令 |
 | --- | --- |
-| **0.2.1-rc.1+** | `dsh plugin --profile web add dsh-better-sidebar@0.28.1` |
+| **0.2.1-rc.1+** | `dsh plugin --profile web add dsh-better-sidebar@0.28.2` |
 | **0.2.1-alpha.5** | `dsh plugin --profile web add dsh-better-sidebar@0.28.0-alpha.0` |
 | **0.2.0-rc.2** | `dsh plugin --profile web add dsh-better-sidebar@0.26.1` |
 | **0.2.0-rc.1** | `dsh plugin --profile web add dsh-better-sidebar@0.24.1` |
@@ -70,12 +70,12 @@ dsh plugin --profile web add dsh-better-sidebar@latest
 
 ```text
 帮我安装 dsh-better-sidebar 插件（DSH 侧边栏工作台），步骤：
-1. 先确认 DSH 为 0.2.1-rc.1 或更新版本，再执行 dsh plugin --profile web add dsh-better-sidebar@0.28.1
+1. 先确认 DSH 为 0.2.1-rc.1 或更新版本，再执行 dsh plugin --profile web add dsh-better-sidebar@0.28.2
 2. 完成后提醒我硬刷新浏览器（Cmd/Ctrl+Shift+R）
 遇到报错先查 https://github.com/omdsh-dev/DSH-better-sidebar README 的常见问题表。
 ```
 
-**一键脚本**——克隆本仓库后执行 `bash scripts/install.sh 0.28.1`（macOS / Linux / Windows Git Bash；Windows 原生用 `./scripts/install.ps1 -Version 0.28.1`），自动完成安装 + bundle 注册。
+**一键脚本**——克隆本仓库后执行 `bash scripts/install.sh 0.28.2`（macOS / Linux / Windows Git Bash；Windows 原生用 `./scripts/install.ps1 -Version 0.28.2`），自动完成安装 + bundle 注册。
 
 **更新**：重跑一次安装命令即可，然后硬刷新浏览器。
 
@@ -92,11 +92,18 @@ dsh plugin --profile web add dsh-better-sidebar@latest
 | 页面出现**两个侧边栏** | 双挂载。删掉 `~/.dsh/profiles/web/cordis.patch.yml` 里旧的手动挂载行（`- insert: ... better-sidebar ...`）；聚合包以不同 id 挂载本包时会自动退让，无需处理。 |
 | 升级后设置页的值去哪了 | DSH 0.1.7 起偏好写在 profile 里本插件的挂载行上（默认 entry id `better-sidebar`），插件首次启动会把旧 `settings.yaml` 里的配置一次性回迁，不会覆盖新设的值。 |
 | 终端无法使用 | 终端由 **DSH 自身**提供（本插件不自带 PTY），请查 DSH 侧文档；底部终端显示「宿主未提供终端能力」= 这个部署没挂终端控制器。 |
-| 提示 `dsh: command not found` | 先安装 DSH；或用 `npx -y --package @deepseek-ai/dsh@0.2.1-rc.1 dsh plugin --profile web add dsh-better-sidebar@0.28.1`。 |
+| 提示 `dsh: command not found` | 先安装 DSH；或用 `npx -y --package @deepseek-ai/dsh@0.2.1-rc.1 dsh plugin --profile web add dsh-better-sidebar@0.28.2`。 |
 
 </details>
 
 ## 🆕 最近更新
+
+**v0.28.2 — 大会话冷读修复**
+
+- **根因修复**：detached 会话的 cwd 不再解码整份会话日志——改读存储在 header 里的工作区地址（只读第一个 zstd 帧，header-only），按会话做进程内缓存与在飞去重；`activeWorktreeRootOf` 对 detached 会话不再折持久化日志
+- **为什么 0.28.1 没修好**：单飞只覆盖 `/sidebar/api`，而启动期真正并发的是 fs-watch 每个监视目录一帧、`/sidebar/file|html` 每资源一次——39 MB 级会话仍被并发整读数十次
+- **行为**：会话 attach 后仍跟随 `working_directory` 与 linked worktree；attach 之前侧边栏根是原始项目目录，下一次 5 s 轮询自动切回
+- **实测（40.2 MB 会话，本机）**：12 路由 + 36 个绕过入口并发 → 1 次 header 读、0 次整读、3 ms、RSS +0.3 MB；修复前 6 个入口并发即 6 次整读、峰值 +1.0 GB（外推 36 次 ≈ 6 GB）
 
 **v0.28.1 — UX 与可靠性补丁**
 
@@ -114,13 +121,6 @@ dsh plugin --profile web add dsh-better-sidebar@latest
 - 上游 alpha.5 → rc.1 完整树差异共 355 个文件，全部为 `package.json`，源码零变化
 - DSH 0.2.0-rc.2 宿主固定插件 v0.26.1；DSH 0.2.1-alpha.5 宿主固定 v0.28.0-alpha.0
 - 验证：[RC 适配记录](./docs/plans/2026-10-17-dsh-0.2.1-rc.1-adaptation.md)
-
-**v0.27.0** - 完整发布历史见 [Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases) · [CHANGELOG](./CHANGELOG.md)
-
-- **Git 页面重做**：Source Control 分组、支持分支筛选的只读提交图，以及共用的「提交详情 / 内容 / 差异」预览区
-- **变更追踪修正**：暂存和未暂存行数分离、嵌套仓库发现、按会话解析路径、PTC 文件操作可见与长轮询
-- **选中行不再错位**：修复整合时引入的文件行漂移和异常边框，新增真实挂载布局回归
-- **侧边对话**：从最近一次 summarizing compaction 构造子会话，不再全量复制父日志
 
 ## 🔌 插件生态
 
