@@ -2,6 +2,12 @@
 
 > 本文档收录 dsh-better-sidebar 的完整发布历史（最新版摘要见 [README](README_ZH.md)；同步发布于 [GitHub Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases)）。
 
+### Unreleased
+
+- 🛡 **冷会话（detached）的 cwd 改读工作区地址，不再整份解码会话日志**：`sessionQuery.observeSession(..., { projectionMode: 'all' })` 为拿一个 `workingDirectory` 要解码整份 zstd 日志并水合全部投影；而启动期真正并发的是 **fs-watch 每监视目录一帧**、`/sidebar/file|html` 每资源一次、`/sidebar/upload|write` 每次一次——它们都绕过 0.28.1 只覆盖 `/sidebar/api` 的 `cwdOf()` 单飞，所以 39 MB 级会话在 130–180 ms 里被并发整读数十次（0.28.0 的 44 次 OOM、0.28.1 的 36 次是同一路径，不是「去重失效」）。现在 detached 会话的 cwd 走 `sessionPersistence.stat` 的 **header-only** 读（只读第一个 zstd 帧）+ 进程内 memo/在飞去重，`activeWorktreeRootOf` 对 detached 会话直接返回该地址；宿主 attach 后仍跟随 `working_directory` 与 linked worktree。
+  - 代价：会话 attach 之前，侧边栏根是原始项目目录而非 agent 最后所在的子目录 / worktree；attach 后下一次 5 s 轮询切回。
+  - 🧪 测试：`tests/smoke.spec.ts` 重写该组 8 例（header 优先于陈旧提示、header 只读一次、12 并发共享一次 header 读、无 `stat`/`stat` 失败回落客户端提示、live committed 优先、相对 cwd 拒绝为 `bad-request`、`defaultDirectory` 与进程 cwd 兜底）。机制与取舍见 [记录](docs/plans/2026-10-27-workspace-cwd-over-cold-reads.md)。
+
 ### v0.28.1
 
 - 🛡 **并发同键冷读合并（OOM 修复）**：全量重启后会话全部转为 detached，12 条 `/sidebar/*` 路由共享的 cwd 解析会对同一会话各做一次宿主冷观察（整份日志读 + 解码；39MB 级会话 × 44 个并发请求 ≈ 1.7GB → OOM）。现在 `cwdOf()` 把**同一会话 + 同一客户端 cwd 提示**的并发请求合并为一次真实读，其余 await 同一结果；不引入 TTL（宿主本身按持久化 revision 缓存已完成冷读），客户端提示参与 key 以免跨提示串味。`tests/smoke.spec.ts` 新增「12 并发 → 1 次冷读」与「不同提示不合并」两例。
