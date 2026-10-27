@@ -501,6 +501,20 @@ export interface SidebarSessionTitleService {
  */
 export interface SidebarSessionPersistenceService {
   open(sessionId: string, access: 'read' | 'write'): Promise<SidebarSessionHandle>
+  /**
+   * Header-only snapshot of ONE stored session (revision + immutable header).
+   * The cold cwd resolver reads the stored header through this: it is the one
+   * persistence call that never decodes the log. Absent on a host without it —
+   * every caller must degrade to a client hint.
+   */
+  stat?(sessionId: string): Promise<{
+    /** Immutable stored header (cwd / agentPreset live here). */
+    header: { cwd?: string; agentPreset?: string } & Record<string, unknown>
+    /** Opaque change token of the stored artifact. */
+    revision?: unknown
+    /** Physical artifact size in bytes, when the backend can provide it. */
+    sizeBytes?: number
+  } | undefined>
 }
 
 /** One open channel onto a stored session (the fields this plugin reads). */
@@ -858,14 +872,6 @@ export interface SidebarContextShape {
   workingDirectory: {
     readonly defaultDirectory?: string
     get(session: { header: SidebarSessionHeader }): string
-  }
-  /** Host-owned live/prepared observation, including cold-session projections. */
-  sessionQuery: {
-    observeSession(id: string, options: { projectionMode: 'all' }): Promise<{
-      header: SidebarSessionHeader
-      projections?: { values: { workingDirectory?: string | null } }
-      [Symbol.dispose](): void
-    }>
   }
   /** Native host request admission and client transport recovery. */
   connection: SidebarConnectionService

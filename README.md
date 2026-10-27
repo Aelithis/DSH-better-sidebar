@@ -44,14 +44,14 @@ dsh plugin --profile web add dsh-better-sidebar@latest
 
 Then **hard-refresh the browser** (Cmd/Ctrl+Shift+R). Requires DSH **0.2.1-rc.1+**.
 
-> **Compatibility warning — match the plugin to the host line.** As of 2026-10-26, DSH's npm `latest` is **0.2.1-rc.2**, so the command above installs the compatible v0.28.1. Hosts still on **0.2.0-rc.2** must pin `dsh-better-sidebar@0.26.1` (and should upgrade the host to `0.2.1-rc.2` first); DSH 0.2.1-alpha.5 users must pin `dsh-better-sidebar@0.28.0-alpha.0`. The marketplace installer picks the plugin's `latest` regardless of host version, so an old host gets a version-rejection error — upgrade the host or pin the version explicitly. The two packages' `latest` tags are independent.
+> **Compatibility warning — match the plugin to the host line.** As of 2026-10-26, DSH's npm `latest` is **0.2.1-rc.2**, so the command above installs the compatible v0.28.2. Hosts still on **0.2.0-rc.2** must pin `dsh-better-sidebar@0.26.1` (and should upgrade the host to `0.2.1-rc.2` first); DSH 0.2.1-alpha.5 users must pin `dsh-better-sidebar@0.28.0-alpha.0`. The marketplace installer picks the plugin's `latest` regardless of host version, so an old host gets a version-rejection error — upgrade the host or pin the version explicitly. The two packages' `latest` tags are independent.
 
 <details>
 <summary><b>Pick the plugin version for your DSH version</b></summary>
 
 | Your DSH version | Install command |
 | --- | --- |
-| **0.2.1-rc.1+** | `dsh plugin --profile web add dsh-better-sidebar@0.28.1` |
+| **0.2.1-rc.1+** | `dsh plugin --profile web add dsh-better-sidebar@0.28.2` |
 | **0.2.1-alpha.5** | `dsh plugin --profile web add dsh-better-sidebar@0.28.0-alpha.0` |
 | **0.2.0-rc.2** | `dsh plugin --profile web add dsh-better-sidebar@0.26.1` |
 | **0.2.0-rc.1** | `dsh plugin --profile web add dsh-better-sidebar@0.24.1` |
@@ -70,12 +70,12 @@ Always pin **exact versions** for older releases (`latest` moves forward with ea
 
 ```text
 Install the dsh-better-sidebar plugin (a sidebar workbench for DSH):
-1. Confirm DSH is 0.2.1-rc.1 or newer, then run dsh plugin --profile web add dsh-better-sidebar@0.28.1
+1. Confirm DSH is 0.2.1-rc.1 or newer, then run dsh plugin --profile web add dsh-better-sidebar@0.28.2
 2. Remind me to hard-refresh the browser (Cmd/Ctrl+Shift+R) afterwards
 If something fails, check the FAQ table in https://github.com/omdsh-dev/DSH-better-sidebar README first.
 ```
 
-**One-line script** — clone this repo and run `bash scripts/install.sh 0.28.1` (macOS / Linux / Windows Git Bash; `./scripts/install.ps1 -Version 0.28.1` for native Windows). It handles installation + bundle registration.
+**One-line script** — clone this repo and run `bash scripts/install.sh 0.28.2` (macOS / Linux / Windows Git Bash; `./scripts/install.ps1 -Version 0.28.2` for native Windows). It handles installation + bundle registration.
 
 **Updating**: just re-run the install command, then hard-refresh the browser.
 
@@ -92,11 +92,18 @@ If something fails, check the FAQ table in https://github.com/omdsh-dev/DSH-bett
 | **Two sidebars** on the page | Double mounting. Remove the legacy manual mount line (`- insert: ... better-sidebar ...`) from `~/.dsh/profiles/web/cordis.patch.yml`; aggregate packages mounting this package under a different id are auto-yielded, no action needed. |
 | Settings values gone after upgrade | Since DSH 0.1.7, preferences live on this plugin's mount row in the profile (default entry id `better-sidebar`). The plugin migrates your old `settings.yaml` values once on first start and never overwrites newer values. |
 | Terminal unavailable | Terminals are provided by **DSH itself** (this plugin ships no PTY) — see DSH docs; "host provides no terminal capability" in the bottom terminal means this deployment has no terminal controller mounted. |
-| `dsh: command not found` | Install DSH first; or use `npx -y --package @deepseek-ai/dsh@0.2.1-rc.1 dsh plugin --profile web add dsh-better-sidebar@0.28.1`. |
+| `dsh: command not found` | Install DSH first; or use `npx -y --package @deepseek-ai/dsh@0.2.1-rc.1 dsh plugin --profile web add dsh-better-sidebar@0.28.2`. |
 
 </details>
 
 ## 🆕 Recent Updates
+
+**v0.28.2 — large-session cold-read fix**
+
+- **Root cause fixed**: a detached session's cwd no longer decodes the whole session log — it reads the workspace address stored in the header (first zstd frame only, header-only), memoized per session with in-flight sharing; `activeWorktreeRootOf` no longer folds the stored log for a detached session
+- **Why 0.28.1 missed it**: the single-flight only covered `/sidebar/api`, while the real startup fan-out is one fs-watch frame per watched directory and one cwd resolution per `/sidebar/file|html` resource — a 39 MB session was still fully decoded dozens of times in parallel
+- **Behavior**: an attached session still follows `working_directory` and linked worktrees; before attach the sidebar roots at the original project and the next 5 s poll switches back
+- **Measured (40.2 MB session, local)**: 12 routes + 36 bypass-entry calls concurrently → 1 header read, 0 full reads, 3 ms, +0.3 MB RSS; pre-fix, 6 bypass calls were 6 full reads with a +1.0 GB peak (≈6 GB extrapolated for 36)
 
 **v0.28.1 — UX and reliability patch**
 
@@ -114,13 +121,6 @@ If something fails, check the FAQ table in https://github.com/omdsh-dev/DSH-bett
 - The upstream alpha.5 → rc.1 full-tree diff contains 355 files, all `package.json`; no source changes
 - DSH 0.2.0-rc.2 hosts stay on plugin v0.26.1; DSH 0.2.1-alpha.5 hosts stay on v0.28.0-alpha.0
 - Validation: [RC adaptation record](./docs/plans/2026-10-17-dsh-0.2.1-rc.1-adaptation.md)
-
-**v0.27.0** - full release history at [Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases) · [CHANGELOG](./CHANGELOG_EN.md)
-
-- **Git page rebuilt**: Source Control groups, a read-only commit graph with branch filtering, and a shared Commit details / Content / Diff pane
-- **Accurate change tracking**: separate staged/unstaged counts, nested-repository discovery, session-relative paths, PTC file operations and long polling
-- **Selection stays in place**: fixed the integration regression that displaced selected files and drew stray borders; added real-host layout coverage
-- **Side Chat**: new child sessions seed from the latest summarizing compaction instead of copying the full parent log
 
 ## 🔌 Plugin Ecosystem
 
