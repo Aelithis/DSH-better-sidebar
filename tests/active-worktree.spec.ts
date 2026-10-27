@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { activeWorktreeRootOf } from '../src/active-worktree.ts'
@@ -96,6 +96,36 @@ function countingSessionCtx(cwd: string, calls: Array<Record<string, unknown>>):
     get: () => undefined,
   } as never
   return { ctx: ctx as Context, scans: () => scans }
+}
+
+/**
+ * A live session face with a MUTABLE event cursor: `seq` moves when an event
+ * is appended, exactly like the host's. `scans` counts real snapshot reads, so
+ * a cache hit that only compared the cursor costs zero.
+ */
+function cursorSessionCtx(
+  cwd: string,
+  calls: Array<Record<string, unknown>>,
+  initialSeq = 5,
+): { ctx: Context; scans: () => number; append: () => void } {
+  let scans = 0
+  let seq = initialSeq
+  const ctx = {
+    sessions: {
+      get: () => {
+        return {
+          header: { cwd },
+          seq,
+          snapshotEvents: () => {
+            scans += 1
+            return calls.map((data, index) => ({ type: 'tool/call', seq: index, time: index, data }))
+          },
+        }
+      },
+    },
+    get: () => undefined,
+  } as never
+  return { ctx: ctx as Context, scans: () => scans, append: () => { seq += 1 } }
 }
 
 describe('active worktree root', () => {
@@ -257,12 +287,108 @@ describe('active worktree root', () => {
   })
 
   /**
+   * A TTL miss is not automatically a rescan: the entry is only invalid because
+   * wall time passed, and the resolver reads the event log (up to 4000 events
+   * + git probes, measured 9.6–44.7 ms). When the session's cursor has not
+   * moved, nothing it reads can have changed — re-arm the TTL instead of
+   * snapshotting the log again. This is the idle 5 s poll's hot path.
+   */
+  it('does not re-scan the event log after the TTL when the session cursor is unchanged', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-active-root-'))
+    const repo = join(root, 'repo')
+    try {
+      initRepo(repo, 'a.txt')
+      mkdirSync(join(repo, 'src'))
+      const { ctx, scans, append } = cursorSessionCtx(repo, [{ cwd: join(repo, 'src') }])
+      const first = await activeWorktreeRootOf(ctx, 's-cursor', repo)
+      expect(first).toBe(realpathSync.native(repo))
+      expect(scans()).toBe(1)
+
+      probed.length = 0
+      const started = Date.now()
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(started + 60_000)
+      try {
+        await expect(activeWorktreeRootOf(ctx, 's-cursor', repo)).resolves.toBe(first)
+        expect(scans(), 'an idle TTL expiry must not snapshot the log').toBe(1)
+        expect(probed).toEqual([])
+
+        // A new event moves the cursor: the next expiry re-scans (inside the
+        // re-armed TTL the cached root still wins — the 15 s follow bound).
+        append()
+        clock.mockReturnValue(started + 120_000)
+        await expect(activeWorktreeRootOf(ctx, 's-cursor', repo)).resolves.toBe(first)
+        expect(scans(), 'a moved cursor re-scans').toBe(2)
+      } finally {
+        clock.mockRestore()
+      }
+    } finally {
+      removeTree(root)
+    }
+  })
+
+  /**
+   * A cache entry whose base probe found NO repository (or failed) must keep
+   * the wall-clock re-probe even when the event cursor is idle: `git init` in
+   * a parent, a transient spawn failure, or a mount that comes back are all
+   * invisible to the event log. Only a resolved git top may be re-armed.
+   */
+  it('keeps re-probing a non-repository base after the TTL with an idle cursor', async () => {
+    // A plain directory: `git rev-parse` fails, so the answer is the base.
+    const base = mkdtempSync(join(tmpdir(), 'dsh-active-root-'))
+    try {
+      const { ctx, scans } = cursorSessionCtx(base, [])
+      probed.length = 0
+      await expect(activeWorktreeRootOf(ctx, 's-norepo', base)).resolves.toBe(base)
+      expect(probed).toEqual([base])
+      expect(scans()).toBe(0)
+
+      probed.length = 0
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000)
+      try {
+        await expect(activeWorktreeRootOf(ctx, 's-norepo', base)).resolves.toBe(base)
+        expect(probed, 'a negative repository answer must not be re-armed forever').toEqual([base])
+      } finally {
+        clock.mockRestore()
+      }
+    } finally {
+      removeTree(base)
+    }
+  })
+
+  /**
+   * The fallback: hosts (and detached sessions) without a live cursor expose no
+   * `seq`, so the TTL keeps its old meaning — expire means re-scan.
+   */
+  it('re-scans after the TTL when the host exposes no event cursor', async () => {
+    probed.length = 0
+    const root = mkdtempSync(join(tmpdir(), 'dsh-active-root-'))
+    const repo = join(root, 'repo')
+    try {
+      initRepo(repo, 'a.txt')
+      const { ctx, scans } = countingSessionCtx(repo, [{ cwd: join(repo, 'src') }])
+      await activeWorktreeRootOf(ctx, 's-no-cursor', repo)
+      expect(scans()).toBe(1)
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000)
+      try {
+        await activeWorktreeRootOf(ctx, 's-no-cursor', repo)
+        expect(scans()).toBe(2)
+      } finally {
+        clock.mockRestore()
+      }
+    } finally {
+      removeTree(root)
+    }
+  })
+
+  /**
    * The three process-wide maps are bounded LRUs. The module exposes no test
    * seam, so the bound is observed the only way it is observable from outside:
    * after `cap` distinct sessions, the OLDEST session's next ask is a miss
    * again (it was evicted) while the youngest ones still hit.
    */
   it('bounds the root cache: the oldest session is evicted past the cap', async () => {
+    // Probe calls are module-wide; this case counts them from a clean slate.
+    probed.length = 0
     const root = mkdtempSync(join(tmpdir(), 'dsh-active-root-'))
     try {
       // The canned answer keeps the 257 probes from being 257 real processes;
@@ -286,6 +412,77 @@ describe('active worktree root', () => {
     } finally {
       seam.responder = null
       removeTree(root)
+    }
+  })
+
+  it('does not adopt a nested repository worktree that lives INSIDE the workspace (#952)', async () => {
+    // A container workspace (itself a repo) holding sub-projects is normal
+    // content: re-rooting the explorer into `W/nested/wt` hides every sibling.
+    const root = mkdtempSync(join(tmpdir(), 'dsh-active-root-'))
+    const container = join(root, 'W')
+    const nested = join(container, 'nested')
+    const nestedWt = join(nested, 'wt')
+    try {
+      initRepo(container, 'a.txt')
+      initRepo(nested, 'b.txt')
+      git(nested, ['worktree', 'add', '-q', '-b', 'feat', nestedWt])
+      const ctx = sessionCtx(container, [{ cwd: nestedWt, file_path: join(nestedWt, 'b.txt') }])
+      // The workspace root is the answer, not the nested checkout.
+      await expect(activeWorktreeRootOf(ctx, 's-nested', container)).resolves.toBe(realpathSync.native(container))
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('does not adopt the worktrees of a nested BARE repository (#952, reported layout)', async () => {
+    // The reporter's real shape: `W/paper_downloader` is a bare repo and
+    // `W/paper_downloader/{main,local}` are its linked worktrees.
+    const root = mkdtempSync(join(tmpdir(), 'dsh-active-root-'))
+    const container = join(root, 'W')
+    const seed = join(root, 'seed')
+    const bare = join(container, 'paper_downloader')
+    const bareMain = join(bare, 'main')
+    try {
+      initRepo(container, 'a.txt')
+      initRepo(seed, 'b.txt')
+      git(root, ['clone', '--bare', '-q', seed, bare])
+      // `-b wt`: the bare clone's own HEAD already owns `main`, and one branch
+      // cannot be checked out in two worktrees.
+      git(bare, ['worktree', 'add', '-q', bareMain, '-b', 'wt'])
+      const ctx = sessionCtx(container, [{ cwd: bareMain, path: join(bareMain, 'b.txt') }])
+      await expect(activeWorktreeRootOf(ctx, 's-bare', container)).resolves.toBe(realpathSync.native(container))
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('still follows the SAME repository worktree inside the workspace (#802 / #947 layout)', async () => {
+    // `.worktrees/<branch>` of the session's own repo IS the session moving.
+    const root = mkdtempSync(join(tmpdir(), 'dsh-active-root-'))
+    const repo = join(root, 'repo')
+    const worktree = join(repo, 'frontend', '.worktrees', 'wt')
+    try {
+      initRepo(repo, 'a.txt')
+      mkdirSync(join(repo, 'frontend', '.worktrees'), { recursive: true })
+      git(repo, ['worktree', 'add', '-q', '-b', 'agent', worktree])
+      const ctx = sessionCtx(repo, [{ cwd: worktree, path: join(worktree, 'a.txt') }])
+      await expect(activeWorktreeRootOf(ctx, 's-same-repo', repo)).resolves.toBe(realpathSync.native(worktree))
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('still follows a worktree of the same repository OUTSIDE the workspace', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-active-root-'))
+    const repo = join(root, 'repo')
+    const worktree = join(root, 'outside-wt')
+    try {
+      initRepo(repo, 'a.txt')
+      git(repo, ['worktree', 'add', '-q', '-b', 'agent', worktree])
+      const ctx = sessionCtx(repo, [{ cwd: worktree, path: join(worktree, 'a.txt') }])
+      await expect(activeWorktreeRootOf(ctx, 's-outside', repo)).resolves.toBe(realpathSync.native(worktree))
+    } finally {
+      rmSync(root, { recursive: true, force: true })
     }
   })
 })

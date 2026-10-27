@@ -17,13 +17,15 @@ export interface SidechatRowSurfaceBinding {
 export function SidechatAssistantRow(props: {
   row: Extract<SidechatTranscriptRow, { kind: 'assistant' }>
   labels: MarkdownCopyLabels
-  rewrite: (text: string) => string
+  /** The view's row-level prose pass (image destinations first, then local
+   *  links) — takes the ROW so an unchanged row reuses its cached rewrite. */
+  rewrite: (row: Extract<SidechatTranscriptRow, { text: string }>) => string
   surface: SidechatRowSurfaceBinding
 }): React.ReactNode {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const { row, labels, rewrite, surface } = props
   const { service, threadId, visible, sendPrompt } = surface
-  const renderedText = rewrite(row.text)
+  const renderedText = rewrite(row)
   useLayoutEffect(() => {
     const root = rootRef.current
     if (!visible || !row.settled || root === null || threadId === undefined
@@ -41,7 +43,11 @@ export function SidechatAssistantRow(props: {
   }, [service, threadId, visible, sendPrompt, row.settled, row.seq, row.contentBlockIndex, row.text, renderedText])
   return (
     <div ref={rootRef} className={css.sidechatAssistant} data-genui-surface="dsh-better-sidebar/sidechat">
-      <MarkdownText {...markdownTextProps(renderedText, labels)} />
+      {/* `streaming` keeps the host's incremental parse across chunks
+          instead of restarting it; only the durable (settled) message is
+          the final parse. It rides the row's own flag so a superseded
+          live row never claims to be settled. */}
+      <MarkdownText {...markdownTextProps(renderedText, labels)} streaming={!row.settled} />
     </div>
   )
 }

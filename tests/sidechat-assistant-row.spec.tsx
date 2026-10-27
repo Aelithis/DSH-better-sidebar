@@ -10,7 +10,7 @@ import { renderRoot, setupReactAct } from './test-utils.ts'
 setupReactAct()
 const labels = { copyLabel: 'Copy', copiedLabel: 'Copied', codeLabel: 'Code', wrapLabel: 'Wrap', unwrapLabel: 'Unwrap' }
 const row = { kind: 'assistant' as const, seq: 5, text: '**original**\n\n```dsh-ui\n{"type":"button"}\n```', settled: true, contentBlockIndex: 2 }
-const rewrite = (text: string): string => text.replace('original', 'rewritten')
+const rewrite = (row: { text: string }): string => row.text.replace('original', 'rewritten')
 
 afterEach(() => { vi.restoreAllMocks() })
 

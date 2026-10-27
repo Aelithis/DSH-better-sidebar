@@ -506,6 +506,195 @@ describe('buildSidechatInheritance compaction tail', () => {
     expectAcceptedSeed(seed)
   })
 
+  it('trims when a model switch rewrites the protected head after the compaction', () => {
+    // Host shape: the model switch injects a new system/message LATER in the
+    // session, replacing the protected head node (seq 2) with a replace op.
+    // The replacement sits after the checkpoint in the log but ahead of it on
+    // the surface, so the child must carry the LATEST prompt in the head slot
+    // and drop the chain — the switched model only saw the same
+    // post-compaction surface as the original one.
+    const events = [...compactedLog()]
+    const at = events.length
+    events.push(
+      lo('turn/start', at, { turn: 5 }),
+      lo('step/start', at + 1, { turn: 5, step: 1 }),
+      {
+        ...sf('system/message', at + 2, {
+          turn: 5, step: 1,
+          message: { id: 'm-sys-switched', role: 'system', content: [{ type: 'text', text: 'switched prompt' }], source: { kind: 'system-prompt' } },
+        }),
+        surfaceOp: { op: 'replace', startSeq: 2, endSeq: 2 },
+        sourceEventSeqs: [2],
+      } as SidebarSessionEvent,
+      sf('user/message', at + 3, userMessage('m-q5', 'q5')),
+      sf('assistant/message', at + 4, { turn: 5, step: 1, message: assistantMessage('a5'), stream: [] }),
+      lo('step/end', at + 5, { turn: 5, step: 1 }),
+      lo('turn/end', at + 6, { turn: 5, reason: { kind: 'completed' } }),
+    )
+    const { seed, snapshot } = buildSidechatInheritance(events)
+    expect(snapshot).toBeNull()
+    expect(seed.length).toBeLessThan(events.length)
+    // The switched prompt is the surviving head; the original prompt is gone.
+    expect(seed.some(event => JSON.stringify(event).includes('switched prompt'))).toBe(true)
+    expect(seed.some(event => JSON.stringify(event).includes('system prompt'))).toBe(false)
+    const head = seed.find(event => event.type === 'system/message') as { data?: { turn?: number; step?: number } } | undefined
+    expect(head?.data?.turn).toBe(1)
+    expect(head?.data?.step).toBe(1)
+    expect(visibleSequence(seed)).toEqual(visibleSequence(events))
+    expectContiguous(seed)
+    expectAcceptedSeed(seed)
+  })
+
+  it('carries only the latest prompt when the head was rewritten twice', () => {
+    // A second model switch replaces the first switch's node; the chain is
+    // resolved to the original protected head and only the latest prompt
+    // survives in the child.
+    const events = [...compactedLog()]
+    const first = events.length
+    events.push(
+      lo('turn/start', first, { turn: 5 }),
+      lo('step/start', first + 1, { turn: 5, step: 1 }),
+      {
+        ...sf('system/message', first + 2, {
+          turn: 5, step: 1,
+          message: { id: 'm-sys-switch-1', role: 'system', content: [{ type: 'text', text: 'first switch' }], source: { kind: 'system-prompt' } },
+        }),
+        surfaceOp: { op: 'replace', startSeq: 2, endSeq: 2 },
+        sourceEventSeqs: [2],
+      } as SidebarSessionEvent,
+      sf('user/message', first + 3, userMessage('m-q5', 'q5')),
+      lo('step/end', first + 4, { turn: 5, step: 1 }),
+      lo('turn/end', first + 5, { turn: 5, reason: { kind: 'completed' } }),
+    )
+    const second = events.length
+    events.push(
+      lo('turn/start', second, { turn: 6 }),
+      lo('step/start', second + 1, { turn: 6, step: 1 }),
+      {
+        ...sf('system/message', second + 2, {
+          turn: 6, step: 1,
+          message: { id: 'm-sys-switch-2', role: 'system', content: [{ type: 'text', text: 'second switch' }], source: { kind: 'system-prompt' } },
+        }),
+        surfaceOp: { op: 'replace', startSeq: first + 2, endSeq: first + 2 },
+        sourceEventSeqs: [first + 2],
+      } as SidebarSessionEvent,
+      sf('user/message', second + 3, userMessage('m-q6', 'q6')),
+      sf('assistant/message', second + 4, { turn: 6, step: 1, message: assistantMessage('a6'), stream: [] }),
+      lo('step/end', second + 5, { turn: 6, step: 1 }),
+      lo('turn/end', second + 6, { turn: 6, reason: { kind: 'completed' } }),
+    )
+    const { seed } = buildSidechatInheritance(events)
+    expect(seed.length).toBeLessThan(events.length)
+    expect(seed.some(event => JSON.stringify(event).includes('second switch'))).toBe(true)
+    expect(seed.some(event => JSON.stringify(event).includes('first switch'))).toBe(false)
+    expect(seed.some(event => JSON.stringify(event).includes('system prompt'))).toBe(false)
+    expect(visibleSequence(seed)).toEqual(visibleSequence(events))
+    expectAcceptedSeed(seed)
+  })
+
+  it('trims a multi-hop prompt rewrite whose intermediate is inside the declared span', () => {
+    // v2->v3 shape from the real store: a pre-cut head rewrite (7 -> 2) sits
+    // numerically inside the checkpoint's declared [3,13] range but is NOT one
+    // of the entries the checkpoint actually removed; a post-cut switch then
+    // replaces 7. Membership in the fold's recorded shadowed set, not the
+    // declared numeric range, decides whether the chain is representable.
+    const events: SidebarSessionEvent[] = [
+      lo('turn/start', 0, { turn: 1 }),
+      lo('step/start', 1, { turn: 1, step: 1 }),
+      sf('system/message', 2, { turn: 1, step: 1, message: { id: 'm-sys', role: 'system', content: [{ type: 'text', text: 'original prompt' }], source: { kind: 'system-prompt' } } }),
+      sf('user/message', 3, userMessage('m-q1', 'q1')),
+      sf('assistant/message', 4, { turn: 1, step: 1, message: assistantMessage('a1'), stream: [] }),
+      lo('step/end', 5, { turn: 1, step: 1 }),
+      lo('step/start', 6, { turn: 1, step: 2 }),
+      {
+        ...sf('system/message', 7, {
+          turn: 1, step: 2,
+          message: { id: 'm-sys-rewrite', role: 'system', content: [{ type: 'text', text: 'pre-cut rewrite' }], source: { kind: 'system-prompt' } },
+        }),
+        surfaceOp: { op: 'replace', startSeq: 2, endSeq: 2 },
+        sourceEventSeqs: [2],
+      } as SidebarSessionEvent,
+      lo('step/end', 8, { turn: 1, step: 2 }),
+      lo('turn/end', 9, { turn: 1, reason: { kind: 'completed' } }),
+      lo('turn/start', 10, { turn: 2 }),
+      lo('step/start', 11, { turn: 2, step: 1 }),
+      sf('user/message', 12, userMessage('m-q2', 'q2')),
+      sf('assistant/message', 13, { turn: 2, step: 1, message: assistantMessage('a2'), stream: [] }),
+      lo('step/end', 14, { turn: 2, step: 1 }),
+      lo('turn/end', 15, { turn: 2, reason: { kind: 'completed' } }),
+    ]
+    events.push(...compactionGroup(events.length, [3, 4, 12, 13], { id: 'cp-v2v3' }))
+    events.push(...turn(events.length, 3, { callId: 'c-tail', result: 'tail result' }).events)
+    const at = events.length
+    events.push(
+      lo('turn/start', at, { turn: 4 }),
+      lo('step/start', at + 1, { turn: 4, step: 1 }),
+      {
+        ...sf('system/message', at + 2, {
+          turn: 4, step: 1,
+          message: { id: 'm-sys-switch', role: 'system', content: [{ type: 'text', text: 'post-cut switch' }], source: { kind: 'system-prompt' } },
+        }),
+        surfaceOp: { op: 'replace', startSeq: 7, endSeq: 7 },
+        sourceEventSeqs: [7],
+      } as SidebarSessionEvent,
+      sf('user/message', at + 3, userMessage('m-q4', 'q4')),
+      sf('assistant/message', at + 4, { turn: 4, step: 1, message: assistantMessage('a4'), stream: [] }),
+      lo('step/end', at + 5, { turn: 4, step: 1 }),
+      lo('turn/end', at + 6, { turn: 4, reason: { kind: 'completed' } }),
+    )
+    const { seed } = buildSidechatInheritance(events)
+    expect(seed.length).toBeLessThan(events.length)
+    expect(seed.some(event => JSON.stringify(event).includes('post-cut switch'))).toBe(true)
+    expect(seed.some(event => JSON.stringify(event).includes('pre-cut rewrite'))).toBe(false)
+    expect(visibleSequence(seed)).toEqual(visibleSequence(events))
+    expectAcceptedSeed(seed)
+  })
+
+  it('falls back when a model-switch head replacement targets a range', () => {
+    // Valid range replacement of non-head-0 surface nodes: the head is
+    // [system 2, user 3, user 4], the checkpoint removes only node 5, and the
+    // post-cut switch targets [3,4]. The parent folds, and the slot is not a
+    // single node, so the builder must keep the full copy. A range that
+    // touched a checkpoint-shadowed node would throw in the parent fold and
+    // exercise the wrong fallback.
+    const events: SidebarSessionEvent[] = [
+      lo('turn/start', 0, { turn: 1 }),
+      lo('step/start', 1, { turn: 1, step: 1 }),
+      sf('system/message', 2, { turn: 1, step: 1, message: { id: 'm-sys', role: 'system', content: [{ type: 'text', text: 'system prompt' }], source: { kind: 'system-prompt' } } }),
+      sf('user/message', 3, userMessage('m-q1', 'q1')),
+      sf('user/message', 4, userMessage('m-q2', 'q2')),
+      sf('assistant/message', 5, { turn: 1, step: 1, message: assistantMessage('a1'), stream: [] }),
+      lo('step/end', 6, { turn: 1, step: 1 }),
+      lo('turn/end', 7, { turn: 1, reason: { kind: 'completed' } }),
+    ]
+    events.push(...turn(8, 2, { callId: 'c-keep', result: 'keep result' }).events)
+    events.push(...compactionGroup(events.length, [5], { id: 'cp-range' }))
+    events.push(...turn(events.length, 3, { callId: 'c-tail', result: 'tail result' }).events)
+    const at = events.length
+    events.push(
+      lo('turn/start', at, { turn: 4 }),
+      lo('step/start', at + 1, { turn: 4, step: 1 }),
+      {
+        ...sf('system/message', at + 2, {
+          turn: 4, step: 1,
+          message: { id: 'm-range', role: 'system', content: [{ type: 'text', text: 'range switch' }], source: { kind: 'system-prompt' } },
+        }),
+        surfaceOp: { op: 'replace', startSeq: 3, endSeq: 4 },
+        sourceEventSeqs: [3, 4],
+      } as SidebarSessionEvent,
+      sf('user/message', at + 3, userMessage('m-q4', 'q4')),
+      sf('assistant/message', at + 4, { turn: 4, step: 1, message: assistantMessage('a4'), stream: [] }),
+      lo('step/end', at + 5, { turn: 4, step: 1 }),
+      lo('turn/end', at + 6, { turn: 4, reason: { kind: 'completed' } }),
+    )
+    // A valid parent log, not a malformed one that trips the fold's fallback.
+    expect(visibleSequence(events).length).toBeGreaterThan(0)
+    const { seed } = buildSidechatInheritance(events)
+    expect(seed).toHaveLength(events.length)
+    expect(seed[0]?.seq).toBe(0)
+    expect(seed[seed.length - 1]?.seq).toBe(events.length - 1)
+  })
+
   it('trims when the pruner rewrote a keep-window tool result mid-turn', () => {
     // Host shape: the tool-result-pruner appends a tool/result REPLACEMENT
     // between steps, carrying the ORIGINAL turn/step and a replace op over
