@@ -154,10 +154,12 @@ describe('/sidebar/file streams without a size cap', () => {
     expect([...disposition].every(char => char.codePointAt(0)! <= 0xFF)).toBe(true)
   })
 
-  it('keeps the SVG sandbox headers on the streamed response', async () => {
+  it.each(['svg', 'html', 'htm'])('sandboxes streamed %s documents on direct navigation', async (extension) => {
     const ws = workspace('svg')
-    const target = join(ws, 'vector.svg')
-    writeFileSync(target, '<svg xmlns="http://www.w3.org/2000/svg"></svg>')
+    const target = join(ws, `document.${extension}`)
+    writeFileSync(target, extension === 'svg'
+      ? '<svg xmlns="http://www.w3.org/2000/svg"></svg>'
+      : '<script>fetch("/sidebar/api/fs.read")</script>')
     const { origin } = await serve(ws)
 
     const response = await fetch(fileUrl(origin, ws, target))

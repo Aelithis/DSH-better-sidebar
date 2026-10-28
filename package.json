@@ -1,11 +1,11 @@
 {
   "name": "dsh-better-sidebar",
-  "version": "0.28.2",
+  "version": "0.28.3-private.1",
   "description": "Better Sidebar for DSH — file tree, editor, changes, tasks and side chat in one column, separate for every conversation. Also exposes a service other plugins use to register sidebar tabs and file viewers.",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "https://github.com/omdsh-dev/DSH-better-sidebar"
+    "url": "git+https://github.com/Aelithis/DSH-better-sidebar.git"
   },
   "publishConfig": {
     "access": "public"
@@ -64,8 +64,6 @@
     "lib/client-terminal.js",
     "lib/types/**/*.d.ts",
     "src",
-    "scripts/install.sh",
-    "scripts/install.ps1",
     "cordis.patch.yml",
     "README.md",
     "README_ZH.md",
@@ -79,7 +77,6 @@
     "typecheck": "tsc --noEmit",
     "bundle": "tsdown",
     "watch": "tsdown --watch",
-    "prepare": "tsdown",
     "test": "vitest run",
     "test:windows": "vitest run --maxWorkers=1",
     "test:mount": "bash scripts/e2e-mount.sh",
@@ -227,5 +224,6 @@
     "vitest": "^4.1.8",
     "zustand": "~4.4.7"
   },
-  "icon": "./icon.svg"
+  "icon": "./icon.svg",
+  "homepage": "https://github.com/Aelithis/DSH-better-sidebar"
 }

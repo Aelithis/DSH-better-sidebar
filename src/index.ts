@@ -1741,12 +1741,12 @@ export function apply(ctx: Context, config?: SidebarConfig): void {
         // Raw bytes either way (binary-safe); ?download=1 switches the
         // disposition so the browser saves the file instead of showing it.
         const headers: Record<string, string> = { 'content-type': type, 'cache-control': 'no-cache' }
-        // An SVG is a scriptable DOCUMENT, not an inert image: navigating to
+        // HTML and SVG are scriptable documents: navigating to
         // this URL directly would run its <script> in the GUI's origin, with
         // same-origin access to /sidebar/api/*. The sibling html route already
         // sandboxes for exactly this reason; mirror it here. The CSP applies
         // to the document, so <img src> embedding is unaffected.
-        if (type === 'image/svg+xml') {
+        if (type === 'image/svg+xml' || type === 'text/html') {
           headers['content-security-policy'] = "sandbox; object-src 'none'"
           headers['x-content-type-options'] = 'nosniff'
           headers['referrer-policy'] = 'no-referrer'

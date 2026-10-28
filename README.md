@@ -1,3 +1,11 @@
+# DSH Private 侧栏分支
+
+基于 v0.28.2（b0e0fab50e68f54b07a1fc1e7898030409c7d979）。本分支修复直接打开 HTML 媒体地址时缺少 sandbox 的问题，保留文件编辑、终端、Git、预览和子代理页面。没有添加遥测或更新检查。预览用户主动打开的网页文件或 Markdown 外链图片仍可访问其引用地址；Git 同步及模型生成仍按正常业务请求执行。
+
+仅安装本 Fork 已审查的完整提交。发布所需 lib 已从该份源码构建并提交，移除了 prepare 安装脚本，不使用上游一键安装器或 npm latest。通过 pnpm build 手动重建；更新须重新审查、测试并固定提交。
+
+---
+
 # dsh-better-sidebar
 
 <div align="center">
