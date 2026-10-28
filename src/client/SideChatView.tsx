@@ -31,7 +31,7 @@
  * session, archive) lives in the COMPOSER BAR, not a top header — the reader's
  * attention is on the input, and a header's actions went unnoticed.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useSyncExternalStore } from 'react'
 import clsx from 'clsx'
 import {
@@ -64,6 +64,7 @@ import {
   type TerminalBlockLabels,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { markdownTextProps } from './markdown-labels.tsx'
+import { SidechatAssistantRow, type SidechatRowSurfaceBinding } from './SidechatAssistantRow.tsx'
 import { rewriteProseLocalImageUrls } from './markdown-images.ts'
 import { hostTransportBase } from './desktop-env.ts'
 import { baseName, resolveSidebarPath } from './paths.ts'
@@ -89,6 +90,7 @@ import {
   formatTokens,
   toolArgsSummary,
   transcriptRows,
+  sidechatRowKey,
   type SidechatToolCard,
   type SidechatTranscriptRow,
 } from './sidechat-transcript.ts'
@@ -232,6 +234,8 @@ function rememberSidechatThread(sessionId: string, threadId: string): void {
 /** Per-thread transcript cache: thread-own events merged by seq (polls ride
  * the afterSeq delta and never re-download what they already hold). */
 interface ThreadCache {
+  /** Rows must never be rebound to a different child while a reset is pending. */
+  threadId?: string
   entries: SidebarHistoryEntry[]
   /** The CURRENT attempt's live deltas (replaced every pull, never merged). */
   live: SidechatLiveEvent[]
@@ -496,29 +500,27 @@ interface RowSurface {
 /** One row renderer (React keys ride the source event seq). `surface` is the
  *  markdown prose pass the rows run before rendering — the rows are model
  *  prose, so a relative destination resolves against the session cwd (see
- *  use-markdown-surface) — plus the delivered-file open and media helpers. */
-function renderRow(row: SidechatTranscriptRow, labels: RowLabels, surface: RowSurface): React.ReactNode {
+ *  use-markdown-surface) — plus the delivered-file open and media helpers.
+ *  `genui` binds the rows to the owning child thread: the key remounts every
+ *  row when the tab switches threads, and a registered GenUI consumer may
+ *  claim a visible, settled assistant row (see SidechatAssistantRow). */
+function renderRow(row: SidechatTranscriptRow, labels: RowLabels, surface: RowSurface, genui: SidechatRowSurfaceBinding): React.ReactNode {
+  const key = `${genui.threadId ?? 'unbound'}:${sidechatRowKey(row)}`
   switch (row.kind) {
     case 'user':
       return (
-        <div key={`${row.kind}:${row.seq}`} className={css.sidechatUser}>
+        <div key={key} className={css.sidechatUser}>
           <MarkdownText {...markdownTextProps(surface.rewrite(row), labels)} />
         </div>
       )
     case 'assistant':
       return (
-        <div key={`${row.kind}:${row.seq}`} className={css.sidechatAssistant}>
-          {/* `streaming` keeps the host's incremental parse across chunks
-              instead of restarting it; only the durable (settled) message is
-              the final parse. It rides the row's own flag so a superseded
-              live row never claims to be settled. */}
-          <MarkdownText {...markdownTextProps(surface.rewrite(row), labels)} streaming={!row.settled} />
-        </div>
+        <SidechatAssistantRow key={key} row={row} labels={labels} rewrite={surface.rewrite} surface={genui} />
       )
     case 'reasoning':
       return (
         <CollapsibleRow
-          key={`${row.kind}:${row.seq}`}
+          key={key}
           label={labels.thinkLabel}
           streaming={!row.settled}
         >
@@ -527,7 +529,7 @@ function renderRow(row: SidechatTranscriptRow, labels: RowLabels, surface: RowSu
       )
     case 'injection':
       return (
-        <CollapsibleRow key={`${row.kind}:${row.seq}`} label={labels.injectionLabel}>
+        <CollapsibleRow key={key} label={labels.injectionLabel}>
           <div className={css.sidechatRowProse}>{row.text}</div>
         </CollapsibleRow>
       )
@@ -535,7 +537,7 @@ function renderRow(row: SidechatTranscriptRow, labels: RowLabels, surface: RowSu
       // A provider/agent failure: rendered plainly (never markdown) so a raw
       // provider message with odd punctuation survives verbatim.
       return (
-        <div key={`${row.kind}:${row.seq}`} className={css.sidechatErrorRow}>
+        <div key={key} className={css.sidechatErrorRow}>
           {t('sideChatRunError', { message: row.text })}
         </div>
       )
@@ -549,7 +551,7 @@ function renderRow(row: SidechatTranscriptRow, labels: RowLabels, surface: RowSu
       if (row.durationMs !== undefined) parts.push(formatDurationMs(row.durationMs))
       if (parts.length === 0) return null
       return (
-        <div key={`${row.kind}:${row.seq}`} className={css.sidechatTurnSummary}>
+        <div key={key} className={css.sidechatTurnSummary}>
           {parts.join(' · ')}
         </div>
       )
@@ -607,7 +609,7 @@ function renderRow(row: SidechatTranscriptRow, labels: RowLabels, surface: RowSu
         )
       return (
         <CollapsibleRow
-          key={`${row.kind}:${row.seq}`}
+          key={key}
           label={row.name}
           meta={toolArgsSummary(row.args)}
           icon={toolLeading(row.name, row.failed)}
@@ -900,13 +902,15 @@ export function SideChatView(props: {
    *  (first attach = the whole seed-cut slice; polls = afterSeq deltas),
    *  merged by seq. */
   const fetchThread = useCallback(async (childId: string): Promise<void> => {
+    const cache = cacheRef.current
+    if (cache.threadId !== childId) return
     controllerRef.current?.abort()
     const controller = new AbortController()
     controllerRef.current = controller
     try {
-      const cache = cacheRef.current
       const afterSeq = cache.entries.at(-1)?.event.seq
       const { events, live, pending } = await api.sidechatEvents(childId, afterSeq, controller.signal)
+      if (controller.signal.aborted || cacheRef.current !== cache) return
       // The live set is the CURRENT attempt, so it replaces whatever the
       // previous pull held; a settled step drops out of the host buffer and
       // its durable assistant/message takes over in the mapping. The pending
@@ -937,7 +941,7 @@ export function SideChatView(props: {
   // Reset the transcript cache whenever the binding changes, then focus
   // the composer — it owns the first message of a fresh thread.
   useEffect(() => {
-    cacheRef.current = { entries: [], live: [], pending: [] }
+    cacheRef.current = { threadId, entries: [], live: [], pending: [] }
     prevRowsRef.current = []
     controllerRef.current?.abort()
     if (invalidateRef.current !== undefined) {
@@ -1040,7 +1044,8 @@ export function SideChatView(props: {
     const live = cache.live
       .filter(event => !settled.has(`${String(event.data.turn)}:${String(event.data.step)}`))
       .map(event => ({ event: event as SidebarSessionEvent }))
-    const next = threadId === undefined ? [] : transcriptRows([...cache.entries, ...live], prevRowsRef.current)
+    const next = threadId === undefined || cache.threadId !== threadId
+      ? [] : transcriptRows([...cache.entries, ...live], prevRowsRef.current)
     prevRowsRef.current = next
     return next
   },
@@ -1236,6 +1241,34 @@ export function SideChatView(props: {
     field.style.height = `${Math.min(field.scrollHeight, COMPOSER_MAX_HEIGHT)}px`
   }
 
+  // Capture a binding generation, not a mutable "current session" fallback.
+  // A deferred slider action from an old row must fail even after A → B → A.
+  const surfaceBinding = useMemo(() => ({ childId: threadId, active: visible }), [threadId, visible])
+  useLayoutEffect(() => {
+    surfaceBinding.active = visible
+    return () => { surfaceBinding.active = false }
+  }, [surfaceBinding, visible])
+  const sendSurfacePrompt = useCallback(async (text: string): Promise<void> => {
+    try {
+      const childId = surfaceBinding.childId
+      if (!surfaceBinding.active || childId === undefined || childId.trim() === '' || text.trim() === '') {
+        throw new Error('Sidechat surface is no longer active or the prompt is empty')
+      }
+      setError(null)
+      await api.sidechatPrompt(childId, text)
+      if (surfaceBinding.active) {
+        void fetchThread(childId)
+        void fetchInfo(childId)
+      }
+    } catch (cause) {
+      if (surfaceBinding.active) setError(cause instanceof Error ? cause.message : String(cause))
+      throw cause
+    }
+  }, [surfaceBinding, fetchThread, fetchInfo])
+  const genuiRowSurface: SidechatRowSurfaceBinding = {
+    service: ctx.get('betterSidebar'), threadId, visible, sendPrompt: sendSurfacePrompt,
+  }
+
   const handleSend = async (): Promise<void> => {
     const text = composer.trim()
     if (text === '' || threadId === undefined || busy !== null) return
@@ -1387,12 +1420,12 @@ export function SideChatView(props: {
           onReconnect={() => { ctx.connection?.reconnect() }}
         />
       )}
-      <div ref={transcriptRef} className={css.sidechatScroll}>
+      <div ref={transcriptRef} className={css.sidechatScroll} data-genui-surface="dsh-better-sidebar/sidechat">
         {/* The host delegate is what makes a local markdown link in a row
             clickable at all (see use-markdown-surface), scoped to this
             transcript so nothing outside it is claimed. */}
         <MarkdownDelegateProvider openFile={openChatFile}>
-          {rows.map(row => renderRow(row, rowLabels, rowSurface))}
+          {rows.map(row => renderRow(row, rowLabels, rowSurface, genuiRowSurface))}
           {/* The unclaimed inbox: accepted messages whose claim has not logged
               them yet. The same bubble surface (and markdown pass) as a
               durable user row, plus the state word and the dequeue button. */}

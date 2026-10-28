@@ -31,6 +31,8 @@ import { hostRouteUrl as resolveHostRoute } from './host-route-url.ts'
 import { builtinFileIcon, builtinFolderIcon } from './file-icons.tsx'
 import type { SessionScope } from './api.ts'
 import type { SidebarPrefs } from '../prefs-shared.ts'
+import { bindSidechatSurfaces, type SidechatSurfaceAdapter } from './sidechat-surface.ts'
+export type { SidechatSurface, SidechatSurfaceAdapter } from './sidechat-surface.ts'
 
 /**
  * Public state vocabulary re-exported for consumers (type-only; the values
@@ -619,6 +621,8 @@ export interface SidebarSurface {
  * The registry service published as `ctx.betterSidebar`.
  */
 export interface BetterSidebarService {
+  /** Proposed opt-in bridge for settled assistant Markdown in sidechat only. */
+  registerSidechatSurfaceAdapter(adapter: SidechatSurfaceAdapter): () => void
   registerTab(descriptor: TabDescriptor): () => void
   registerFileViewer(descriptor: FileViewerDescriptor): () => void
   registerFileIcon(descriptor: FileIconDescriptor): () => void
@@ -836,7 +840,7 @@ export function matchUrlTarget(tabs: readonly TabDescriptor[], url: URL): TabDes
  * The plugin version this service instance reports. Keep in lockstep with
  * `package.json`'s version — `tests/service.spec.ts` asserts the pair.
  */
-export const SIDEBAR_SERVICE_VERSION = '0.28.2'
+export const SIDEBAR_SERVICE_VERSION = '0.29.0'
 
 /**
  * Monotonic capability list consumers use to gate new API usage (features
@@ -1444,7 +1448,8 @@ export function createBetterSidebarService(store: SidebarStore): BetterSidebarSe
     openTab({ type: 'editor', title: title ?? baseNameOf(path), path, id: `editor:${path}` }, scope)
   }
 
-  return {
+  const service: BetterSidebarService = {
+    registerSidechatSurfaceAdapter: adapter => registerSidechatSurfaceAdapter(adapter),
     registerTab,
     registerFileViewer,
     registerFileIcon,
@@ -1474,6 +1479,8 @@ export function createBetterSidebarService(store: SidebarStore): BetterSidebarSe
     nativePathTabs: () => surface?.pathTabs?.() ?? [],
     clearUnread: clearUnreadFor,
   }
+  const registerSidechatSurfaceAdapter = bindSidechatSurfaces(service)
+  return service
 }
 
 /**

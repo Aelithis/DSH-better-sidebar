@@ -82,6 +82,8 @@ export type { SidebarConfig, ResolvedSidebarConfig }
 export type { Context } from './context-types.ts'
 export type {
   BetterSidebarService,
+  SidechatSurface,
+  SidechatSurfaceAdapter,
   TabDescriptor,
   TabComponentProps,
   FileViewerDescriptor,

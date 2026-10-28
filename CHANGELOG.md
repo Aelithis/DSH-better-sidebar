@@ -2,6 +2,13 @@
 
 > 本文档收录 dsh-better-sidebar 的完整发布历史（最新版摘要见 [README](README_ZH.md)；同步发布于 [GitHub Releases](https://github.com/omdsh-dev/DSH-better-sidebar/releases)）。
 
+### v0.29.0
+
+- **侧边对话接入 GenUI**：通过现有 `ctx.betterSidebar` 服务新增可选的 `registerSidechatSurfaceAdapter`，支持 GenUI 0.15.0 渲染已结算的助手回复；未注册消费方时保持原 Markdown。
+- **子线程归属与生命周期**：保留线程、消息及原始文本块身份；隐藏、切换线程、替换行或卸载后撤销旧回调，交互不会转发到主会话。保留原链接改写缓存、媒体处理与流式状态。
+- **冷恢复边界**：仅移除明确标为继承的历史前缀，普通恢复标记不再清掉子线程历史。
+- **贡献**：感谢 [@sunxiuguo](https://github.com/sunxiuguo) 的配套实现（[#1033](https://github.com/omdsh-dev/DSH-better-sidebar/pull/1033)）；保留原始贡献提交，并整合最新 dev 与 0.28.2 的冷会话读取修复。
+
 ### v0.28.2
 
 - 🛡 **冷会话（detached）的 cwd 改读工作区地址，不再整份解码会话日志**：`sessionQuery.observeSession(..., { projectionMode: 'all' })` 为拿一个 `workingDirectory` 要解码整份 zstd 日志并水合全部投影；而启动期真正并发的是 **fs-watch 每监视目录一帧**、`/sidebar/file|html` 每资源一次、`/sidebar/upload|write` 每次一次——它们都绕过 0.28.1 只覆盖 `/sidebar/api` 的 `cwdOf()` 单飞，所以 39 MB 级会话在 130–180 ms 里被并发整读数十次（0.28.0 的 44 次 OOM、0.28.1 的 36 次是同一路径，不是「去重失效」）。现在 detached 会话的 cwd 走 `sessionPersistence.stat` 的 **header-only** 读（只读第一个 zstd 帧）+ 进程内 memo/在飞去重，`activeWorktreeRootOf` 对 detached 会话直接返回该地址；宿主 attach 后仍跟随 `working_directory` 与 linked worktree。
