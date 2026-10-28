@@ -244,7 +244,7 @@ Windows / Linux / macOS supported (macOS verified daily, the rest covered by uni
 QQ group: 577011007
 
 <div align="center">
-  <img width="220" alt="WeChat group QR" src="https://github.com/user-attachments/assets/e9c77c37-83f5-4c3a-911e-6afeaf815615" />
+  <img width="220" alt="WeChat group QR" src="https://github.com/user-attachments/assets/777c995b-e140-4414-970f-60d3656dc59e" />
   <img width="220" alt="QQ group QR" src="https://github.com/user-attachments/assets/9be34629-26ef-4537-aad4-1393c147f81c" />
 </div>
 
