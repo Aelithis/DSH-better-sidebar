@@ -997,7 +997,7 @@ ctx.effect(() =>
 
 ### 7.1 侧边对话渲染适配器（新增提案，尚未发布）
 
-这是配合 [dsh-genui #354](https://github.com/omdsh-dev/dsh-genui/issues/354) 的**新增、窄范围接入提案**，不是 v0.28.0 或既有发布版本承诺过的契约。消费方必须先探测方法存在；未安装、旧版本或未注册适配器时，侧边对话继续使用原有 `MarkdownText` 和 `markdownTextProps()`，不改变普通 Markdown 与代码围栏。
+这是 v0.29.0 新增、配合 GenUI 0.15.0 的窄范围接入能力，关联 [dsh-genui #354](https://github.com/omdsh-dev/dsh-genui/issues/354)。消费方必须先探测方法存在；未安装、旧版本或未注册适配器时，侧边对话继续使用原有 `MarkdownText` 和 `markdownTextProps()`，不改变普通 Markdown 与代码围栏。
 
 ```ts
 interface SidechatSurface {

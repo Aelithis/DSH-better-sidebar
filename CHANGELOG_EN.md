@@ -4,6 +4,13 @@
 >
 > 📝 The Chinese [CHANGELOG](./CHANGELOG.md) is the authoritative, item-by-item record; this file carries the English summaries and has historically lagged behind it. Where the two disagree, the Chinese one is current.
 
+### v0.29.0
+
+- **GenUI in side chats**: the existing `ctx.betterSidebar` service exposes the opt-in `registerSidechatSurfaceAdapter` for GenUI 0.15.0 to render settled assistant replies. Without a consumer, Markdown rendering stays unchanged.
+- **Child-thread ownership and lifecycle**: preserve thread, event and original text-block identity. Hiding, switching threads, replacing a row or disposing the plugin revokes old callbacks; actions never fall back to the main conversation. Existing rewrite caches, media handling and streaming state remain intact.
+- **Cold-resume boundary**: remove only an explicitly inherited history prefix; ordinary restore markers no longer discard child history.
+- **Contribution**: thanks to [@sunxiuguo](https://github.com/sunxiuguo) for the provider implementation ([#1033](https://github.com/omdsh-dev/DSH-better-sidebar/pull/1033)). Original commits are preserved, alongside current dev and the 0.28.2 cold-session read fix.
+
 ### v0.28.2
 
 - 🛡 **A detached session's cwd now comes from its stored workspace address instead of decoding the whole session log.** `sessionQuery.observeSession(..., { projectionMode: 'all' })` decodes the entire zstd artifact and hydrates every projection to answer with one `workingDirectory` string. The real startup fan-out never went through the 0.28.1 `cwdOf()` single-flight (which only covers `/sidebar/api`): the fs-watch socket sends **one frame per watched directory**, and `/sidebar/file|html` resolve cwd per resource, `/sidebar/upload|write` per call — so a 39 MB session was fully decoded dozens of times inside 130–180 ms (the 44-read OOM on 0.28.0 and the 36 reads reported against 0.28.1 are the same path, not a broken dedupe). The cold cwd now uses `sessionPersistence.stat` — a **header-only** read (first zstd frame) with a process-level memo and same-session in-flight sharing — and `activeWorktreeRootOf` returns that address for detached sessions. Once the host attaches the session, the committed `working_directory` and linked-worktree following resume as before.
